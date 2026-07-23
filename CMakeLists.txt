@@ -1,0 +1,88 @@
+# nx foundation - the bottom layer of the engine: platform/compiler detection,
+# allocators, containers, strings, threading, filesystem and logging.
+#
+# Mostly header-only, but the platform backends (threading, filesystem, os,
+# logging) are real translation units, so this ships as a static library rather
+# than an interface target.
+
+set(NX_FOUNDATION_HEADERS
+  core/callable.h
+  core/enum.h
+  core/foundation.h
+  core/handle.h
+  core/hash.h
+  core/random.h
+  core/result.h
+  core/scope_guard.h
+
+  containers/blob.h
+  containers/concurrent_queue.h
+  containers/fixed_vector.h
+  containers/flat_map.h
+  containers/hash_map.h
+  containers/slot_map.h
+  containers/small_vector.h
+  containers/sparse_set.h
+  containers/stable_pool.h
+
+  strings/format.h
+  strings/id_string.h
+  strings/utf8_string.h
+  strings/utf8_string_view.h
+
+  threading/sync.h
+  threading/thread.h
+  threading/thread_pool.h
+
+  platform/filesystem.h
+  platform/os.h
+
+  diagnostics/diagnostic.h
+  diagnostics/log.h
+  diagnostics/profiler.h
+
+  ecs/registry.h)
+
+# Platform selection happens inside these files (#if NX_PLATFORM_*), so the
+# source list is the same everywhere.
+set(NX_FOUNDATION_SOURCES
+  core/random.cpp
+  threading/sync.cpp
+  threading/thread.cpp
+  threading/thread_pool.cpp
+  platform/filesystem.cpp
+  platform/os.cpp
+  diagnostics/log.cpp)
+
+add_library(nx_foundation STATIC ${NX_FOUNDATION_SOURCES} ${NX_FOUNDATION_HEADERS})
+add_library(nx::foundation ALIAS nx_foundation)
+
+# Includes are rooted at engine/, so every include reads
+# #include "foundation/<scope>/<file>.h" - unambiguous from anywhere.
+target_include_directories(nx_foundation PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# PUBLIC: foundation/core/foundation.h includes <mimalloc.h>.
+target_link_libraries(nx_foundation
+  PUBLIC nx::mimalloc
+  PRIVATE nx::compile_options)
+
+if(WIN32)
+  # Synchronization: WaitOnAddress / WakeByAddress* (threading/sync.cpp)
+  # Psapi:           GetProcessMemoryInfo           (platform/os.cpp)
+  target_link_libraries(nx_foundation PRIVATE Synchronization Psapi)
+elseif(ANDROID)
+  target_link_libraries(nx_foundation PRIVATE log)
+elseif(UNIX)
+  set(THREADS_PREFER_PTHREAD_FLAG ON)
+  find_package(Threads REQUIRED)
+  target_link_libraries(nx_foundation PUBLIC Threads::Threads PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
+# Debugger visualizers for the custom containers (MSVC embeds them in the PDB).
+if(MSVC)
+  target_sources(nx_foundation PRIVATE nx.natvis)
+endif()
+
+set_target_properties(nx_foundation PROPERTIES FOLDER "engine")
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}"
+  FILES ${NX_FOUNDATION_SOURCES} ${NX_FOUNDATION_HEADERS})

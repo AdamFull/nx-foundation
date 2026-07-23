@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+
+    <Type Name="nx::fixed_vector&lt;*,*&gt;">
+        <DisplayString>{{ size={size_} }}</DisplayString>
+        <Expand>
+            <ArrayItems>
+                <Size>size_</Size>
+                <ValuePointer>($T1*)storage_</ValuePointer>
+            </ArrayItems>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::small_vector&lt;*,*,*&gt;">
+        <DisplayString>{{ size={size_} }}</DisplayString>
+        <Expand>
+            <ArrayItems>
+                <Size>size_</Size>
+                <ValuePointer>data_</ValuePointer>
+            </ArrayItems>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::mpmc::Queue&lt;*,*&gt;">
+        <DisplayString>{{ size~{enqueue_pos_._Storage._Value - dequeue_pos_._Storage._Value}, capacity={CAPACITY} }}
+        </DisplayString>
+        <Expand>
+            <Item Name="[capacity]">CAPACITY</Item>
+            <CustomListItems MaxItemsPerView="5000">
+                <Variable Name="dq" InitialValue="dequeue_pos_._Storage._Value"/>
+                <Variable Name="eq" InitialValue="enqueue_pos_._Storage._Value"/>
+                <Variable Name="i" InitialValue="dq"/>
+                <Loop Condition="i != eq">
+                    <Item Name="[{i - dq}]">*($T1*)(slots_[i &amp; MASK].storage)</Item>
+                    <Exec>++i</Exec>
+                </Loop>
+            </CustomListItems>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::mpsc::Queue&lt;*,*&gt;">
+        <DisplayString>{{ size~{enqueue_pos_._Storage._Value - dequeue_pos_._Storage._Value}, capacity={CAPACITY} }}
+        </DisplayString>
+        <Expand>
+            <Item Name="[capacity]">CAPACITY</Item>
+            <CustomListItems MaxItemsPerView="5000">
+                <Variable Name="dq" InitialValue="dequeue_pos_._Storage._Value"/>
+                <Variable Name="eq" InitialValue="enqueue_pos_._Storage._Value"/>
+                <Variable Name="i" InitialValue="dq"/>
+                <Loop Condition="i != eq">
+                    <Item Name="[{i - dq}]">*($T1*)(slots_[i &amp; MASK].storage)</Item>
+                    <Exec>++i</Exec>
+                </Loop>
+            </CustomListItems>
+        </Expand>
+    </Type>
+
+
+    <Type Name="nx::Guid">
+        <Intrinsic Name="hex" Expression="&quot;0123456789abcdef&quot; + n">
+            <Parameter Name="n" Type="unsigned int"/>
+        </Intrinsic>
+        <DisplayString>
+            {bytes._Elems[0],nvoxb}{bytes._Elems[1],nvoxb}{bytes._Elems[2],nvoxb}{bytes._Elems[3],nvoxb}-{bytes._Elems[4],nvoxb}{bytes._Elems[5],nvoxb}-{bytes._Elems[6],nvoxb}{bytes._Elems[7],nvoxb}-{bytes._Elems[8],nvoxb}{bytes._Elems[9],nvoxb}-{bytes._Elems[10],nvoxb}{bytes._Elems[11],nvoxb}{bytes._Elems[12],nvoxb}{bytes._Elems[13],nvoxb}{bytes._Elems[14],nvoxb}{bytes._Elems[15],nvoxb}
+        </DisplayString>
+        <Expand>
+            <ArrayItems>
+                <Size>16</Size>
+                <ValuePointer>bytes._Elems</ValuePointer>
+            </ArrayItems>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::basic_string&lt;*&gt;">
+        <Intrinsic Name="is_heap" Expression="(sso_.size &amp; 0x80) != 0"/>
+        <Intrinsic Name="sso_size" Expression="(unsigned char)sso_.size"/>
+        <DisplayString Condition="is_heap()">{heap_.data,s8}</DisplayString>
+        <DisplayString>{&amp;sso_.data[0],s8}</DisplayString>
+        <StringView Condition="is_heap()">heap_.data,s8</StringView>
+        <StringView>&amp;sso_.data[0],s8</StringView>
+        <Expand>
+            <Item Name="[size]" Condition="is_heap()">heap_.size</Item>
+            <Item Name="[size]" Condition="!is_heap()">sso_size()</Item>
+            <Item Name="[capacity]" Condition="is_heap()">heap_.capacity &amp; ~HEAP_MASK</Item>
+            <Item Name="[capacity]" Condition="!is_heap()">SSO_CAPACITY</Item>
+            <Item Name="[allocator]">alloc_</Item>
+            <ArrayItems Condition="is_heap()">
+                <Size>heap_.size</Size>
+                <ValuePointer>heap_.data</ValuePointer>
+            </ArrayItems>
+            <ArrayItems Condition="!is_heap()">
+                <Size>sso_size()</Size>
+                <ValuePointer>&amp;sso_.data[0]</ValuePointer>
+            </ArrayItems>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::basic_handle&lt;*,*,*&gt;">
+        <DisplayString Condition="(value_ &amp; index_mask) == null_index">null</DisplayString>
+        <DisplayString>{{ index={value_ &amp; index_mask}, version={value_ &gt;&gt; index_bits} }}</DisplayString>
+        <Expand>
+            <Item Name="[index]">value_ &amp; index_mask</Item>
+            <Item Name="[version]">value_ &gt;&gt; index_bits</Item>
+            <Item Name="[raw]">value_</Item>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::stable_pool&lt;*,*,*&gt;">
+        <DisplayString>{{ size={size_}, capacity={capacity_} }}</DisplayString>
+        <Expand>
+            <Item Name="[size]">size_</Item>
+            <Item Name="[capacity]">capacity_</Item>
+            <CustomListItems MaxItemsPerView="5000">
+                <Variable Name="i" InitialValue="0"/>
+                <Variable Name="ps" InitialValue="256"/>
+                <Loop Condition="i &lt; capacity_">
+                    <If Condition="pages_._Mypair._Myval2._Myfirst[i / ps][i % ps].st == nx::stable_pool&lt;$T1,$T2,$T3&gt;::state::occupied">
+                        <Item Name="[{i}]">*($T1*)(pages_._Mypair._Myval2._Myfirst[i / ps][i % ps].storage)</Item>
+                    </If>
+                    <Exec>++i</Exec>
+                </Loop>
+            </CustomListItems>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::slot_map&lt;*,*,*&gt;">
+        <DisplayString>{{ size={dense_._Mypair._Myval2._Mylast - dense_._Mypair._Myval2._Myfirst} }}</DisplayString>
+        <Expand>
+            <ArrayItems>
+                <Size>dense_._Mypair._Myval2._Mylast - dense_._Mypair._Myval2._Myfirst</Size>
+                <ValuePointer>dense_._Mypair._Myval2._Myfirst</ValuePointer>
+            </ArrayItems>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::flat_map&lt;*,*,*,*,*,*&gt;">
+        <DisplayString>{{ size={c_.keys._Mypair._Myval2._Mylast - c_.keys._Mypair._Myval2._Myfirst} }}</DisplayString>
+        <Expand>
+            <CustomListItems MaxItemsPerView="5000">
+                <Variable Name="i" InitialValue="0"/>
+                <Variable Name="n" InitialValue="c_.keys._Mypair._Myval2._Mylast - c_.keys._Mypair._Myval2._Myfirst"/>
+                <Loop Condition="i &lt; n">
+                    <Item Name="[{c_.keys._Mypair._Myval2._Myfirst[i]}]">c_.values._Mypair._Myval2._Myfirst[i]</Item>
+                    <Exec>++i</Exec>
+                </Loop>
+            </CustomListItems>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::sparse_set&lt;*,*,*,*&gt;">
+        <DisplayString>{{ size={dense_._Mypair._Myval2._Mylast - dense_._Mypair._Myval2._Myfirst} }}</DisplayString>
+        <Expand>
+            <Synthetic Name="[entities]">
+                <Expand>
+                    <ArrayItems>
+                        <Size>dense_._Mypair._Myval2._Mylast - dense_._Mypair._Myval2._Myfirst</Size>
+                        <ValuePointer>dense_._Mypair._Myval2._Myfirst</ValuePointer>
+                    </ArrayItems>
+                </Expand>
+            </Synthetic>
+            <ArrayItems>
+                <Size>values_._Mypair._Myval2._Mylast - values_._Mypair._Myval2._Myfirst</Size>
+                <ValuePointer>values_._Mypair._Myval2._Myfirst</ValuePointer>
+            </ArrayItems>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::id_string">
+        <DisplayString Condition="id_ == 0">(empty)</DisplayString>
+        <DisplayString>id={id_,Xb}</DisplayString>
+        <Expand>
+            <Item Name="[id]">id_</Item>
+        </Expand>
+    </Type>
+
+</AutoVisualizer>

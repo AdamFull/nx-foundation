@@ -1,0 +1,217 @@
+#include "foundation/threading/thread_pool.h"
+
+#include "foundation/diagnostics/profiler.h"
+
+#include <cstdio>
+
+namespace nx {
+
+namespace {
+struct pool_tls {
+  thread_pool *pool = nullptr;
+  u32 index = 0;
+};
+thread_local pool_tls t_worker;
+} // namespace
+
+// task_group
+
+void task_group::wait() noexcept {
+  for (;;) {
+    const u32 pending = pending_.load(std::memory_order_acquire);
+    if (pending == 0)
+      return;
+    if (pool_ && pool_->help_execute_one())
+      continue;
+    futex::wait(&pending_, pending, detail::WAIT_FOREVER);
+  }
+}
+
+// thread_pool
+
+thread_pool::thread_pool(const config &cfg) {
+  const cpu::topology_info &topo = cpu::topology();
+
+  u32 count = cfg.thread_count;
+  if (count == 0)
+    count = topo.physical_count > 1 ? topo.physical_count - 1 : 1;
+
+  // Create every worker before starting any thread: worker_loop iterates
+  // workers_ for stealing and must see the final layout.
+  workers_.reserve(count);
+  for (u32 i = 0; i < count; ++i) {
+    auto *w = allocate<worker>();
+    if (!w)
+      break;
+    w->index = i;
+    snprintf(w->name, sizeof(w->name), "%s-%u", cfg.name ? cfg.name : "nx", i);
+    workers_.push_back(w);
+  }
+
+  for (worker *w : workers_) {
+    thread_options opts;
+    opts.name = w->name;
+    opts.priority = cfg.priority;
+    if (cfg.pin_threads && !topo.cores.empty()) {
+      const cpu::core_info &core = topo.cores[w->index % topo.cores.size()];
+      opts.affinity_mask = core.logical_mask;
+    }
+    w->th = thread([this, w] { worker_loop(*w); }, opts);
+  }
+}
+
+thread_pool::~thread_pool() {
+  wait_idle();
+
+  stop_.store(true, std::memory_order_release);
+  signal_.fetch_add(1, std::memory_order_seq_cst);
+  futex::wake_all(&signal_);
+
+  for (worker *w : workers_)
+    if (w->th.joinable())
+      w->th.join();
+  for (worker *w : workers_)
+    release(w);
+  workers_.clear();
+}
+
+bool thread_pool::is_worker_thread() const noexcept {
+  return t_worker.pool == this;
+}
+
+void thread_pool::submit(task_group &group, function<void()> fn) {
+  assert((group.pool_ == nullptr || group.pool_ == this) &&
+         "task_group is already bound to a different pool");
+  group.pool_ = this;
+  enqueue({std::move(fn), &group});
+}
+
+void thread_pool::enqueue(detail::pool_task &&t) {
+  unfinished_.fetch_add(1, std::memory_order_relaxed);
+  if (t.group)
+    t.group->pending_.fetch_add(1, std::memory_order_relaxed);
+
+  // try_push leaves the argument untouched on failure, so falling through
+  // the tiers with the same task is safe.
+  worker *self =
+      t_worker.pool == this ? workers_[t_worker.index] : nullptr;
+  if (!(self && self->queue.try_push(std::move(t))) &&
+      !shared_queue_.try_push(std::move(t))) {
+    scoped_lock lock(overflow_mutex_);
+    overflow_.push_back(std::move(t));
+    overflow_count_.fetch_add(1, std::memory_order_release);
+  }
+
+  // The bump is unconditional; a worker that read signal_ before it will
+  // see the mismatch when it tries to sleep. seq_cst pairs with the
+  // sleeper registration in worker_loop.
+  signal_.fetch_add(1, std::memory_order_seq_cst);
+  if (sleepers_.load(std::memory_order_seq_cst) > 0)
+    futex::wake(&signal_, 1);
+}
+
+bool thread_pool::try_get_task(detail::pool_task &out,
+                               const u32 self_index) noexcept {
+  if (self_index != INVALID_WORKER &&
+      workers_[self_index]->queue.try_pop(out))
+    return true;
+
+  if (shared_queue_.try_pop(out))
+    return true;
+
+  const u32 n = nx::cast<u32>(workers_.size());
+  if (n != 0) {
+    const u32 start = steal_seed_.fetch_add(1, std::memory_order_relaxed);
+    for (u32 i = 0; i < n; ++i) {
+      const u32 victim = (start + i) % n;
+      if (victim == self_index)
+        continue;
+      if (workers_[victim]->queue.try_pop(out))
+        return true;
+    }
+  }
+
+  if (overflow_count_.load(std::memory_order_acquire) > 0) {
+    scoped_lock lock(overflow_mutex_);
+    if (overflow_head_ < overflow_.size()) {
+      out = std::move(overflow_[overflow_head_++]);
+      overflow_count_.fetch_sub(1, std::memory_order_relaxed);
+      if (overflow_head_ == overflow_.size()) {
+        overflow_.clear();
+        overflow_head_ = 0;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+void thread_pool::run_task(detail::pool_task &t) noexcept {
+  if (t.fn)
+    t.fn();
+
+  // Drop the closure before signaling completion: waiters may free state
+  // the closure points at (e.g. the parallel_for body on the caller's
+  // stack) as soon as the counters hit zero.
+  t.fn = {};
+
+  if (task_group *group = t.group) {
+    t.group = nullptr;
+    if (group->pending_.fetch_sub(1, std::memory_order_acq_rel) == 1)
+      futex::wake_all(&group->pending_);
+  }
+  if (unfinished_.fetch_sub(1, std::memory_order_acq_rel) == 1)
+    futex::wake_all(&unfinished_);
+}
+
+bool thread_pool::help_execute_one() noexcept {
+  const u32 self = t_worker.pool == this ? t_worker.index : INVALID_WORKER;
+  detail::pool_task t;
+  if (!try_get_task(t, self))
+    return false;
+  run_task(t);
+  return true;
+}
+
+void thread_pool::worker_loop(worker &w) noexcept {
+  t_worker.pool = this;
+  t_worker.index = w.index;
+  NX_PROFILE_SET_THREAD_NAME(w.name);
+
+  detail::pool_task t;
+  for (;;) {
+    const u32 signal = signal_.load(std::memory_order_acquire);
+    if (try_get_task(t, w.index)) {
+      run_task(t);
+      continue;
+    }
+    if (stop_.load(std::memory_order_acquire))
+      break;
+
+    // signal_ was read before the queue check: any task pushed after the
+    // check also bumped signal_ afterwards, so the wait below returns
+    // immediately instead of missing it.
+    sleepers_.fetch_add(1, std::memory_order_seq_cst);
+    futex::wait(&signal_, signal, detail::WAIT_FOREVER);
+    sleepers_.fetch_sub(1, std::memory_order_relaxed);
+  }
+
+  t_worker.pool = nullptr;
+  t_worker.index = 0;
+}
+
+void thread_pool::wait_idle() noexcept {
+  assert(!is_worker_thread() &&
+         "wait_idle from inside a pool task can never finish; wait on a "
+         "task_group instead");
+  for (;;) {
+    const u32 unfinished = unfinished_.load(std::memory_order_acquire);
+    if (unfinished == 0)
+      return;
+    if (help_execute_one())
+      continue;
+    futex::wait(&unfinished_, unfinished, detail::WAIT_FOREVER);
+  }
+}
+
+} // namespace nx
