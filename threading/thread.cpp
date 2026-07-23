@@ -153,11 +153,46 @@ void yield() noexcept {
 #endif
 }
 
+#if NX_HAS_WINDOWS_API
+// Windows 10 1803+; define it here so the SDK's _WIN32_WINNT level cannot
+// silently drop us back to the coarse path.
+#if !defined(CREATE_WAITABLE_TIMER_HIGH_RESOLUTION)
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+namespace {
+/// One high-resolution timer per thread, closed when the thread exits.
+struct waitable_timer {
+  HANDLE handle = CreateWaitableTimerExW(nullptr, nullptr,
+                                         CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                         TIMER_ALL_ACCESS);
+  ~waitable_timer() {
+    if (handle)
+      CloseHandle(handle);
+  }
+};
+} // namespace
+#endif
+
 void sleep_for(const std::chrono::nanoseconds d) noexcept {
   if (d <= std::chrono::nanoseconds::zero())
     return;
 
 #if NX_HAS_WINDOWS_API
+  // Sleep() only resolves to the system timer tick (~15.6 ms by default), so a
+  // 14 ms request can block for 23 ms - enough to turn a 60 Hz frame budget
+  // into 42 fps. A high-resolution waitable timer gets ~0.5 ms without
+  // timeBeginPeriod()'s process-global (and battery-hostile) side effects.
+  static thread_local waitable_timer timer;
+  if (timer.handle != nullptr) {
+    LARGE_INTEGER due;
+    due.QuadPart = -(d.count() / 100); // negative = relative, 100 ns units
+    if (due.QuadPart < 0 &&
+        SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE)) {
+      WaitForSingleObject(timer.handle, INFINITE);
+      return;
+    }
+  }
   const auto ms = std::chrono::ceil<std::chrono::milliseconds>(d);
   Sleep(nx::cast<DWORD>(ms.count()));
 #elif NX_PLATFORM_POSIX
@@ -199,7 +234,13 @@ bool set_affinity(const u64 mask) noexcept {
   for (u32 i = 0; i < 64; ++i)
     if (mask & (1ull << i))
       CPU_SET(i, &set);
+#if defined(NX_PLATFORM_ANDROID)
+  // Bionic has no pthread_setaffinity_np; go through the syscall wrapper
+  // instead. Passing tid 0 means "the calling thread".
+  return sched_setaffinity(0, sizeof(set), &set) == 0;
+#else
   return pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0;
+#endif
 #endif
 }
 
