@@ -77,8 +77,9 @@ thread::thread(entry_fn fn, const thread_options &opts) {
 
 #if NX_HAS_WINDOWS_API
   unsigned tid = 0;
-  const uintptr_t h = _beginthreadex(nullptr, nx::cast<unsigned>(opts.stack_size),
-                                     thread_entry, start, 0, &tid);
+  const uintptr_t h =
+      _beginthreadex(nullptr, nx::cast<unsigned>(opts.stack_size), thread_entry,
+                     start, 0, &tid);
   if (!h) {
     release(start);
     return;
@@ -161,6 +162,7 @@ void yield() noexcept {
 #endif
 
 namespace {
+
 /// One high-resolution timer per thread, closed when the thread exits.
 struct waitable_timer {
   HANDLE handle = CreateWaitableTimerExW(nullptr, nullptr,
@@ -171,6 +173,33 @@ struct waitable_timer {
       CloseHandle(handle);
   }
 };
+
+/// Current scheduler tick, in 100 ns units.
+///
+/// This matters because a high-resolution waitable timer only keeps its
+/// sub-millisecond accuracy while a single wait stays under the scheduler
+/// period; past that it degrades back to tick granularity. sleep_for() slices
+/// its waits against this value.
+///
+/// Read once. Another process raising the global timer resolution can change
+/// it later, but that only ever makes our slices conservatively small.
+u64 timer_period_100ns() noexcept {
+  // NtQueryTimerResolution is the only way to read the period actually in
+  // force (timeGetDevCaps reports the supported range, not the current value).
+  // Undocumented, but present and stable since NT 3.1.
+  using query_fn = LONG(NTAPI *)(PULONG, PULONG, PULONG);
+
+  if (const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll")) {
+    const auto query = reinterpret_cast<query_fn>(reinterpret_cast<void *>(
+        GetProcAddress(ntdll, "NtQueryTimerResolution")));
+    ULONG coarsest = 0, finest = 0, current = 0;
+    if (query != nullptr && query(&coarsest, &finest, &current) == 0 &&
+        current != 0)
+      return current;
+  }
+  return 156250; // 15.625 ms, the default tick.
+}
+
 } // namespace
 #endif
 
@@ -179,20 +208,50 @@ void sleep_for(const std::chrono::nanoseconds d) noexcept {
     return;
 
 #if NX_HAS_WINDOWS_API
-  // Sleep() only resolves to the system timer tick (~15.6 ms by default), so a
+  // Sleep() only resolves to the scheduler tick (~15.6 ms by default), so a
   // 14 ms request can block for 23 ms - enough to turn a 60 Hz frame budget
-  // into 42 fps. A high-resolution waitable timer gets ~0.5 ms without
+  // into 42 fps. A high-resolution waitable timer avoids that without
   // timeBeginPeriod()'s process-global (and battery-hostile) side effects.
   static thread_local waitable_timer timer;
+
   if (timer.handle != nullptr) {
-    LARGE_INTEGER due;
-    due.QuadPart = -(d.count() / 100); // negative = relative, 100 ns units
-    if (due.QuadPart < 0 &&
-        SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE)) {
+    static const u64 period = timer_period_100ns();
+    // Stay just under the scheduler period, where the timer is accurate.
+    const i64 fine_slice = nx::cast<i64>(period * 95 / 100);
+    const auto deadline = std::chrono::steady_clock::now() + d;
+
+    for (;;) {
+      const auto remaining = deadline - std::chrono::steady_clock::now();
+      const i64 remaining_100ns =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(remaining)
+              .count() /
+          100;
+      if (remaining_100ns <= 0)
+        break;
+
+      i64 slice;
+      if (remaining_100ns > 2 * nx::cast<i64>(period)) {
+        // Far out: cover the distance in one wait, deliberately stopping a
+        // full period short. Tick-granularity overshoot then cannot carry us
+        // past the deadline, and a multi-second sleep costs one wakeup here
+        // instead of one per tick.
+        slice = remaining_100ns - nx::cast<i64>(period);
+      } else {
+        // Close in, where precision is what matters: sub-period slices.
+        slice = remaining_100ns < fine_slice ? remaining_100ns : fine_slice;
+      }
+
+      LARGE_INTEGER due;
+      due.QuadPart = -slice; // negative = relative, in 100 ns units
+      if (!SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE))
+        break;
       WaitForSingleObject(timer.handle, INFINITE);
-      return;
     }
+    return;
   }
+
+  // Pre-1803 Windows: round down to whole ticks so we never overshoot, and let
+  // the caller's spin (if any) cover the remainder.
   const auto ms = std::chrono::ceil<std::chrono::milliseconds>(d);
   Sleep(nx::cast<DWORD>(ms.count()));
 #elif NX_PLATFORM_POSIX
@@ -226,8 +285,8 @@ bool set_affinity(const u64 mask) noexcept {
     return false;
 
 #if NX_HAS_WINDOWS_API
-  return SetThreadAffinityMask(GetCurrentThread(),
-                               nx::cast<DWORD_PTR>(mask)) != 0;
+  return SetThreadAffinityMask(GetCurrentThread(), nx::cast<DWORD_PTR>(mask)) !=
+         0;
 #elif NX_PLATFORM_POSIX
   cpu_set_t set;
   CPU_ZERO(&set);
@@ -366,9 +425,10 @@ void query_topology(topology_info &t) noexcept {
     case RelationCache: {
       const CACHE_RELATIONSHIP &c = info->Cache;
       if (c.Level >= 1 && c.Level <= 3) {
-        const cache_type type = c.Type == CacheData          ? cache_type::Data
-                                : c.Type == CacheInstruction ? cache_type::Instruction
-                                                             : cache_type::Unified;
+        const cache_type type = c.Type == CacheData ? cache_type::Data
+                                : c.Type == CacheInstruction
+                                    ? cache_type::Instruction
+                                    : cache_type::Unified;
         add_cache(t, c.Level, type, c.LineSize, c.CacheSize);
         if (c.Level == 1 && type != cache_type::Instruction)
           t.cache_line_size = c.LineSize;
@@ -463,8 +523,8 @@ void query_topology(topology_info &t) noexcept {
     has_topology = has_topology || got_core;
 
     u64 capacity = 1024; // arm big.LITTLE exposes relative cpu_capacity
-    snprintf(path, sizeof(path),
-             "/sys/devices/system/cpu/cpu%u/cpu_capacity", lp);
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cpu_capacity",
+             lp);
     read_sys_u64(path, capacity);
 
     const u64 key = (pkg_id << 32) | (core_id & 0xFFFFFFFFull);
@@ -568,8 +628,8 @@ void query_topology(topology_info &t) noexcept {
     }
 
     if (t.caches.size() < t.caches.capacity())
-      t.caches.push_back({nx::cast<u8>(level), type, nx::cast<u32>(line),
-                          size, max<u32>(instances, 1)});
+      t.caches.push_back({nx::cast<u8>(level), type, nx::cast<u32>(line), size,
+                          max<u32>(instances, 1)});
   }
 
   // NUMA nodes.
