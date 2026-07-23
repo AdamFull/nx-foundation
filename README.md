@@ -113,7 +113,7 @@ world.destroy(e); // detaches children by default; see destroy_policy
 | --- | --- | --- |
 | `nx::log` | `diagnostics/log.h` | Asynchronous multi-sink logger: `nx::logv/logd/logi/logw/loge/logc` helpers, runtime-interned string categories (`log::category("name")`, predefined `app`/`gpu`/`render`/`system`), per-category and global level filtering, and console (colored) / debugger / rotating-file sinks. Records format on the caller and drain on a background worker; `log::init()`/`shutdown()` bracket its lifetime. |
 | `NX_ASSERT` | `diagnostics/diagnostic.h` | Contract checks that log, flush, and break in debug builds and compile out in release. Also the `nx::dbg_*` helpers (break, is-present, wait-for-attach). |
-| `NX_PROFILE_*` | `diagnostics/profiler.h` | Zone/frame/thread-name/plot instrumentation macros. No-ops unless a profiler backend is compiled in (`NX_PROFILE_ENABLED`). |
+| `NX_PROFILE_*` | `diagnostics/profiler.h` | Zone/frame/thread-name/plot instrumentation macros, forwarding to the Tracy client. No-ops unless the profile configuration is built (`NX_ENABLE_PROFILER` / `NX_PROFILE_ENABLED`). |
 
 ## Utilities and components
 

@@ -61,9 +61,12 @@ add_library(nx::foundation ALIAS nx_foundation)
 # #include "foundation/<scope>/<file>.h" - unambiguous from anywhere.
 target_include_directories(nx_foundation PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
-# PUBLIC: foundation/core/foundation.h includes <mimalloc.h>.
+# PUBLIC because these are used from public headers: foundation/core/foundation.h
+# includes <mimalloc.h>, and diagnostics/profiler.h includes <tracy/Tracy.hpp>
+# when profiling is enabled. Linking TracyClient unconditionally keeps the link
+# line the same across configs; it is inert unless TRACY_ENABLE is set.
 target_link_libraries(nx_foundation
-  PUBLIC nx::mimalloc
+  PUBLIC nx::mimalloc Tracy::TracyClient
   PRIVATE nx::compile_options)
 
 if(WIN32)
