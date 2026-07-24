@@ -6,6 +6,7 @@
  */
 
 #include "foundation/core/foundation.h"
+#include "foundation/core/hash.h"
 #include "foundation/strings/utf8_string_view.h"
 
 #include <cassert>
@@ -924,3 +925,19 @@ NX_FORCE_INLINE void swap(basic_string<A> &a, basic_string<A> &b) noexcept {
 }
 
 } // namespace nx
+
+/**
+ * Hash support, so nx::string can key nx::hash_map and std::unordered_map.
+ *
+ * Hashes the raw UTF-8 bytes with the same function nx::id_string uses, so a
+ * string and its interned id agree on what identity means. Deliberately equal
+ * to the hash of the corresponding std::string_view: a container keyed by
+ * nx::string can then be probed with a view under a transparent hash without
+ * the two disagreeing.
+ */
+template <class A> struct std::hash<nx::basic_string<A>> {
+  [[nodiscard]] std::size_t
+  operator()(const nx::basic_string<A> &s) const noexcept {
+    return nx::cast<std::size_t>(nx::hash_fnv1a64(s.data(), s.size()));
+  }
+};
