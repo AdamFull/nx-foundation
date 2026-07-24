@@ -233,6 +233,7 @@ private:
            "slot_map: index space exhausted");
     const repr idx = nx::cast<repr>(sparse_.size());
     sparse_.push_back(sparse_slot{0, free_sentinel});
+    free_.reserve(sparse_.size());
     return idx;
   }
 
