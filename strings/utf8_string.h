@@ -80,6 +80,8 @@ inline bool decode_char(const char *utf8, const usize remaining, char32_t &cp,
     return true;
   }
   case 2: {
+    if (remaining < 2)
+      return false;
     const char uc1 = utf8[1];
     if (!is_continuation_byte(uc1))
       return false;
@@ -88,6 +90,8 @@ inline bool decode_char(const char *utf8, const usize remaining, char32_t &cp,
     return true;
   }
   case 3: {
+    if (remaining < 3)
+      return false;
     const char uc1 = utf8[1];
     const char uc2 = utf8[2];
     if (!is_continuation_byte(uc1) || !is_continuation_byte(uc2))
@@ -98,6 +102,8 @@ inline bool decode_char(const char *utf8, const usize remaining, char32_t &cp,
     return true;
   }
   case 4: {
+    if (remaining < 4)
+      return false;
     const char uc1 = utf8[1];
     const char uc2 = utf8[2];
     const char uc3 = utf8[3];
