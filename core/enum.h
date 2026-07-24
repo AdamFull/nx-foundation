@@ -193,7 +193,9 @@ struct range {
     using difference_type = std::ptrdiff_t;
     using iterator_category = std::bidirectional_iterator_tag;
 
-    underlying_t val;
+    using counter_t = std::common_type_t<underlying_t, int>;
+
+    counter_t val;
 
     E operator*() const { return nx::cast<E>(val); }
 
@@ -230,8 +232,12 @@ struct range {
       : first(nx::cast<E>(0)),
         last(nx::cast<E>(nx::cast<underlying_t>(E::Count) - 1)) {}
 
-  iterator begin() const { return {nx::cast<underlying_t>(first)}; }
-  iterator end() const { return {nx::cast<underlying_t>(last) + 1}; }
+  iterator begin() const {
+    return {nx::cast<typename iterator::counter_t>(first)};
+  }
+  iterator end() const {
+    return {nx::cast<typename iterator::counter_t>(last) + 1};
+  }
 
   std::reverse_iterator<iterator> rbegin() const {
     return std::reverse_iterator<iterator>(end());
