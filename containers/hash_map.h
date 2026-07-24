@@ -207,6 +207,15 @@ template <typename T>
 struct has_is_transparent<T, std::void_t<typename T::is_transparent>>
     : std::true_type {};
 
+[[nodiscard]] inline ctrl_t *empty_group() noexcept {
+  alignas(16) static ctrl_t g[16] = {
+      ctrl_t::sentinel, ctrl_t::empty, ctrl_t::empty, ctrl_t::empty,
+      ctrl_t::empty,    ctrl_t::empty, ctrl_t::empty, ctrl_t::empty,
+      ctrl_t::empty,    ctrl_t::empty, ctrl_t::empty, ctrl_t::empty,
+      ctrl_t::empty,    ctrl_t::empty, ctrl_t::empty, ctrl_t::empty};
+  return g;
+}
+
 } // namespace detail
 
 /**
@@ -444,11 +453,15 @@ public:
   ~flat_hash_map() { destroy_and_free(); }
 
   iterator begin() noexcept {
+    if (capacity_ == 0)
+      return end();
     iterator it{ctrl_, slots_};
     it.skip_empty_or_deleted();
     return it;
   }
   const_iterator begin() const noexcept {
+    if (capacity_ == 0)
+      return end();
     const_iterator it{ctrl_, slots_};
     it.skip_empty_or_deleted();
     return it;
@@ -682,14 +695,7 @@ public:
   }
 
 private:
-  static ctrl_t *empty_group() noexcept {
-    alignas(16) static constexpr ctrl_t g[16] = {
-        ctrl_t::sentinel, ctrl_t::empty, ctrl_t::empty, ctrl_t::empty,
-        ctrl_t::empty,    ctrl_t::empty, ctrl_t::empty, ctrl_t::empty,
-        ctrl_t::empty,    ctrl_t::empty, ctrl_t::empty, ctrl_t::empty,
-        ctrl_t::empty,    ctrl_t::empty, ctrl_t::empty, ctrl_t::empty};
-    return const_cast<ctrl_t *>(g);
-  }
+  static ctrl_t *empty_group() noexcept { return detail::empty_group(); }
 
   static constexpr usize normalize_capacity(const usize n) noexcept {
     return n ? (~usize{0} >> static_cast<usize>(std::countl_zero(n))) : 1;
@@ -800,6 +806,8 @@ private:
   }
 
   usize find_index(const auto &key) const {
+    if (capacity_ == 0)
+      return NPOS;
     const usize hash = hash_key(key);
     auto seq = probe(hash);
     const u8 tag = h2(hash);
@@ -845,6 +853,8 @@ private:
 
   template <typename K>
   std::pair<usize, bool> find_or_prepare_insert(const K &key) {
+    if (capacity_ == 0)
+      resize(min_capacity());
     const usize hash = hash_key(key);
     auto seq = probe(hash);
     const u8 tag = h2(hash);
