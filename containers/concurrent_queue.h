@@ -29,7 +29,8 @@ namespace mpmc {
 template <typename T, usize Capacity> class Queue {
 public:
   static_assert(Capacity > 0);
-  static constexpr usize CAPACITY = next_pow2<usize>(Capacity);
+  static constexpr usize CAPACITY =
+      nx::max<usize>(next_pow2<usize>(Capacity), 2);
   static constexpr usize MASK = CAPACITY - 1;
 
   Queue() noexcept {
@@ -191,7 +192,8 @@ namespace mpsc {
 template <typename T, usize Capacity> class Queue {
 public:
   static_assert(Capacity > 0);
-  static constexpr usize CAPACITY = next_pow2<usize>(Capacity);
+  static constexpr usize CAPACITY =
+      nx::max<usize>(next_pow2<usize>(Capacity), 2);
   static constexpr usize MASK = CAPACITY - 1;
 
   Queue() noexcept {
