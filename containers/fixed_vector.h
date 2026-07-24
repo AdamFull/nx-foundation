@@ -45,7 +45,7 @@ public:
   using reverse_iterator = std::reverse_iterator<T *>;
   using const_reverse_iterator = std::reverse_iterator<const T *>;
 
-  fixed_vector() = default;
+  fixed_vector() noexcept {}
 
   explicit fixed_vector(const usize count) {
     assert(count <= N);
