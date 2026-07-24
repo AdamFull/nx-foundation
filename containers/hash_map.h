@@ -704,8 +704,10 @@ private:
     return normalize_capacity(group::WIDTH - 1);
   }
   static constexpr usize capacity_to_growth(const usize cap) noexcept {
-    if (group::WIDTH == 8 && cap == 7)
-      return 6;
+    if constexpr (group::WIDTH == 8) {
+      if (cap == 7)
+        return 6;
+    }
     return cap - cap / 8;
   }
   static constexpr usize
