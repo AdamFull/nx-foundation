@@ -122,19 +122,30 @@ u32 Rng::next_u32(const u32 bound) {
 u64 Rng::next_u64(const u64 bound) {
   if (bound == 0)
     return 0;
-  return next_u64() % bound;
+  const u64 threshold = (0ull - bound) % bound; // 2^64 mod bound
+  for (;;) {
+    const u64 r = next_u64();
+    if (r >= threshold)
+      return r % bound;
+  }
 }
 
 i32 Rng::range(i32 min, i32 max) {
   if (min > max)
     std::swap(min, max);
-  return nx::cast<i32>(next_u32(nx::cast<u32>(max - min + 1))) + min;
+  const u32 span = nx::cast<u32>(max) - nx::cast<u32>(min);
+  if (span == ~u32{0}) // the full range: every value is in bounds
+    return nx::cast<i32>(next_u32());
+  return nx::cast<i32>(nx::cast<u32>(min) + next_u32(span + 1));
 }
 
 i64 Rng::range(i64 min, i64 max) {
   if (min > max)
     std::swap(min, max);
-  return nx::cast<i64>(next_u64(nx::cast<u64>(max - min + 1))) + min;
+  const u64 span = nx::cast<u64>(max) - nx::cast<u64>(min);
+  if (span == ~u64{0})
+    return nx::cast<i64>(next_u64());
+  return nx::cast<i64>(nx::cast<u64>(min) + next_u64(span + 1));
 }
 
 f32 Rng::next_f32() {

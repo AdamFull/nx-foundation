@@ -102,14 +102,14 @@ struct Rng {
     u64 state;
   };
 
-  Alg alg;
+  Alg alg = Alg::Pcg;
   union {
     PcgState pcg;
     Xoshiro256State xoshiro256;
     Splitmix64State splitmix64;
   };
 
-  Rng() = default;
+  Rng() { init(Alg::Pcg, 0); }
   Rng(const Alg alg, const u64 seed) { init(alg, seed); }
 
   void init(Alg alg, u64 seed);
