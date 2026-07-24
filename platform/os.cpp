@@ -145,7 +145,6 @@ MemStats mem_get_stats() noexcept {
   MemStats s = {};
 
 #if NX_USE_MIMALLOC
-  size_t rss = 0, peak_rss = 0, committed = 0;
   mi_process_info(nullptr, nullptr, nullptr, &s.rss, &s.peak_rss,
                   &s.heap_committed, nullptr, nullptr);
 
