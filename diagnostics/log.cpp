@@ -273,6 +273,7 @@ struct Logger {
 
   mutex sink_mutex;
   small_vector<Sink *, 8> sinks;
+  ~Logger();
 };
 
 Logger &logger() noexcept {
@@ -437,9 +438,7 @@ void init(const Config &config) {
   l.worker = nx::thread([&l] { worker_main(l); }, {.name = "nx-log"});
 }
 
-void shutdown() {
-  Logger &l = logger();
-
+void shutdown_impl(Logger &l) noexcept {
   if (l.running.load(std::memory_order_acquire)) {
     l.stop.store(true, std::memory_order_release);
     l.signal.fetch_add(1, std::memory_order_seq_cst);
@@ -462,6 +461,10 @@ void shutdown() {
   }
   l.sinks.clear();
 }
+
+Logger::~Logger() { shutdown_impl(*this); }
+
+void shutdown() { shutdown_impl(logger()); }
 
 void flush() {
   Logger &l = logger();
