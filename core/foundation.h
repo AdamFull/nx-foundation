@@ -178,6 +178,22 @@
 #define NX_NO_UNIQUE_ADDRESS [[no_unique_address]]
 #endif
 
+// Marks a parameter whose referenced storage may be reachable through the
+// return value, so a caller passing a temporary gets a dangling-reference
+// diagnostic instead of a use-after-free at run time. Use it on any parameter
+// that a function can hand back, directly or inside a view.
+#if defined(__has_cpp_attribute)
+#if __has_cpp_attribute(msvc::lifetimebound)
+#define NX_LIFETIMEBOUND [[msvc::lifetimebound]]
+#elif __has_cpp_attribute(clang::lifetimebound)
+#define NX_LIFETIMEBOUND [[clang::lifetimebound]]
+#else
+#define NX_LIFETIMEBOUND
+#endif
+#else
+#define NX_LIFETIMEBOUND
+#endif
+
 #if defined(NX_COMPILER_MSVC)
 #if defined(NX_ARCH_X64)
 #include <immintrin.h>
