@@ -76,13 +76,10 @@ public:
     };
     destroy_ = [](void *d) noexcept { nx::cast<FType *>(d)->~FType(); };
 
-    if constexpr (!std::is_trivially_move_constructible_v<FType>) {
+    if constexpr (!std::is_trivially_copyable_v<FType>) {
       move_ = [](void *dst, void *src) noexcept {
         ::new (dst) FType(std::move(*nx::cast<FType *>(src)));
       };
-    }
-
-    if constexpr (!std::is_trivially_copy_constructible_v<FType>) {
       copy_ = [](void *dst, const void *src) {
         ::new (dst) FType(*nx::cast<const FType *>(src));
       };
