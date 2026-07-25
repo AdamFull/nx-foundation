@@ -4,6 +4,9 @@
 #include <windows.h>
 // Do not reorder!
 #include <synchapi.h>
+#elif NX_PLATFORM_APPLE
+#include <cerrno>
+#include <climits>
 #elif NX_PLATFORM_POSIX
 #include <cerrno>
 #include <climits>
@@ -12,9 +15,26 @@
 #include <unistd.h>
 #endif
 
+#if NX_PLATFORM_APPLE
+// Darwin has no futex syscall. __ulock is the kernel wait primitive underneath
+// os_unfair_lock and libc++'s atomic wait/notify - the same call libc++, Rust
+// and Go all make for exactly this purpose. It ships in libSystem but has no
+// public header, so declare it here.
+extern "C" int __ulock_wait(uint32_t operation, void *addr, uint64_t value,
+                            uint32_t timeout_us);
+extern "C" int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
+
+namespace {
+// From xnu's sys/ulock.h.
+constexpr uint32_t UL_COMPARE_AND_WAIT = 1;  ///< compare 32 bits at addr
+constexpr uint32_t ULF_WAKE_ALL = 0x00000100;
+constexpr uint32_t ULF_NO_ERRNO = 0x01000000; ///< return -errno, don't set errno
+} // namespace
+#endif
+
 namespace nx::futex {
 
-#if NX_PLATFORM_POSIX
+#if NX_PLATFORM_POSIX && !NX_PLATFORM_APPLE
 static long futex_syscall(std::atomic<u32> *addr, i32 op, u32 val,
                           const timespec *timeout = nullptr) {
   return syscall(SYS_futex, addr, op, val, timeout, nullptr, 0);
@@ -41,6 +61,28 @@ Result wait(std::atomic<u32> *addr, u32 expected_value,
       return Result::TimedOut;
     return Result::Error;
   }
+#elif NX_PLATFORM_APPLE
+  // __ulock's timeout field is 32-bit microseconds, and 0 means "forever" -
+  // the same convention this API uses, except that a sub-microsecond timeout
+  // must not round down to 0 or a timed wait would block indefinitely.
+  u32 timeout_us = 0;
+  if (timeout != std::chrono::nanoseconds::zero()) {
+    const auto us = std::chrono::ceil<std::chrono::microseconds>(timeout);
+    const i64 count = us.count();
+    timeout_us = count >= nx::cast<i64>(UINT32_MAX) ? UINT32_MAX
+                 : count <= 0                       ? 1
+                                                    : nx::cast<u32>(count);
+  }
+
+  const int rc = __ulock_wait(UL_COMPARE_AND_WAIT | ULF_NO_ERRNO, addr,
+                              expected_value, timeout_us);
+  if (rc >= 0)
+    return Result::Success;
+  if (rc == -ETIMEDOUT)
+    return Result::TimedOut;
+  // -EINTR and -EFAULT alike: the caller re-checks the word in a loop, so a
+  // spurious return is safe. Matches what the Linux path does with EAGAIN.
+  return Result::Success;
 #elif NX_PLATFORM_POSIX
   timespec ts;
   timespec *ts_ptr = nullptr;
@@ -77,6 +119,16 @@ i32 wake(std::atomic<u32> *addr, const i32 count) {
 #if NX_HAS_WINDOWS_API
   for (i32 i = 0; i < count; ++i)
     WakeByAddressSingle(addr);
+#elif NX_PLATFORM_APPLE
+  // __ulock_wake has no "wake n" mode, only one or all, so wake singly and
+  // stop when the kernel reports there is nobody left (-ENOENT).
+  i32 woken = 0;
+  for (i32 i = 0; i < count; ++i) {
+    if (__ulock_wake(UL_COMPARE_AND_WAIT | ULF_NO_ERRNO, addr, 0) != 0)
+      break;
+    ++woken;
+  }
+  return woken;
 #elif NX_PLATFORM_POSIX
   long result = futex_syscall(addr, FUTEX_WAKE_PRIVATE, count);
   return result >= 0 ? nx::cast<i32>(result) : 0;
@@ -91,6 +143,9 @@ i32 wake_all(std::atomic<u32> *addr) {
 
 #if NX_HAS_WINDOWS_API
   WakeByAddressAll(addr);
+#elif NX_PLATFORM_APPLE
+  __ulock_wake(UL_COMPARE_AND_WAIT | ULF_WAKE_ALL | ULF_NO_ERRNO, addr, 0);
+  return 1;
 #elif NX_PLATFORM_POSIX
   long result = futex_syscall(addr, FUTEX_WAKE_PRIVATE, INT_MAX);
   return result >= 0 ? nx::cast<i32>(result) : 0;

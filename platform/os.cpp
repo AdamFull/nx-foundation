@@ -117,7 +117,7 @@ bool commit(void *addr, const usize size) {
 #if NX_HAS_WINDOWS_API
   return VirtualAlloc(addr, size, MEM_COMMIT, PAGE_READWRITE) != nullptr;
 #elif NX_PLATFORM_POSIX
-  return mprotect(addr, size, PROT_READ | PROT_WRITE) != 0;
+  return mprotect(addr, size, PROT_READ | PROT_WRITE) == 0;
 #endif
 }
 
@@ -145,8 +145,15 @@ MemStats mem_get_stats() noexcept {
   MemStats s = {};
 
 #if NX_USE_MIMALLOC
-  mi_process_info(nullptr, nullptr, nullptr, &s.rss, &s.peak_rss,
-                  &s.heap_committed, nullptr, nullptr);
+  // mi_process_info wants size_t*, which is not u64* everywhere (it is
+  // unsigned long long on Darwin and unsigned long here), so go through
+  // temporaries rather than reinterpreting the struct's fields.
+  size_t rss = 0, peak_rss = 0, committed = 0;
+  mi_process_info(nullptr, nullptr, nullptr, &rss, &peak_rss, &committed,
+                  nullptr, nullptr);
+  s.rss = rss;
+  s.peak_rss = peak_rss;
+  s.heap_committed = committed;
 
 #elif defined(NX_PLATFORM_WINDOWS)
   PROCESS_MEMORY_COUNTERS_EX pmc = {};

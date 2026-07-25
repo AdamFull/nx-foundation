@@ -15,9 +15,14 @@
 #include <pthread.h>
 #include <sched.h>
 #include <sys/resource.h>
-#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
+#if NX_PLATFORM_APPLE
+#include <pthread/qos.h>
+#include <sys/sysctl.h>
+#else
+#include <sys/syscall.h>
+#endif
 #endif
 
 namespace nx {
@@ -40,6 +45,20 @@ void apply_start_options(const thread_start &s) noexcept {
   if (s.priority != thread_priority::Normal)
     this_thread::set_priority(s.priority);
 }
+
+#if NX_PLATFORM_POSIX
+// pthread_t is an integer on Linux and an opaque pointer on Darwin, so neither
+// a static_cast nor a reinterpret_cast round-trips it on both. It is the size
+// of a pointer either way, which is all bit_cast needs.
+static_assert(sizeof(pthread_t) == sizeof(uintptr_t));
+
+uintptr_t to_handle(const pthread_t t) noexcept {
+  return std::bit_cast<uintptr_t>(t);
+}
+pthread_t from_handle(const uintptr_t h) noexcept {
+  return std::bit_cast<pthread_t>(h);
+}
+#endif
 
 #if NX_HAS_WINDOWS_API
 unsigned __stdcall thread_entry(void *arg) {
@@ -99,8 +118,8 @@ thread::thread(entry_fn fn, const thread_options &opts) {
     release(start);
     return;
   }
-  handle_ = nx::cast<uintptr_t>(t);
-  id_ = nx::cast<u64>(t);
+  handle_ = to_handle(t);
+  id_ = nx::cast<u64>(handle_);
 #endif
 }
 
@@ -112,7 +131,7 @@ void thread::join() {
   WaitForSingleObject(reinterpret_cast<HANDLE>(handle_), INFINITE);
   CloseHandle(reinterpret_cast<HANDLE>(handle_));
 #elif NX_PLATFORM_POSIX
-  pthread_join(nx::cast<pthread_t>(handle_), nullptr);
+  pthread_join(from_handle(handle_), nullptr);
 #endif
   handle_ = 0;
   id_ = 0;
@@ -124,7 +143,7 @@ void thread::detach() {
 #if NX_HAS_WINDOWS_API
   CloseHandle(reinterpret_cast<HANDLE>(handle_));
 #elif NX_PLATFORM_POSIX
-  pthread_detach(nx::cast<pthread_t>(handle_));
+  pthread_detach(from_handle(handle_));
 #endif
   handle_ = 0;
   id_ = 0;
@@ -139,6 +158,12 @@ u64 id() noexcept {
   if (NX_UNLIKELY(cached == 0)) {
 #if NX_HAS_WINDOWS_API
     cached = nx::cast<u64>(GetCurrentThreadId());
+#elif NX_PLATFORM_APPLE
+    // Darwin has no gettid; pthread_threadid_np gives the same system-wide
+    // unique id that the debugger and Instruments show.
+    u64 tid = 0;
+    pthread_threadid_np(nullptr, &tid);
+    cached = tid;
 #elif NX_PLATFORM_POSIX
     cached = nx::cast<u64>(syscall(SYS_gettid));
 #endif
@@ -273,6 +298,13 @@ void set_name(const char *name) noexcept {
                                     nx::cast<int>(array_size(wide)));
   if (n > 0)
     SetThreadDescription(GetCurrentThread(), wide);
+#elif NX_PLATFORM_APPLE
+  // Darwin's pthread_setname_np takes no thread argument - it can only name
+  // the calling thread, which is all this function ever does. The limit is
+  // MAXTHREADNAMESIZE (64).
+  char truncated[64];
+  snprintf(truncated, sizeof(truncated), "%s", name);
+  pthread_setname_np(truncated);
 #elif NX_PLATFORM_POSIX
   char truncated[16]; // Linux limits thread names to 15 chars + NUL
   snprintf(truncated, sizeof(truncated), "%s", name);
@@ -287,6 +319,13 @@ bool set_affinity(const u64 mask) noexcept {
 #if NX_HAS_WINDOWS_API
   return SetThreadAffinityMask(GetCurrentThread(), nx::cast<DWORD_PTR>(mask)) !=
          0;
+#elif NX_PLATFORM_APPLE
+  // Darwin exposes no way to pin a thread to a cpu. THREAD_AFFINITY_POLICY is
+  // only an "these threads share data" hint, it is unimplemented on Apple
+  // silicon, and it cannot express a mask at all. Report the failure rather
+  // than pretend: callers treat affinity as best-effort.
+  (void)mask;
+  return false;
 #elif NX_PLATFORM_POSIX
   cpu_set_t set;
   CPU_ZERO(&set);
@@ -324,6 +363,29 @@ bool set_priority(const thread_priority prio) noexcept {
     break;
   }
   return SetThreadPriority(GetCurrentThread(), native) != 0;
+#elif NX_PLATFORM_APPLE
+  // Nice is per-process on Darwin, so setpriority() would slow the whole game
+  // down. QoS is the supported per-thread knob, and it is what the scheduler
+  // actually uses to pick core clusters on Apple silicon.
+  qos_class_t qos = QOS_CLASS_DEFAULT;
+  switch (prio) {
+  case thread_priority::Low:
+    qos = QOS_CLASS_BACKGROUND;
+    break;
+  case thread_priority::BelowNormal:
+    qos = QOS_CLASS_UTILITY;
+    break;
+  case thread_priority::Normal:
+    qos = QOS_CLASS_DEFAULT;
+    break;
+  case thread_priority::AboveNormal:
+    qos = QOS_CLASS_USER_INITIATED;
+    break;
+  case thread_priority::High:
+    qos = QOS_CLASS_USER_INTERACTIVE;
+    break;
+  }
+  return pthread_set_qos_class_self_np(qos, 0) == 0;
 #elif NX_PLATFORM_POSIX
   // Nice values apply per-thread on Linux. Raising priority (negative nice)
   // requires CAP_SYS_NICE and may fail; treat that as best-effort.
@@ -450,6 +512,110 @@ void query_topology(topology_info &t) noexcept {
         core.package = p;
         break;
       }
+}
+
+#elif NX_PLATFORM_APPLE
+
+// Darwin has neither sysfs nor /proc; sysctl is the whole interface. Integer
+// nodes are 32- or 64-bit depending on the key, and sysctl happily writes a
+// short value into a larger buffer (it only errors when the buffer is too
+// small), so a zeroed u64 reads both correctly on little-endian.
+bool sysctl_u64(const char *name, u64 &out) noexcept {
+  u64 value = 0;
+  usize size = sizeof(value);
+  if (sysctlbyname(name, &value, &size, nullptr, 0) != 0 || size == 0)
+    return false;
+  out = value;
+  return true;
+}
+
+u64 sysctl_or(const char *name, const u64 fallback) noexcept {
+  u64 v = 0;
+  return sysctl_u64(name, v) ? v : fallback;
+}
+
+void add_cache(topology_info &t, const u8 level, const cache_type type,
+               const char *size_key, const u32 line_size,
+               const u32 instances) noexcept {
+  u64 size = 0;
+  if (!sysctl_u64(size_key, size) || size == 0)
+    return;
+  if (t.caches.size() < t.caches.capacity())
+    t.caches.push_back({level, type, line_size, size, max<u32>(instances, 1)});
+}
+
+void query_topology(topology_info &t) noexcept {
+  t.logical_count = nx::cast<u32>(sysctl_or("hw.logicalcpu", 1));
+  const u32 physical = nx::cast<u32>(sysctl_or("hw.physicalcpu", 0));
+  t.package_count = nx::cast<u32>(sysctl_or("hw.packages", 1));
+  t.numa_node_count = 1; // No Apple machine is NUMA.
+  t.cache_line_size = nx::cast<u32>(sysctl_or("hw.cachelinesize", 64));
+
+  // Hybrid CPUs (every Apple silicon part) describe themselves as a list of
+  // "perf levels", ordered fastest first. Our efficiency_class runs the other
+  // way - 0 is the most efficient - so the ranks are inverted below.
+  const u32 levels =
+      max<u32>(1, nx::cast<u32>(sysctl_or("hw.nperflevels", 1)));
+  t.efficiency_class_count = levels;
+
+  // No API maps a physical core to its logical cpu ids, and set_affinity() is
+  // a no-op here anyway, so the masks are synthesised in perf-level order:
+  // the counts and classes are what callers actually schedule against.
+  u32 next_logical = 0;
+  for (u32 level = 0; level < levels; ++level) {
+    char key[64];
+    u64 level_physical = 0, level_logical = 0;
+    if (levels > 1) {
+      snprintf(key, sizeof(key), "hw.perflevel%u.physicalcpu", level);
+      sysctl_u64(key, level_physical);
+      snprintf(key, sizeof(key), "hw.perflevel%u.logicalcpu", level);
+      sysctl_u64(key, level_logical);
+    } else {
+      level_physical = physical != 0 ? physical : t.logical_count;
+      level_logical = t.logical_count;
+    }
+    if (level_physical == 0)
+      continue;
+
+    const u32 smt_width =
+        max<u32>(1, nx::cast<u32>(level_logical / level_physical));
+    for (u64 i = 0; i < level_physical && t.cores.size() < 64; ++i) {
+      core_info core;
+      core.index = nx::cast<u32>(t.cores.size());
+      core.package = 0;
+      core.efficiency_class = levels - 1 - level; // fastest level -> highest
+      core.logical_count = smt_width;
+      for (u32 s = 0; s < smt_width && next_logical < 64; ++s, ++next_logical)
+        core.logical_mask |= 1ull << next_logical;
+      t.cores.push_back(core);
+    }
+  }
+  t.physical_count = nx::cast<u32>(t.cores.size());
+
+  // hw.cacheconfig is an array of logical-cpu counts sharing each level:
+  // [0] is the machine's cpu count, [1] is L1, [2] L2, [3] L3. Instances =
+  // cpus / sharers. sysctl refuses to truncate, so the buffer has to hold the
+  // whole array - Darwin publishes 10 entries, so leave generous headroom.
+  u64 cache_config[32] = {};
+  usize config_size = sizeof(cache_config);
+  const bool has_config =
+      sysctlbyname("hw.cacheconfig", cache_config, &config_size, nullptr, 0) ==
+      0;
+  const auto instances_of = [&](const usize level) noexcept -> u32 {
+    if (!has_config || level >= config_size / sizeof(u64) ||
+        cache_config[level] == 0)
+      return 1;
+    return max<u32>(1, nx::cast<u32>(t.logical_count / cache_config[level]));
+  };
+
+  add_cache(t, 1, cache_type::Data, "hw.l1dcachesize", t.cache_line_size,
+            instances_of(1));
+  add_cache(t, 1, cache_type::Instruction, "hw.l1icachesize", t.cache_line_size,
+            instances_of(1));
+  add_cache(t, 2, cache_type::Unified, "hw.l2cachesize", t.cache_line_size,
+            instances_of(2));
+  add_cache(t, 3, cache_type::Unified, "hw.l3cachesize", t.cache_line_size,
+            instances_of(3));
 }
 
 #elif NX_PLATFORM_POSIX
