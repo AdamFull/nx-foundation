@@ -7,10 +7,16 @@
 #include <windows.h>
 #elif defined(NX_PLATFORM_POSIX)
 #include <cerrno>
+#include <climits>
+#include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(NX_PLATFORM_APPLE)
+#include <mach-o/dyld.h> // _NSGetExecutablePath
+#endif
 #else
 #error "nx::fs: unsupported platform"
 #endif
@@ -1369,11 +1375,24 @@ io_result<stream_ptr> open_file(const path_view path) {
 }
 
 io_result<string> executable_dir() {
+#if defined(NX_PLATFORM_APPLE)
+  // No /proc on Darwin. _NSGetExecutablePath can hand back a path containing
+  // symlinks or "..", so realpath() it into the canonical form callers expect.
+  char raw[4096];
+  u32 size = nx::cast<u32>(sizeof(raw));
+  if (_NSGetExecutablePath(raw, &size) != 0)
+    return err(file_error{io_error::InvalidArgument, 0});
+
+  char resolved[PATH_MAX];
+  const char *full = ::realpath(raw, resolved) != nullptr ? resolved : raw;
+  return string(path::parent_path(string_view(full, strlen(full))));
+#else
   char buf[4096];
   const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
   if (n <= 0)
     return err(map_errno(io_error::Unknown));
   return string(path::parent_path(string_view(buf, nx::cast<usize>(n))));
+#endif
 }
 
 #endif
