@@ -283,6 +283,7 @@ private:
 public:
   template <bool Const> class iterator_t {
   public:
+    using value_type = flat_hash_map::value_type;
     using reference =
         std::conditional_t<Const, const value_type &, value_type &>;
     using pointer = std::conditional_t<Const, const value_type *, value_type *>;
