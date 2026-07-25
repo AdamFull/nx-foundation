@@ -278,7 +278,7 @@ public:
 
   /// Deep structural and numeric equality. Numbers compare by mathematical
   /// value across representations; object member order is not significant.
-  [[nodiscard]] friend bool operator==(const value &a, const value &b) noexcept;
+  friend bool operator==(const value &a, const value &b) noexcept;
 
   /// The shared immutable null returned by failed lookups.
   [[nodiscard]] static const value &null_value() noexcept;
