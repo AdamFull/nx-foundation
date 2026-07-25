@@ -6,6 +6,7 @@
  */
 
 #include "foundation/containers/blob.h"
+#include "foundation/containers/small_vector.h"
 #include "foundation/core/result.h"
 #include "foundation/strings/utf8_string.h"
 
@@ -115,6 +116,61 @@ constexpr bool has_extension(const string_view p) noexcept {
   if (!is_separator(out.back()))
     out.push_back(u8'/');
   out.append(tail);
+  return out;
+}
+
+// Lexically resolves "." and "..", collapses redundant separators and returns a
+// forward-slash path. Touches no filesystem, so symlinks are not followed.
+//
+// An absolute path stays absolute and keeps its root name ("C:"); a relative
+// one stays relative, keeping leading ".." that cannot be resolved without
+// knowing the base. A path that normalizes away yields ".".
+//
+// Returns "" for an empty path, and for a ".." that escapes an absolute root -
+// which is what makes this usable as a containment check.
+[[nodiscard]] inline string normalize(const string_view p) {
+  const string_view root = root_name(p);
+  const string_view rest = p.substr(root.size());
+  const bool absolute = !rest.empty() && is_separator(rest[0]);
+
+  // Inline: paths are shallow, and normalize() sits on every VFS lookup.
+  small_vector<string_view, 16> segs;
+  usize i = 0;
+  while (i < rest.size()) {
+    while (i < rest.size() && is_separator(rest[i]))
+      ++i;
+    const usize start = i;
+    while (i < rest.size() && !is_separator(rest[i]))
+      ++i;
+    if (i == start)
+      continue;
+
+    const string_view seg = rest.substr(start, i - start);
+    if (detail::is_dot(seg))
+      continue;
+    if (detail::is_dotdot(seg)) {
+      if (!segs.empty() && !detail::is_dotdot(segs.back())) {
+        segs.pop_back();
+      } else if (absolute) {
+        return {}; // escapes the root
+      } else {
+        segs.push_back(seg); // relative: nothing to pop against
+      }
+      continue;
+    }
+    segs.push_back(seg);
+  }
+
+  string out(root);
+  if (absolute)
+    out.push_back(u8'/');
+  for (usize k = 0; k < segs.size(); ++k) {
+    if (k)
+      out.push_back(u8'/');
+    out.append(segs[k]);
+  }
+  if (out.empty())
+    return p.empty() ? string() : string(".");
   return out;
 }
 
