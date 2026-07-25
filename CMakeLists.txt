@@ -39,6 +39,9 @@ set(NX_FOUNDATION_HEADERS
   platform/filesystem.h
   platform/os.h
 
+  vfs/vfs.h
+  vfs/vfs_internal.h
+
   diagnostics/diagnostic.h
   diagnostics/log.h
   diagnostics/profiler.h
@@ -54,6 +57,10 @@ set(NX_FOUNDATION_SOURCES
   threading/thread_pool.cpp
   platform/filesystem.cpp
   platform/os.cpp
+  vfs/vfs.cpp
+  vfs/host_device.cpp
+  vfs/memory_device.cpp
+  vfs/zip_device.cpp
   diagnostics/log.cpp
   serialization/json.cpp)
 
@@ -68,9 +75,10 @@ target_include_directories(nx_foundation PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/.."
 # includes <mimalloc.h>, and diagnostics/profiler.h includes <tracy/Tracy.hpp>
 # when profiling is enabled. Linking TracyClient unconditionally keeps the link
 # line the same across configs; it is inert unless TRACY_ENABLE is set.
+# minizip-ng backs nx::vfs::ZipDevice, but only inside vfs/zip_device.cpp.
 target_link_libraries(nx_foundation
   PUBLIC nx::mimalloc Tracy::TracyClient
-  PRIVATE nx::compile_options)
+  PRIVATE nx::compile_options nx::minizip)
 
 if(WIN32)
   # Synchronization: WaitOnAddress / WakeByAddress* (threading/sync.cpp)
