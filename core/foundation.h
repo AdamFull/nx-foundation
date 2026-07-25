@@ -37,7 +37,11 @@
 #endif
 
 #if defined(NX_PLATFORM_LINUX) || defined(NX_PLATFORM_ANDROID)
+    defined(NX_PLATFORM_MACOS) || defined(NX_PLATFORM_IOS)
 #define NX_PLATFORM_POSIX 1
+#endif
+#if defined(NX_PLATFORM_MACOS) || defined(NX_PLATFORM_IOS)
+#define NX_PLATFORM_APPLE 1
 #endif
 #if defined(NX_PLATFORM_WINDOWS)
 #define NX_HAS_WINDOWS_API 1
