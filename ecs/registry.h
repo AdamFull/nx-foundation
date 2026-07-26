@@ -38,13 +38,13 @@
 #include <type_traits>
 #include <utility>
 
+#include "foundation/containers/hash_map.h"
+#include "foundation/containers/small_vector.h"
+#include "foundation/containers/sparse_set.h"
 #include "foundation/core/callable.h"
 #include "foundation/core/foundation.h"
 #include "foundation/core/handle.h"
 #include "foundation/core/hash.h"
-#include "foundation/containers/hash_map.h"
-#include "foundation/containers/small_vector.h"
-#include "foundation/containers/sparse_set.h"
 #include "foundation/strings/utf8_string_view.h"
 
 #include <cassert>
@@ -1280,11 +1280,10 @@ private:
       }
       ids[j] = v;
     }
-    u64 key = 1469598103934665603ull;
-    for (usize i = 0; i < n; ++i) {
-      key ^= ids[i];
-      key *= 1099511628211ull;
-    }
+    nx::fnv1a64 hash;
+    for (usize i = 0; i < n; ++i)
+      hash.combine(ids[i]);
+    const u64 key = hash.value();
 
     if (auto it = query_index_.find(key); it != query_index_.end())
       return *query_caches_[it->second];
