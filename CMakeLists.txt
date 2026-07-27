@@ -21,6 +21,7 @@ set(NX_FOUNDATION_HEADERS
   containers/flat_map.h
   containers/hash_map.h
   containers/slot_map.h
+  containers/radix_sort.h
   containers/small_vector.h
   containers/sparse_set.h
   containers/stable_pool.h
