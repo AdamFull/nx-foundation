@@ -259,6 +259,28 @@ public:
     group.wait();
   }
 
+  template <typename F> void parallel_region(u32 requested, F &&body) {
+    assert(!is_worker_thread() &&
+           "parallel_region must run from a non-worker thread");
+    const u32 workers = worker_count();
+    const u32 count =
+        requested == 0 ? workers + 1 : nx::min(requested, workers + 1);
+    barrier bar(count);
+    if (count <= 1) {
+      body(u32{0}, u32{1}, bar);
+      return;
+    }
+
+    // bp/bar outlive every task: group.wait() below returns only after the
+    // last body has finished, so a pointer into this frame is safe.
+    std::remove_reference_t<F> *bp = std::addressof(body);
+    task_group group;
+    for (u32 i = 1; i < count; ++i)
+      submit(group, [bp, i, count, &bar] { (*bp)(i, count, bar); });
+    body(u32{0}, count, bar);
+    group.wait();
+  }
+
   /// Blocks until the pool has no queued or running tasks, executing
   /// queued tasks while it waits. Must not be called from inside a pool
   /// task (the calling task itself would never count as finished); use a
