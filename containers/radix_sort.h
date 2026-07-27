@@ -167,7 +167,18 @@ public:
     sort_parallel(keys, values, key_scratch, value_scratch, pool);
   }
 
+  static u32 default_calibration_key(usize i) noexcept {
+    u32 x = nx::cast<u32>(i) * 2654435761u;
+    x ^= x >> 15;
+    x *= 2246822519u;
+    return x ^ (x >> 13);
+  }
+
   void calibrate(thread_pool &pool) {
+    calibrate(pool, &default_calibration_key);
+  }
+
+  template <class KeyGen> void calibrate(thread_pool &pool, KeyGen key_gen) {
     if (pool.worker_count() == 0) {
       crossover_ = ~usize{0}; // no team: never parallel
       return;
@@ -179,12 +190,7 @@ public:
     nx::vector<u32> keys(N), vals(N), ks(N), vs(N);
     const auto fill = [&](const usize n) {
       for (usize i = 0; i < n; ++i) {
-        u32 x = nx::cast<u32>(i) * 2654435761u;
-        x ^= x >> 15;
-        x *= 2246822519u;
-        x ^= x >> 13;
-        keys[i] =
-            ((x & 15u) << 20) | (((x >> 4) & 4095u) << 8) | ((x >> 16) & 63u);
+        keys[i] = key_gen(i);
         vals[i] = nx::cast<u32>(i);
       }
     };
