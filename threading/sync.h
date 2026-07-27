@@ -548,8 +548,11 @@ private:
 /**
  * @brief Reusable thread barrier.
  *
- * arrive_and_wait() blocks until @p count threads have arrived, then
- * releases them all and resets for the next phase.
+ * arrive_and_wait() blocks until @p count threads have arrived, then releases
+ * them all and resets for the next phase. Waiters sleep on the futex rather
+ * than spin: for the memory-bound parallel phases this backs, a spinning
+ * waiter contends with the still-working stragglers for memory bandwidth and
+ * costs far more than the syscall it would save (measured).
  */
 class barrier {
 public:
