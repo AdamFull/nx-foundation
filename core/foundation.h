@@ -102,7 +102,19 @@
 
 // Compiler detection
 
-#if defined(_MSC_VER)
+// clang-cl is Clang behind cl's driver, and it defines _MSC_VER - so it has to
+// be recognised before MSVC or it reports itself as the compiler it emulates.
+// Both flags are set on purpose: it targets the MSVC ABI, which makes the
+// __declspec attributes and [[msvc::no_unique_address]] below the correct ones
+// for it, while Clang's builtins are available as well.
+#if defined(__clang__) && defined(_MSC_VER)
+#define NX_COMPILER_MSVC 1
+#define NX_COMPILER_CLANG 1
+#define NX_COMPILER_CLANG_CL 1
+#define NX_COMPILER_NAME "clang-cl"
+#define NX_COMPILER_VERSION                                                    \
+  (__clang_major__ * 10000 + __clang_minor__ * 100 + __clang_patchlevel__)
+#elif defined(_MSC_VER)
 #define NX_COMPILER_MSVC 1
 #define NX_COMPILER_NAME "MSVC"
 #define NX_COMPILER_VERSION _MSC_VER
