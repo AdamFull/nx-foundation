@@ -24,6 +24,7 @@ set(NX_FOUNDATION_HEADERS
   containers/radix_sort.h
   containers/small_vector.h
   containers/sparse_set.h
+  containers/stream_compact.h
   containers/stable_pool.h
 
   strings/format.h
