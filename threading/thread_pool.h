@@ -348,4 +348,34 @@ template <typename T> T future<T>::get() {
   }
 }
 
+template <class T, class Fn>
+void parallel_collect(thread_pool *pool, const usize count,
+                      const usize parallel_min,
+                      nx::vector<nx::vector<T>> &bins, nx::vector<T> &out,
+                      Fn &&body) {
+  if (count == 0)
+    return;
+  if (pool == nullptr || count < parallel_min) {
+    body(usize{0}, count, out);
+    return;
+  }
+
+  // The caller's thread takes a chunk too rather than waiting on the others.
+  const u32 team = pool->worker_count() + 1;
+  if (bins.size() < team)
+    bins.resize(team);
+  for (auto &bin : bins)
+    bin.clear();
+
+  const usize per_chunk = (count + team - 1) / team;
+  pool->parallel_region(team, [&](const u32 c, u32, nx::barrier &) {
+    const usize first = min(nx::cast<usize>(c) * per_chunk, count);
+    body(first, min(first + per_chunk, count), bins[c]);
+  });
+
+  for (auto &bin : bins)
+    for (const T &value : bin)
+      out.push_back(value);
+}
+
 } // namespace nx
