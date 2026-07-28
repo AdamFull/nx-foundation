@@ -505,4 +505,31 @@ template <typename T, typename... Args>
   return std::allocate_shared<T>(Allocator<T>{}, std::forward<Args>(args)...);
 }
 
+template <typename T> struct AllocDeleter {
+  void operator()(T *p) const noexcept {
+    if (p == nullptr)
+      return;
+    using traits = std::allocator_traits<Allocator<T>>;
+    Allocator<T> alloc;
+    traits::destroy(alloc, p);
+    traits::deallocate(alloc, p, 1);
+  }
+};
+
+template <typename T> using unique_ptr = std::unique_ptr<T, AllocDeleter<T>>;
+
+template <typename T, typename... Args>
+[[nodiscard]] unique_ptr<T> make_unique(Args &&...args) {
+  using traits = std::allocator_traits<Allocator<T>>;
+  Allocator<T> alloc;
+  T *p = traits::allocate(alloc, 1);
+  try {
+    traits::construct(alloc, p, std::forward<Args>(args)...);
+  } catch (...) {
+    traits::deallocate(alloc, p, 1);
+    throw;
+  }
+  return unique_ptr<T>(p);
+}
+
 } // namespace nx
