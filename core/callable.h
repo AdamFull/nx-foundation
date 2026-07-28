@@ -313,6 +313,56 @@ private:
   void *data_ = nullptr;
 };
 
+template <typename> class function_ref;
+
+template <typename R, typename... Args> class function_ref<R(Args...)> {
+  union storage {
+    void *obj;
+    void (*fun)();
+  };
+
+public:
+  constexpr function_ref() noexcept = default;
+
+  /// From a callable object. Refers to it, so it must outlive this.
+  template <typename F>
+    requires(!std::is_same_v<std::decay_t<F>, function_ref> &&
+             !std::is_function_v<std::remove_pointer_t<std::decay_t<F>>> &&
+             std::is_invocable_r_v<R, F &, Args...>)
+  function_ref(F &&f NX_LIFETIMEBOUND) noexcept {
+    data_.obj =
+        const_cast<void *>(static_cast<const void *>(std::addressof(f)));
+    call_ = [](const storage s, Args... args) -> R {
+      return (*static_cast<std::decay_t<F> *>(s.obj))(
+          std::forward<Args>(args)...);
+    };
+  }
+
+  /// From a function pointer, which is copied rather than referred to - so this
+  /// one has nothing to outlive.
+  template <typename FR, typename... FArgs>
+    requires std::is_invocable_r_v<R, FR (*)(FArgs...), Args...>
+  function_ref(FR (*fn)(FArgs...)) noexcept {
+    data_.fun = reinterpret_cast<void (*)()>(fn);
+    call_ = [](const storage s, Args... args) -> R {
+      return reinterpret_cast<FR (*)(FArgs...)>(s.fun)(
+          std::forward<Args>(args)...);
+    };
+  }
+
+  R operator()(Args... args) const {
+    return call_(data_, std::forward<Args>(args)...);
+  }
+
+  [[nodiscard]] constexpr explicit operator bool() const noexcept {
+    return call_ != nullptr;
+  }
+
+private:
+  storage data_{nullptr};
+  R (*call_)(storage, Args...) = nullptr;
+};
+
 /// Builds an nx::function, deducing the call signature from @p f.
 template <typename F> auto make_function(F &&f) {
   using FType = std::decay_t<F>;
