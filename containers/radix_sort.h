@@ -16,6 +16,7 @@
  */
 
 #include "foundation/core/foundation.h"
+#include "foundation/core/time.h"
 #include "foundation/threading/thread_pool.h"
 
 #include <chrono>
@@ -203,7 +204,7 @@ public:
         // fixed cost and places the crossover too low.
         if (parallel)
           nx::this_thread::sleep_for(std::chrono::milliseconds(1));
-        const auto t0 = std::chrono::steady_clock::now();
+        const nx::stopwatch watch;
         if (parallel)
           sort_parallel(
               std::span<u32>(keys.data(), n), std::span<u32>(vals.data(), n),
@@ -212,9 +213,7 @@ public:
           radix_sort_pairs(
               std::span<u32>(keys.data(), n), std::span<u32>(vals.data(), n),
               std::span<u32>(ks.data(), n), std::span<u32>(vs.data(), n));
-        const double us = std::chrono::duration<double, std::micro>(
-                              std::chrono::steady_clock::now() - t0)
-                              .count();
+        const f64 us = watch.elapsed().micros_f();
         best = us < best ? us : best;
       }
       return best;

@@ -7,6 +7,7 @@
  */
 
 #include "foundation/core/foundation.h"
+#include "foundation/core/time.h"
 #include "foundation/threading/thread_pool.h"
 
 #include <chrono>
@@ -203,16 +204,14 @@ public:
       for (int r = 0; r < 3; ++r) {
         if (parallel)
           nx::this_thread::sleep_for(std::chrono::milliseconds(1));
-        const auto t0 = std::chrono::steady_clock::now();
+        const nx::stopwatch watch;
         if (parallel)
           compact_parallel(std::span<const T>(in.data(), n),
                            std::span<T>(out.data(), n), keep, pool);
         else
           compact_serial(std::span<const T>(in.data(), n),
                          std::span<T>(out.data(), n), keep);
-        const double us = std::chrono::duration<double, std::micro>(
-                              std::chrono::steady_clock::now() - t0)
-                              .count();
+        const f64 us = watch.elapsed().micros_f();
         best = us < best ? us : best;
       }
       return best;

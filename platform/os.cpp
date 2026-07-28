@@ -1,4 +1,6 @@
 #include "foundation/platform/os.h"
+
+#include "foundation/core/time.h"
 #include "foundation/core/scope_guard.h"
 
 #include <chrono>
@@ -193,19 +195,9 @@ MemStats mem_get_stats() noexcept {
   return s;
 }
 
-u64 ticks_ns() noexcept {
-  return nx::cast<u64>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
-}
+u64 ticks_ns() noexcept { return nx::timestamp::now().nanos(); }
 
-u64 ticks_ms() noexcept {
-  return nx::cast<u64>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
-}
+u64 ticks_ms() noexcept { return ticks_ns() / 1'000'000u; }
 
 u32 system_ram_mb() noexcept {
 #if NX_HAS_WINDOWS_API

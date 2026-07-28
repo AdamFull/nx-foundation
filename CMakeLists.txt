@@ -14,6 +14,7 @@ set(NX_FOUNDATION_HEADERS
   core/random.h
   core/result.h
   core/scope_guard.h
+  core/time.h
 
   containers/blob.h
   containers/concurrent_queue.h
