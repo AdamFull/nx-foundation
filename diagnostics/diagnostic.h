@@ -14,7 +14,7 @@
 
 namespace nx {
 #if !defined(NDEBUG)
-static void dbg_break() {
+inline void dbg_break() {
 #if defined(_WIN32)
   DebugBreak();
 #elif defined(__clang__) || defined(__GNUC__)
@@ -22,7 +22,7 @@ static void dbg_break() {
 #endif
 }
 
-static long dbg_get_pid() {
+inline long dbg_get_pid() {
 #if defined(_WIN32)
   return nx::cast<long>(GetCurrentProcessId());
 #elif defined(NX_PLATFORM_POSIX)
@@ -32,7 +32,7 @@ static long dbg_get_pid() {
 #endif
 }
 
-static bool dbg_is_present() {
+inline bool dbg_is_present() {
 #if defined(_WIN32)
   return IsDebuggerPresent();
 #else
@@ -40,13 +40,13 @@ static bool dbg_is_present() {
 #endif
 }
 
-static void dbg_wait(const i32 timeout_ms) {
+inline void dbg_wait(const i32 timeout_ms) {
   if (dbg_is_present() || timeout_ms == 0)
     return;
 
   printf("Waiting for debugger to attach (PID: %lu)...\n", dbg_get_pid());
 
-  u32 elapsed_ms = 0;
+  i32 elapsed_ms = 0;
   while (!dbg_is_present()) {
 #if defined(_WIN32)
     Sleep(500);
@@ -64,10 +64,10 @@ static void dbg_wait(const i32 timeout_ms) {
   dbg_break();
 }
 #else
-static void dbg_break() {}
-static long dbg_get_pid() { return 0; }
-static bool dbg_is_present() { return false; }
-static void dbg_wait(i32 timeout_ms) { (void)timeout_ms; }
+inline void dbg_break() {}
+inline long dbg_get_pid() { return 0; }
+inline bool dbg_is_present() { return false; }
+inline void dbg_wait(i32 timeout_ms) { (void)timeout_ms; }
 #endif
 
 namespace detail {
@@ -108,8 +108,8 @@ template <typename... Args>
 #define NX_ASSERT(cond, ...)                                                   \
   do {                                                                         \
     if (!(cond)) [[unlikely]]                                                  \
-      ::nx::detail::assert_fail(__FILE__, __LINE__, #cond __VA_OPT__(, )       \
-                                    __VA_ARGS__);                              \
+      ::nx::detail::assert_fail(__FILE__, __LINE__,                            \
+                                #cond __VA_OPT__(, ) __VA_ARGS__);             \
   } while (0)
 #else
 #define NX_ASSERT(cond, ...) ((void)sizeof(!(cond)))
