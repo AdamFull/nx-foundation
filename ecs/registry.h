@@ -759,6 +759,13 @@ public:
     return emplace_or_replace<C>(e, std::forward<Args>(args)...);
   }
 
+  template <typename C, typename... Args>
+  C *try_emplace_or_replace(Entity e, Args &&...args) {
+    if (!alive(e))
+      return nullptr;
+    return &emplace_or_replace<C>(e, std::forward<Args>(args)...);
+  }
+
   /// Overwrite an existing T. Precondition: e has T. Fires on_update hooks.
   template <typename C, typename... Args> C &replace(Entity e, Args &&...args) {
     using T = std::remove_cv_t<C>;
