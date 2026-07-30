@@ -41,6 +41,7 @@ set(NX_FOUNDATION_HEADERS
   threading/thread_pool.h
 
   platform/filesystem.h
+  platform/native_window.h
   platform/os.h
 
   vfs/vfs.h
