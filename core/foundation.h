@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -36,7 +37,7 @@
 #warning "Unknown platform detected"
 #endif
 
-#if defined(NX_PLATFORM_LINUX) || defined(NX_PLATFORM_ANDROID) ||             \
+#if defined(NX_PLATFORM_LINUX) || defined(NX_PLATFORM_ANDROID) ||              \
     defined(NX_PLATFORM_MACOS) || defined(NX_PLATFORM_IOS)
 #define NX_PLATFORM_POSIX 1
 #endif

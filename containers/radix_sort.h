@@ -372,4 +372,100 @@ private:
   nx::vector<u32> offsets_;
 };
 
+/// Buffers sort_by_key reuses between calls. One per caller; not thread-safe.
+template <typename T> struct sort_scratch {
+  /// Naming a pool lets the sort go parallel once it is worth it (see
+  /// radix_context::crossover). Null keeps it serial, which is right for
+  /// anything short of six figures of elements.
+  thread_pool *pool = nullptr;
+  radix_context context;
+
+  nx::vector<u32> keys, indices, key_scratch, index_scratch;
+  nx::vector<T> gathered;
+};
+
+namespace detail {
+
+/// Builds the (key, index) pairs and sorts them. False when @p src was already
+/// ordered, in which case the indices are meaningless and no permutation is
+/// needed.
+template <typename T, typename KeyFn>
+[[nodiscard]] bool sort_permutation(const std::span<const T> src,
+                                    sort_scratch<T> &s, KeyFn key) {
+  const usize count = src.size();
+  s.keys.resize(count);
+  s.indices.resize(count);
+  bool ordered = true;
+  for (usize i = 0; i < count; ++i) {
+    const u32 k = key(src[i]);
+    ordered = ordered && (i == 0 || s.keys[i - 1] <= k);
+    s.keys[i] = k;
+    s.indices[i] = nx::cast<u32>(i);
+  }
+  if (ordered)
+    return false;
+
+  s.key_scratch.resize(count);
+  s.index_scratch.resize(count);
+  const std::span<u32> keys(s.keys.data(), count);
+  const std::span<u32> indices(s.indices.data(), count);
+  const std::span<u32> key_scratch(s.key_scratch.data(), count);
+  const std::span<u32> index_scratch(s.index_scratch.data(), count);
+  if (s.pool != nullptr)
+    s.context.sort(keys, indices, key_scratch, index_scratch, *s.pool);
+  else
+    radix_sort_pairs(keys, indices, key_scratch, index_scratch);
+  return true;
+}
+
+} // namespace detail
+
+/**
+ * @brief Sorts @p items in place, ascending by key(item).
+ *
+ * Stable, so equal keys keep the order they arrived in - which is what callers
+ * layering one thing behind another depend on.
+ *
+ * The radix runs on (key, index) pairs and a single gather applies the
+ * permutation, so an element is copied once rather than once per pass. Already
+ * ordered input costs the scan that discovers it and nothing else.
+ */
+template <typename T, typename KeyFn>
+void sort_by_key(nx::vector<T> &items, sort_scratch<T> &scratch, KeyFn key) {
+  const usize count = items.size();
+  if (count < 2)
+    return;
+  if (!detail::sort_permutation(std::span<const T>(items.data(), count),
+                                scratch, key))
+    return;
+
+  scratch.gathered.resize(count);
+  for (usize i = 0; i < count; ++i)
+    scratch.gathered[i] = items[scratch.indices[i]];
+  items.swap(scratch.gathered);
+}
+
+/// sort_by_key for a caller whose input and output are separate buffers.
+/// @p dst always ends up holding the whole result, ordered or not.
+template <typename T, typename KeyFn>
+void sort_by_key_into(const std::span<const T> src, nx::vector<T> &dst,
+                      sort_scratch<T> &scratch, KeyFn key) {
+  const usize count = src.size();
+  if (dst.size() < count)
+    dst.resize(count);
+  if (count < 2) {
+    if (count == 1)
+      dst[0] = src[0];
+    return;
+  }
+
+  if (!detail::sort_permutation(src, scratch, key)) {
+    for (usize i = 0; i < count; ++i)
+      dst[i] = src[i];
+    return;
+  }
+  for (usize i = 0; i < count; ++i)
+    dst[i] = src[scratch.indices[i]];
+}
+
 } // namespace nx
