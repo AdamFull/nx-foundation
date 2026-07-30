@@ -18,12 +18,12 @@ thread_local pool_tls t_worker;
 
 void task_group::wait() noexcept {
   for (;;) {
-    const u32 pending = pending_.load(std::memory_order_acquire);
+    const u32 pending = m_pending.load(std::memory_order_acquire);
     if (pending == 0)
       return;
-    if (pool_ && pool_->help_execute_one())
+    if (m_pool && m_pool->help_execute_one())
       continue;
-    futex::wait(&pending_, pending, detail::WAIT_FOREVER);
+    futex::wait(&m_pending, pending, detail::WAIT_FOREVER);
   }
 }
 
@@ -37,18 +37,18 @@ thread_pool::thread_pool(const config &cfg) {
     count = topo.physical_count > 1 ? topo.physical_count - 1 : 1;
 
   // Create every worker before starting any thread: worker_loop iterates
-  // workers_ for stealing and must see the final layout.
-  workers_.reserve(count);
+  // m_workers for stealing and must see the final layout.
+  m_workers.reserve(count);
   for (u32 i = 0; i < count; ++i) {
     auto *w = allocate<worker>();
     if (!w)
       break;
     w->index = i;
     snprintf(w->name, sizeof(w->name), "%s-%u", cfg.name ? cfg.name : "nx", i);
-    workers_.push_back(w);
+    m_workers.push_back(w);
   }
 
-  for (worker *w : workers_) {
+  for (worker *w : m_workers) {
     thread_options opts;
     opts.name = w->name;
     opts.priority = cfg.priority;
@@ -67,12 +67,12 @@ thread_pool::~thread_pool() {
   signal_.fetch_add(1, std::memory_order_seq_cst);
   futex::wake_all(&signal_);
 
-  for (worker *w : workers_)
+  for (worker *w : m_workers)
     if (w->th.joinable())
       w->th.join();
-  for (worker *w : workers_)
+  for (worker *w : m_workers)
     release(w);
-  workers_.clear();
+  m_workers.clear();
 }
 
 bool thread_pool::is_worker_thread() const noexcept {
@@ -80,25 +80,24 @@ bool thread_pool::is_worker_thread() const noexcept {
 }
 
 void thread_pool::submit(task_group &group, function<void()> fn) {
-  assert((group.pool_ == nullptr || group.pool_ == this) &&
+  assert((group.m_pool == nullptr || group.m_pool == this) &&
          "task_group is already bound to a different pool");
-  group.pool_ = this;
+  group.m_pool = this;
   enqueue({std::move(fn), &group});
 }
 
 void thread_pool::enqueue(detail::pool_task &&t) {
   unfinished_.fetch_add(1, std::memory_order_relaxed);
   if (t.group)
-    t.group->pending_.fetch_add(1, std::memory_order_relaxed);
+    t.group->m_pending.fetch_add(1, std::memory_order_relaxed);
 
   // try_push leaves the argument untouched on failure, so falling through
   // the tiers with the same task is safe.
-  worker *self =
-      t_worker.pool == this ? workers_[t_worker.index] : nullptr;
+  worker *self = t_worker.pool == this ? m_workers[t_worker.index] : nullptr;
   if (!(self && self->queue.try_push(std::move(t))) &&
-      !shared_queue_.try_push(std::move(t))) {
-    scoped_lock lock(overflow_mutex_);
-    overflow_.push_back(std::move(t));
+      !m_shared_queue.try_push(std::move(t))) {
+    scoped_lock lock(m_overflow_mutex);
+    m_overflow.push_back(std::move(t));
     overflow_count_.fetch_add(1, std::memory_order_release);
   }
 
@@ -112,33 +111,32 @@ void thread_pool::enqueue(detail::pool_task &&t) {
 
 bool thread_pool::try_get_task(detail::pool_task &out,
                                const u32 self_index) noexcept {
-  if (self_index != INVALID_WORKER &&
-      workers_[self_index]->queue.try_pop(out))
+  if (self_index != INVALID_WORKER && m_workers[self_index]->queue.try_pop(out))
     return true;
 
-  if (shared_queue_.try_pop(out))
+  if (m_shared_queue.try_pop(out))
     return true;
 
-  const u32 n = nx::cast<u32>(workers_.size());
+  const u32 n = nx::cast<u32>(m_workers.size());
   if (n != 0) {
     const u32 start = steal_seed_.fetch_add(1, std::memory_order_relaxed);
     for (u32 i = 0; i < n; ++i) {
       const u32 victim = (start + i) % n;
       if (victim == self_index)
         continue;
-      if (workers_[victim]->queue.try_pop(out))
+      if (m_workers[victim]->queue.try_pop(out))
         return true;
     }
   }
 
   if (overflow_count_.load(std::memory_order_acquire) > 0) {
-    scoped_lock lock(overflow_mutex_);
-    if (overflow_head_ < overflow_.size()) {
-      out = std::move(overflow_[overflow_head_++]);
+    scoped_lock lock(m_overflow_mutex);
+    if (m_overflow_head < m_overflow.size()) {
+      out = std::move(m_overflow[m_overflow_head++]);
       overflow_count_.fetch_sub(1, std::memory_order_relaxed);
-      if (overflow_head_ == overflow_.size()) {
-        overflow_.clear();
-        overflow_head_ = 0;
+      if (m_overflow_head == m_overflow.size()) {
+        m_overflow.clear();
+        m_overflow_head = 0;
       }
       return true;
     }
@@ -157,8 +155,8 @@ void thread_pool::run_task(detail::pool_task &t) noexcept {
 
   if (task_group *group = t.group) {
     t.group = nullptr;
-    if (group->pending_.fetch_sub(1, std::memory_order_acq_rel) == 1)
-      futex::wake_all(&group->pending_);
+    if (group->m_pending.fetch_sub(1, std::memory_order_acq_rel) == 1)
+      futex::wake_all(&group->m_pending);
   }
   if (unfinished_.fetch_sub(1, std::memory_order_acq_rel) == 1)
     futex::wake_all(&unfinished_);

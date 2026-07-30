@@ -91,43 +91,43 @@ public:
   sparse_set() = default;
 
   explicit sparse_set(const Alloc &alloc)
-      : dense_(handle_alloc(alloc)), values_(make_values(alloc)),
-        pages_(page_alloc(alloc)) {}
+      : m_dense(handle_alloc(alloc)), m_values(make_values(alloc)),
+        m_pages(page_alloc(alloc)) {}
 
-  [[nodiscard]] bool empty() const noexcept { return dense_.empty(); }
-  [[nodiscard]] size_type size() const noexcept { return dense_.size(); }
+  [[nodiscard]] bool empty() const noexcept { return m_dense.empty(); }
+  [[nodiscard]] size_type size() const noexcept { return m_dense.size(); }
   [[nodiscard]] size_type capacity() const noexcept {
-    return dense_.capacity();
+    return m_dense.capacity();
   }
   [[nodiscard]] static constexpr size_type max_size() noexcept {
     return Handle::max_index;
   }
 
   void reserve(size_type n) {
-    dense_.reserve(n);
+    m_dense.reserve(n);
     if constexpr (has_value)
-      values_.reserve(n);
+      m_values.reserve(n);
   }
 
   void shrink_to_fit() {
-    dense_.shrink_to_fit();
+    m_dense.shrink_to_fit();
     if constexpr (has_value)
-      values_.shrink_to_fit();
-    while (!pages_.empty() && pages_.back().empty())
-      pages_.pop_back();
-    pages_.shrink_to_fit();
+      m_values.shrink_to_fit();
+    while (!m_pages.empty() && m_pages.back().empty())
+      m_pages.pop_back();
+    m_pages.shrink_to_fit();
   }
 
   void clear() noexcept {
-    dense_.clear();
+    m_dense.clear();
     if constexpr (has_value)
-      values_.clear();
-    pages_.clear();
+      m_values.clear();
+    m_pages.clear();
   }
 
   [[nodiscard]] bool contains(Handle h) const noexcept {
     const repr pos = sparse_lookup(h.index());
-    return pos != sentinel && dense_[pos] == h;
+    return pos != sentinel && m_dense[pos] == h;
   }
 
   // Dense position of a live handle. Precondition: contains(h).
@@ -138,8 +138,8 @@ public:
 
   // Handle currently occupying a dense position; pairs with begin()/values().
   [[nodiscard]] Handle handle_at(size_type dense_index) const noexcept {
-    assert(dense_index < dense_.size());
-    return dense_[dense_index];
+    assert(dense_index < m_dense.size());
+    return m_dense[dense_index];
   }
 
   template <typename... Args>
@@ -148,30 +148,30 @@ public:
   {
     assert(h.valid() && "sparse_set::emplace: null handle");
     assert(!contains(h) && "sparse_set::emplace: handle already present");
-    const repr pos = nx::cast<repr>(dense_.size());
-    dense_.push_back(h);
+    const repr pos = nx::cast<repr>(m_dense.size());
+    m_dense.push_back(h);
     try {
-      values_.emplace_back(std::forward<Args>(args)...);
+      m_values.emplace_back(std::forward<Args>(args)...);
     } catch (...) {
-      dense_.pop_back();
+      m_dense.pop_back();
       throw;
     }
     try {
       sparse_assign(h.index(), pos);
     } catch (...) {
-      values_.pop_back();
-      dense_.pop_back();
+      m_values.pop_back();
+      m_dense.pop_back();
       throw;
     }
-    return values_.back();
+    return m_values.back();
   }
 
   template <typename V>
     requires has_value && std::is_constructible_v<T, V &&>
   std::pair<reference, bool> insert(Handle h, V &&value) {
     if (const repr pos = sparse_lookup(h.index());
-        pos != sentinel && dense_[pos] == h)
-      return {values_[pos], false};
+        pos != sentinel && m_dense[pos] == h)
+      return {m_values[pos], false};
     return {emplace(h, std::forward<V>(value)), true};
   }
 
@@ -180,9 +180,9 @@ public:
     requires has_value
   {
     if (const repr pos = sparse_lookup(h.index());
-        pos != sentinel && dense_[pos] == h) {
-      values_[pos] = std::forward<M>(value);
-      return values_[pos];
+        pos != sentinel && m_dense[pos] == h) {
+      m_values[pos] = std::forward<M>(value);
+      return m_values[pos];
     }
     return emplace(h, std::forward<M>(value));
   }
@@ -192,8 +192,8 @@ public:
     requires has_value
   {
     if (const repr pos = sparse_lookup(h.index());
-        pos != sentinel && dense_[pos] == h)
-      return values_[pos];
+        pos != sentinel && m_dense[pos] == h)
+      return m_values[pos];
     return emplace(h, std::forward<Args>(args)...);
   }
 
@@ -203,12 +203,12 @@ public:
     assert(h.valid() && "sparse_set::insert: null handle");
     if (contains(h))
       return false;
-    const repr pos = nx::cast<repr>(dense_.size());
-    dense_.push_back(h);
+    const repr pos = nx::cast<repr>(m_dense.size());
+    m_dense.push_back(h);
     try {
       sparse_assign(h.index(), pos);
     } catch (...) {
-      dense_.pop_back();
+      m_dense.pop_back();
       throw;
     }
     return true;
@@ -217,19 +217,19 @@ public:
   bool erase(Handle h) {
     const repr i = h.index();
     const repr pos = sparse_lookup(i);
-    if (pos == sentinel || dense_[pos] != h)
+    if (pos == sentinel || m_dense[pos] != h)
       return false;
 
-    const repr last = nx::cast<repr>(dense_.size() - 1);
+    const repr last = nx::cast<repr>(m_dense.size() - 1);
     if (pos != last) {
-      dense_[pos] = dense_[last];
+      m_dense[pos] = m_dense[last];
       if constexpr (has_value)
-        values_[pos] = std::move(values_[last]);
-      sparse_assign(dense_[pos].index(), pos);
+        m_values[pos] = std::move(m_values[last]);
+      sparse_assign(m_dense[pos].index(), pos);
     }
-    dense_.pop_back();
+    m_dense.pop_back();
     if constexpr (has_value)
-      values_.pop_back();
+      m_values.pop_back();
     sparse_clear(i);
     return true;
   }
@@ -238,77 +238,77 @@ public:
     requires has_value
   {
     assert(contains(h));
-    return values_[sparse_lookup(h.index())];
+    return m_values[sparse_lookup(h.index())];
   }
   [[nodiscard]] const_reference operator[](Handle h) const noexcept
     requires has_value
   {
     assert(contains(h));
-    return values_[sparse_lookup(h.index())];
+    return m_values[sparse_lookup(h.index())];
   }
 
   [[nodiscard]] reference at(Handle h)
     requires has_value
   {
     const repr pos = sparse_lookup(h.index());
-    if (pos == sentinel || dense_[pos] != h)
+    if (pos == sentinel || m_dense[pos] != h)
       throw std::out_of_range("sparse_set::at");
-    return values_[pos];
+    return m_values[pos];
   }
   [[nodiscard]] const_reference at(Handle h) const
     requires has_value
   {
     const repr pos = sparse_lookup(h.index());
-    if (pos == sentinel || dense_[pos] != h)
+    if (pos == sentinel || m_dense[pos] != h)
       throw std::out_of_range("sparse_set::at");
-    return values_[pos];
+    return m_values[pos];
   }
 
   [[nodiscard]] T *try_get(Handle h) noexcept
     requires has_value
   {
     const repr pos = sparse_lookup(h.index());
-    return (pos != sentinel && dense_[pos] == h) ? &values_[pos] : nullptr;
+    return (pos != sentinel && m_dense[pos] == h) ? &m_values[pos] : nullptr;
   }
   [[nodiscard]] const T *try_get(Handle h) const noexcept
     requires has_value
   {
     const repr pos = sparse_lookup(h.index());
-    return (pos != sentinel && dense_[pos] == h) ? &values_[pos] : nullptr;
+    return (pos != sentinel && m_dense[pos] == h) ? &m_values[pos] : nullptr;
   }
 
   [[nodiscard]] iterator find(Handle h) noexcept {
     const repr pos = sparse_lookup(h.index());
-    return (pos != sentinel && dense_[pos] == h) ? begin() + pos : end();
+    return (pos != sentinel && m_dense[pos] == h) ? begin() + pos : end();
   }
   [[nodiscard]] const_iterator find(Handle h) const noexcept {
     const repr pos = sparse_lookup(h.index());
-    return (pos != sentinel && dense_[pos] == h) ? begin() + pos : end();
+    return (pos != sentinel && m_dense[pos] == h) ? begin() + pos : end();
   }
 
   [[nodiscard]] std::span<const Handle> entities() const noexcept {
-    return {dense_.data(), dense_.size()};
+    return {m_dense.data(), m_dense.size()};
   }
 
   [[nodiscard]] T *data() noexcept
     requires has_value
   {
-    return values_.data();
+    return m_values.data();
   }
   [[nodiscard]] const T *data() const noexcept
     requires has_value
   {
-    return values_.data();
+    return m_values.data();
   }
   [[nodiscard]] std::span<T> values() noexcept
     requires has_value
   {
-    return {values_.data(), values_.size()};
+    return {m_values.data(), m_values.size()};
   }
   [[nodiscard]] std::span<const T> values() const noexcept
     requires has_value
   {
-    return {values_.data(), values_.size()};
+    return {m_values.data(), m_values.size()};
   }
 
   [[nodiscard]] iterator begin() noexcept { return dense_begin(); }
@@ -339,9 +339,9 @@ public:
   template <bool Const> class each_iterator {
     friend class sparse_set;
     using val_ptr = std::conditional_t<Const, const T *, T *>;
-    const Handle *e_ = nullptr;
-    val_ptr v_ = nullptr;
-    each_iterator(const Handle *e, val_ptr v) noexcept : e_(e), v_(v) {}
+    const Handle *m_e = nullptr;
+    val_ptr m_v = nullptr;
+    each_iterator(const Handle *e, val_ptr v) noexcept : m_e(e), m_v(v) {}
 
   public:
     using value_type = std::pair<Handle, T>;
@@ -354,15 +354,15 @@ public:
     each_iterator() = default;
     template <bool C = Const, std::enable_if_t<C, i32> = 0>
     each_iterator(const each_iterator<false> &o) noexcept
-        : e_(o.e_), v_(o.v_) {}
+        : m_e(o.m_e), m_v(o.m_v) {}
 
-    [[nodiscard]] reference operator*() const { return reference{*e_, *v_}; }
+    [[nodiscard]] reference operator*() const { return reference{*m_e, *m_v}; }
     [[nodiscard]] pointer operator->() const {
-      return pointer{reference{*e_, *v_}};
+      return pointer{reference{*m_e, *m_v}};
     }
     each_iterator &operator++() noexcept {
-      ++e_;
-      ++v_;
+      ++m_e;
+      ++m_v;
       return *this;
     }
     each_iterator operator++(i32) noexcept {
@@ -372,29 +372,29 @@ public:
     }
     [[nodiscard]] friend bool operator==(const each_iterator &a,
                                          const each_iterator &b) noexcept {
-      return a.e_ == b.e_;
+      return a.m_e == b.m_e;
     }
     [[nodiscard]] friend bool operator!=(const each_iterator &a,
                                          const each_iterator &b) noexcept {
-      return a.e_ != b.e_;
+      return a.m_e != b.m_e;
     }
   };
 
   template <bool Const> class each_range {
     friend class sparse_set;
     using val_ptr = std::conditional_t<Const, const T *, T *>;
-    const Handle *e_;
-    val_ptr v_;
-    usize n_;
+    const Handle *m_e;
+    val_ptr m_v;
+    usize m_n;
     each_range(const Handle *e, val_ptr v, usize n) noexcept
-        : e_(e), v_(v), n_(n) {}
+        : m_e(e), m_v(v), m_n(n) {}
 
   public:
     [[nodiscard]] each_iterator<Const> begin() const noexcept {
-      return each_iterator<Const>{e_, v_};
+      return each_iterator<Const>{m_e, m_v};
     }
     [[nodiscard]] each_iterator<Const> end() const noexcept {
-      return each_iterator<Const>{e_ + n_, v_ + n_};
+      return each_iterator<Const>{m_e + m_n, m_v + m_n};
     }
   };
 
@@ -403,12 +403,12 @@ public:
   [[nodiscard]] each_range<false> each() noexcept
     requires has_value
   {
-    return each_range<false>{dense_.data(), values_.data(), dense_.size()};
+    return each_range<false>{m_dense.data(), m_values.data(), m_dense.size()};
   }
   [[nodiscard]] each_range<true> each() const noexcept
     requires has_value
   {
-    return each_range<true>{dense_.data(), values_.data(), dense_.size()};
+    return each_range<true>{m_dense.data(), m_values.data(), m_dense.size()};
   }
 
   // Reorder the dense arrays by value, keeping the sparse mapping consistent.
@@ -419,26 +419,26 @@ public:
     requires has_value
   {
     apply_permutation(make_order(
-        [&](usize a, usize b) { return comp(values_[a], values_[b]); }));
+        [&](usize a, usize b) { return comp(m_values[a], m_values[b]); }));
   }
 
   template <typename Compare> void sort_handles(Compare comp) {
     apply_permutation(make_order(
-        [&](usize a, usize b) { return comp(dense_[a], dense_[b]); }));
+        [&](usize a, usize b) { return comp(m_dense[a], m_dense[b]); }));
   }
 
   void swap(sparse_set &o) noexcept {
     using std::swap;
-    swap(dense_, o.dense_);
+    swap(m_dense, o.m_dense);
     if constexpr (has_value)
-      swap(values_, o.values_);
-    swap(pages_, o.pages_);
+      swap(m_values, o.m_values);
+    swap(m_pages, o.m_pages);
   }
 
   friend void swap(sparse_set &a, sparse_set &b) noexcept { a.swap(b); }
 
   [[nodiscard]] allocator_type get_allocator() const noexcept {
-    return allocator_type(dense_.get_allocator());
+    return allocator_type(m_dense.get_allocator());
   }
 
 private:
@@ -453,40 +453,40 @@ private:
 
   iterator dense_begin() noexcept {
     if constexpr (has_value)
-      return values_.data();
+      return m_values.data();
     else
-      return dense_.data();
+      return m_dense.data();
   }
   const_iterator dense_begin() const noexcept {
     if constexpr (has_value)
-      return values_.data();
+      return m_values.data();
     else
-      return dense_.data();
+      return m_dense.data();
   }
 
   [[nodiscard]] repr sparse_lookup(repr index) const noexcept {
     const usize page = index / PageSize;
-    if (page >= pages_.size() || pages_[page].empty())
+    if (page >= m_pages.size() || m_pages[page].empty())
       return sentinel;
-    return pages_[page][index % PageSize];
+    return m_pages[page][index % PageSize];
   }
 
   void sparse_assign(repr index, repr pos) {
     const usize page = index / PageSize;
-    if (page >= pages_.size())
-      pages_.resize(page + 1);
-    if (pages_[page].empty())
-      pages_[page].assign(PageSize, sentinel);
-    pages_[page][index % PageSize] = pos;
+    if (page >= m_pages.size())
+      m_pages.resize(page + 1);
+    if (m_pages[page].empty())
+      m_pages[page].assign(PageSize, sentinel);
+    m_pages[page][index % PageSize] = pos;
   }
 
   void sparse_clear(repr index) noexcept {
     const usize page = index / PageSize;
-    pages_[page][index % PageSize] = sentinel;
+    m_pages[page][index % PageSize] = sentinel;
   }
 
   template <typename Less> vector<usize> make_order(Less less) const {
-    const usize n = dense_.size();
+    const usize n = m_dense.size();
     vector<usize> order(n);
     for (usize i = 0; i < n; ++i)
       order[i] = i;
@@ -496,27 +496,27 @@ private:
 
   void apply_permutation(const vector<usize> &order) {
     const usize n = order.size();
-    vector<Handle, handle_alloc> new_dense(dense_.get_allocator());
+    vector<Handle, handle_alloc> new_dense(m_dense.get_allocator());
     new_dense.reserve(n);
     for (usize i = 0; i < n; ++i)
-      new_dense.push_back(dense_[order[i]]);
+      new_dense.push_back(m_dense[order[i]]);
 
     if constexpr (has_value) {
-      value_storage new_values(values_.get_allocator());
+      value_storage new_values(m_values.get_allocator());
       new_values.reserve(n);
       for (usize i = 0; i < n; ++i)
-        new_values.push_back(std::move(values_[order[i]]));
-      values_ = std::move(new_values);
+        new_values.push_back(std::move(m_values[order[i]]));
+      m_values = std::move(new_values);
     }
-    dense_ = std::move(new_dense);
+    m_dense = std::move(new_dense);
 
     for (usize i = 0; i < n; ++i)
-      sparse_assign(dense_[i].index(), nx::cast<repr>(i));
+      sparse_assign(m_dense[i].index(), nx::cast<repr>(i));
   }
 
-  vector<Handle, handle_alloc> dense_;
-  NX_NO_UNIQUE_ADDRESS value_storage values_;
-  vector<page_type, page_alloc> pages_;
+  vector<Handle, handle_alloc> m_dense;
+  NX_NO_UNIQUE_ADDRESS value_storage m_values;
+  vector<page_type, page_alloc> m_pages;
 };
 
 } // namespace nx

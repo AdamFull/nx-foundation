@@ -127,9 +127,9 @@ void enable_virtual_terminal() noexcept {
 
 class ConsoleSink final : public Sink {
 public:
-  explicit ConsoleSink(bool color) : color_(color && stderr_is_tty()) {
+  explicit ConsoleSink(bool color) : m_color(color && stderr_is_tty()) {
 #if NX_HAS_WINDOWS_API
-    if (color_) {
+    if (m_color) {
       static once_flag once;
       call_once(once, enable_virtual_terminal);
     }
@@ -138,14 +138,14 @@ public:
 
   void write(const Record &r) override {
     char buf[LINE_CAPACITY];
-    const usize n = format_record(buf, sizeof(buf), r, color_, false);
+    const usize n = format_record(buf, sizeof(buf), r, m_color, false);
     fwrite(buf, 1, n, stderr);
   }
 
   void flush() override { fflush(stderr); }
 
 private:
-  bool color_;
+  bool m_color;
 };
 
 class DebuggerSink final : public Sink {
@@ -197,65 +197,65 @@ private:
 class FileSink final : public Sink {
 public:
   FileSink(string_view path, u64 max_bytes, u32 max_files)
-      : max_bytes_(max_bytes), max_files_(max(max_files, 1u)) {
-    const usize n = min(path.size(), sizeof(path_) - 1);
-    memcpy(path_, path.data(), n);
-    path_[n] = '\0';
-    file_ = fopen(path_, "wb");
+      : m_max_bytes(max_bytes), m_max_files(max(max_files, 1u)) {
+    const usize n = min(path.size(), sizeof(m_path) - 1);
+    memcpy(m_path, path.data(), n);
+    m_path[n] = '\0';
+    m_file = fopen(m_path, "wb");
   }
 
   ~FileSink() override {
-    if (file_)
-      fclose(file_);
+    if (m_file)
+      fclose(m_file);
   }
 
   void write(const Record &r) override {
-    if (!file_)
+    if (!m_file)
       return;
     char buf[LINE_CAPACITY];
     const usize n = format_record(buf, sizeof(buf), r, false, true);
-    fwrite(buf, 1, n, file_);
-    bytes_ += n;
-    if (bytes_ >= max_bytes_)
+    fwrite(buf, 1, n, m_file);
+    m_bytes += n;
+    if (m_bytes >= m_max_bytes)
       rotate();
   }
 
   void flush() override {
-    if (file_)
-      fflush(file_);
+    if (m_file)
+      fflush(m_file);
   }
 
 private:
   // engine.log -> engine.log.1 -> ... -> engine.log.<max_files>, oldest
   // dropped.
   void rotate() noexcept {
-    if (file_) {
-      fclose(file_);
-      file_ = nullptr;
+    if (m_file) {
+      fclose(m_file);
+      m_file = nullptr;
     }
 
-    char from[sizeof(path_) + 16];
-    char to[sizeof(path_) + 16];
+    char from[sizeof(m_path) + 16];
+    char to[sizeof(m_path) + 16];
 
-    snprintf(to, sizeof(to), "%s.%u", path_, max_files_);
+    snprintf(to, sizeof(to), "%s.%u", m_path, m_max_files);
     remove(to);
-    for (u32 i = max_files_; i > 1; --i) {
-      snprintf(from, sizeof(from), "%s.%u", path_, i - 1);
-      snprintf(to, sizeof(to), "%s.%u", path_, i);
+    for (u32 i = m_max_files; i > 1; --i) {
+      snprintf(from, sizeof(from), "%s.%u", m_path, i - 1);
+      snprintf(to, sizeof(to), "%s.%u", m_path, i);
       rename(from, to);
     }
-    snprintf(to, sizeof(to), "%s.1", path_);
-    rename(path_, to);
+    snprintf(to, sizeof(to), "%s.1", m_path);
+    rename(m_path, to);
 
-    file_ = fopen(path_, "wb");
-    bytes_ = 0;
+    m_file = fopen(m_path, "wb");
+    m_bytes = 0;
   }
 
-  FILE *file_ = nullptr;
-  u64 max_bytes_ = 0;
-  u64 bytes_ = 0;
-  u32 max_files_ = 1;
-  char path_[248] = {};
+  FILE *m_file = nullptr;
+  u64 m_max_bytes = 0;
+  u64 m_bytes = 0;
+  u32 m_max_files = 1;
+  char m_path[248] = {};
 };
 
 // logger

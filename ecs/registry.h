@@ -236,8 +236,8 @@ public:
       Alloc>::template rebind_alloc<component_storage>;
 
   explicit component_storage(const Alloc &a)
-      : on_construct_(a), on_destroy_(a), on_update_(a), set_(value_alloc(a)),
-        alloc_(a) {}
+      : m_on_construct(a), m_on_destroy(a), m_on_update(a),
+        m_set(value_alloc(a)), m_alloc(a) {}
 
   [[nodiscard]] static component_storage *create(const Alloc &a) {
     self_alloc sa(a);
@@ -247,62 +247,62 @@ public:
   }
 
   void self_delete() noexcept override {
-    self_alloc sa = alloc_;
+    self_alloc sa = m_alloc;
     std::allocator_traits<self_alloc>::destroy(sa, this);
     std::allocator_traits<self_alloc>::deallocate(sa, this, 1);
   }
 
   [[nodiscard]] bool contains(Entity e) const noexcept override {
-    return set_.contains(e);
+    return m_set.contains(e);
   }
 
   bool remove(registry_type &reg, Entity e) override {
-    if (!set_.contains(e))
+    if (!m_set.contains(e))
       return false;
-    if (!on_destroy_.empty())
-      on_destroy_.fire(reg, e);
-    return set_.erase(e);
+    if (!m_on_destroy.empty())
+      m_on_destroy.fire(reg, e);
+    return m_set.erase(e);
   }
 
   void clear(registry_type &reg) override {
-    if (!on_destroy_.empty()) {
+    if (!m_on_destroy.empty()) {
       // Fire on_destroy for each element before tearing the storage down.
-      for (Entity e : set_.entities())
-        on_destroy_.fire(reg, e);
+      for (Entity e : m_set.entities())
+        m_on_destroy.fire(reg, e);
     }
-    set_.clear();
+    m_set.clear();
   }
 
-  void reserve(usize n) override { set_.reserve(n); }
+  void reserve(usize n) override { m_set.reserve(n); }
 
-  [[nodiscard]] usize size() const noexcept override { return set_.size(); }
+  [[nodiscard]] usize size() const noexcept override { return m_set.size(); }
   [[nodiscard]] usize capacity() const noexcept override {
-    return set_.capacity();
+    return m_set.capacity();
   }
   [[nodiscard]] usize element_size() const noexcept override {
     return sizeof(T);
   }
   [[nodiscard]] std::span<const Entity> entities() const noexcept override {
-    return set_.entities();
+    return m_set.entities();
   }
 
-  [[nodiscard]] set_type &set() noexcept { return set_; }
-  [[nodiscard]] const set_type &set() const noexcept { return set_; }
+  [[nodiscard]] set_type &set() noexcept { return m_set; }
+  [[nodiscard]] const set_type &set() const noexcept { return m_set; }
 
-  [[nodiscard]] T &get(Entity e) noexcept { return set_[e]; }
-  [[nodiscard]] const T &get(Entity e) const noexcept { return set_[e]; }
-  [[nodiscard]] T *try_get(Entity e) noexcept { return set_.try_get(e); }
+  [[nodiscard]] T &get(Entity e) noexcept { return m_set[e]; }
+  [[nodiscard]] const T &get(Entity e) const noexcept { return m_set[e]; }
+  [[nodiscard]] T *try_get(Entity e) noexcept { return m_set.try_get(e); }
   [[nodiscard]] const T *try_get(Entity e) const noexcept {
-    return set_.try_get(e);
+    return m_set.try_get(e);
   }
 
-  event_sink<Entity, Alloc> on_construct_;
-  event_sink<Entity, Alloc> on_destroy_;
-  event_sink<Entity, Alloc> on_update_;
+  event_sink<Entity, Alloc> m_on_construct;
+  event_sink<Entity, Alloc> m_on_destroy;
+  event_sink<Entity, Alloc> m_on_update;
 
 private:
-  set_type set_;
-  NX_NO_UNIQUE_ADDRESS self_alloc alloc_;
+  set_type m_set;
+  NX_NO_UNIQUE_ADDRESS self_alloc m_alloc;
 };
 
 } // namespace detail
@@ -342,11 +342,11 @@ public:
 
   basic_view(std::tuple<detail::view_storage_ptr<Reg, T>...> storages,
              const allocator_type &alloc)
-      : storages_(storages), excludes_(exclude_alloc(alloc)) {}
+      : storages_(storages), m_excludes(exclude_alloc(alloc)) {}
 
   /// Restrict to entities that have none of the components U... .
   template <typename... U> basic_view &exclude(Reg &reg) {
-    (excludes_.push_back(reg.template raw_storage<U>()), ...);
+    (m_excludes.push_back(reg.template raw_storage<U>()), ...);
     return *this;
   }
 
@@ -409,7 +409,7 @@ private:
         [&](auto... p) { return (p->contains(e) && ...); }, storages_);
     if (!has_all)
       return false;
-    for (base_ptr ex : excludes_)
+    for (base_ptr ex : m_excludes)
       if (ex && ex->contains(e))
         return false;
     return true;
@@ -421,7 +421,7 @@ private:
   }
 
   std::tuple<detail::view_storage_ptr<Reg, T>...> storages_;
-  small_vector<base_ptr, 4, exclude_alloc> excludes_;
+  small_vector<base_ptr, 4, exclude_alloc> m_excludes;
 };
 
 namespace detail {
@@ -551,8 +551,8 @@ public:
   basic_registry() = default;
 
   explicit basic_registry(const Alloc &alloc)
-      : alloc_(alloc), slots_(rebind<entity_slot>(alloc)),
-        free_(rebind<repr>(alloc)), storages_(rebind<base_storage *>(alloc)),
+      : m_alloc(alloc), m_slots(rebind<entity_slot>(alloc)),
+        m_free(rebind<repr>(alloc)), storages_(rebind<base_storage *>(alloc)),
         metadata_(rebind<component_metadata>(alloc)),
         generations_(rebind<u64>(alloc)), hierarchy_(alloc),
         query_caches_(rebind<qcache *>(alloc)), query_index_(alloc) {}
@@ -571,25 +571,27 @@ public:
 
   ~basic_registry() { destroy_everything(); }
 
-  [[nodiscard]] allocator_type get_allocator() const noexcept { return alloc_; }
+  [[nodiscard]] allocator_type get_allocator() const noexcept {
+    return m_alloc;
+  }
 
   // --- Entities -----------------------------------------------------------
 
   /// Create a fresh entity, reusing a dead slot when one is available.
   [[nodiscard]] Entity create() {
     repr idx;
-    if (!free_.empty()) {
-      idx = free_.back();
-      free_.pop_back();
+    if (!m_free.empty()) {
+      idx = m_free.back();
+      m_free.pop_back();
     } else {
-      assert(slots_.size() <= Entity::max_index &&
+      assert(m_slots.size() <= Entity::max_index &&
              "registry: entity index space exhausted");
-      idx = nx::cast<repr>(slots_.size());
-      slots_.push_back(entity_slot{});
+      idx = nx::cast<repr>(m_slots.size());
+      m_slots.push_back(entity_slot{});
     }
-    slots_[idx].live = true;
-    ++alive_count_;
-    return Entity::from_parts(idx, slots_[idx].version);
+    m_slots[idx].live = true;
+    ++m_alive_count;
+    return Entity::from_parts(idx, m_slots[idx].version);
   }
 
   /// True if the handle refers to a currently live entity (version-checked).
@@ -597,8 +599,8 @@ public:
     if (!e.valid())
       return false;
     const repr idx = e.index();
-    return idx < slots_.size() && slots_[idx].live &&
-           slots_[idx].version == e.version();
+    return idx < m_slots.size() && m_slots[idx].live &&
+           m_slots[idx].version == e.version();
   }
 
   /**
@@ -618,13 +620,13 @@ public:
       hierarchy_.erase(e);
 
     const repr idx = e.index();
-    entity_slot &s = slots_[idx];
+    entity_slot &s = m_slots[idx];
     s.live = false;
     if (s.version < Entity::max_version) {
       ++s.version;
-      free_.push_back(idx);
+      m_free.push_back(idx);
     }
-    --alive_count_;
+    --m_alive_count;
   }
 
   /// Remove every entity, component, and relation; storages are kept
@@ -636,10 +638,10 @@ public:
     for (u64 &g : generations_)
       ++g;
     hierarchy_.clear();
-    relation_count_ = 0;
-    slots_.clear();
-    free_.clear();
-    alive_count_ = 0;
+    m_relation_count = 0;
+    m_slots.clear();
+    m_free.clear();
+    m_alive_count = 0;
     for (qcache *q : query_caches_)
       if (q)
         q->valid = false;
@@ -647,12 +649,12 @@ public:
 
   /// Reserve capacity for an expected number of entity slots.
   void reserve(size_type n) {
-    slots_.reserve(n);
-    free_.reserve(n);
+    m_slots.reserve(n);
+    m_free.reserve(n);
   }
 
-  [[nodiscard]] size_type size() const noexcept { return alive_count_; }
-  [[nodiscard]] bool empty() const noexcept { return alive_count_ == 0; }
+  [[nodiscard]] size_type size() const noexcept { return m_alive_count; }
+  [[nodiscard]] bool empty() const noexcept { return m_alive_count == 0; }
 
   // --- Component registration --------------------------------------------
 
@@ -677,7 +679,7 @@ public:
       return metadata_[id];
     }
 
-    auto *store = detail::component_storage<T, Entity, Alloc>::create(alloc_);
+    auto *store = detail::component_storage<T, Entity, Alloc>::create(m_alloc);
     storages_[id] = store;
 
     component_flags flags = desc.flags;
@@ -695,7 +697,7 @@ public:
     md.lifecycle = detail::make_lifecycle<T>();
     md.storage = store;
     metadata_[id] = md;
-    ++registered_count_;
+    ++m_registered_count;
     return metadata_[id];
   }
 
@@ -728,8 +730,8 @@ public:
     assert(alive(e) && "registry::emplace: entity not alive");
     T &ref = store.set().emplace(e, std::forward<Args>(args)...);
     bump_generation(detail::component_id_of<T>());
-    if (!store.on_construct_.empty())
-      store.on_construct_.fire(*this, e);
+    if (!store.m_on_construct.empty())
+      store.m_on_construct.fire(*this, e);
     return ref;
   }
 
@@ -742,14 +744,14 @@ public:
     assert(alive(e) && "registry::emplace_or_replace: entity not alive");
     if (T *p = store.try_get(e)) {
       *p = T(std::forward<Args>(args)...);
-      if (!store.on_update_.empty())
-        store.on_update_.fire(*this, e);
+      if (!store.m_on_update.empty())
+        store.m_on_update.fire(*this, e);
       return *p;
     }
     T &ref = store.set().emplace(e, std::forward<Args>(args)...);
     bump_generation(detail::component_id_of<T>());
-    if (!store.on_construct_.empty())
-      store.on_construct_.fire(*this, e);
+    if (!store.m_on_construct.empty())
+      store.m_on_construct.fire(*this, e);
     return ref;
   }
 
@@ -773,8 +775,8 @@ public:
     T *p = store.try_get(e);
     assert(p && "registry::replace: entity does not have component");
     *p = T(std::forward<Args>(args)...);
-    if (!store.on_update_.empty())
-      store.on_update_.fire(*this, e);
+    if (!store.m_on_update.empty())
+      store.m_on_update.fire(*this, e);
     return *p;
   }
 
@@ -785,8 +787,8 @@ public:
     T *p = store.try_get(e);
     assert(p && "registry::patch: entity does not have component");
     fn(*p);
-    if (!store.on_update_.empty())
-      store.on_update_.fire(*this, e);
+    if (!store.m_on_update.empty())
+      store.m_on_update.fire(*this, e);
     return *p;
   }
 
@@ -905,17 +907,17 @@ public:
 
   /// Append a callback fired after a T is constructed on an entity.
   template <typename C, typename Fn> void on_construct(Fn &&fn) {
-    assure<std::remove_cv_t<C>>().on_construct_.callbacks.emplace_back(
+    assure<std::remove_cv_t<C>>().m_on_construct.callbacks.emplace_back(
         std::forward<Fn>(fn));
   }
   /// Append a callback fired before a T is removed from an entity.
   template <typename C, typename Fn> void on_destroy(Fn &&fn) {
-    assure<std::remove_cv_t<C>>().on_destroy_.callbacks.emplace_back(
+    assure<std::remove_cv_t<C>>().m_on_destroy.callbacks.emplace_back(
         std::forward<Fn>(fn));
   }
   /// Append a callback fired after a T is replaced or patched.
   template <typename C, typename Fn> void on_update(Fn &&fn) {
-    assure<std::remove_cv_t<C>>().on_update_.callbacks.emplace_back(
+    assure<std::remove_cv_t<C>>().m_on_update.callbacks.emplace_back(
         std::forward<Fn>(fn));
   }
 
@@ -925,12 +927,12 @@ public:
   template <typename... C> [[nodiscard]] auto view() {
     (assert_registered<std::remove_cv_t<C>>(), ...);
     return basic_view<basic_registry, std::remove_cv_t<C>...>(
-        std::make_tuple(raw_storage<std::remove_cv_t<C>>()...), alloc_);
+        std::make_tuple(raw_storage<std::remove_cv_t<C>>()...), m_alloc);
   }
   template <typename... C> [[nodiscard]] auto view() const {
     (assert_registered<std::remove_cv_t<C>>(), ...);
     return basic_view<const basic_registry, std::remove_cv_t<C>...>(
-        std::make_tuple(raw_storage<std::remove_cv_t<C>>()...), alloc_);
+        std::make_tuple(raw_storage<std::remove_cv_t<C>>()...), m_alloc);
   }
 
   /// Cached query over entities having all of T...; reused across calls and
@@ -973,8 +975,8 @@ public:
       hierarchy_.at(pn.first_child).prev_sibling = child;
     pn.first_child = child;
     ++pn.child_count;
-    ++relation_count_;
-    ++hierarchy_version_;
+    ++m_relation_count;
+    ++m_hierarchy_version;
     return true;
   }
 
@@ -1020,7 +1022,7 @@ public:
   /// Depth-first pre-order traversal invoking fn(descendant) for the whole
   /// subtree below @p e (excluding @p e itself).
   template <typename Fn> void each_descendant(Entity e, Fn &&fn) const {
-    small_vector<Entity, 32, rebind<Entity>> stack{rebind<Entity>(alloc_)};
+    small_vector<Entity, 32, rebind<Entity>> stack{rebind<Entity>(m_alloc)};
     push_children(e, stack);
     while (!stack.empty()) {
       const Entity c = stack.back();
@@ -1047,22 +1049,22 @@ public:
   /// Registry-wide counts. Cheap to compute.
   [[nodiscard]] registry_statistics statistics() const noexcept {
     registry_statistics st{};
-    st.entity_count = alive_count_;
-    st.entity_slot_count = slots_.size();
-    st.free_slot_count = free_.size();
-    st.component_type_count = registered_count_;
+    st.entity_count = m_alive_count;
+    st.entity_slot_count = m_slots.size();
+    st.free_slot_count = m_free.size();
+    st.component_type_count = m_registered_count;
     for (const base_storage *s : storages_)
       if (s)
         ++st.component_storage_count;
-    st.relation_count = relation_count_;
+    st.relation_count = m_relation_count;
     usize live_queries = 0;
     for (const qcache *q : query_caches_)
       if (q)
         ++live_queries;
     st.cached_query_count = live_queries;
 
-    usize mem = slots_.capacity() * sizeof(entity_slot) +
-                free_.capacity() * sizeof(repr) +
+    usize mem = m_slots.capacity() * sizeof(entity_slot) +
+                m_free.capacity() * sizeof(repr) +
                 hierarchy_.capacity() * sizeof(hierarchy_node);
     for (const base_storage *s : storages_)
       if (s)
@@ -1217,8 +1219,8 @@ private:
     cn->next_sibling = Entity{};
     if (pn.child_count > 0)
       --pn.child_count;
-    --relation_count_;
-    ++hierarchy_version_;
+    --m_relation_count;
+    ++m_hierarchy_version;
     maybe_erase_node(p);
   }
 
@@ -1244,7 +1246,7 @@ private:
     if (!n || !n->first_child.valid())
       return;
 
-    small_vector<Entity, 16, rebind<Entity>> kids{rebind<Entity>(alloc_)};
+    small_vector<Entity, 16, rebind<Entity>> kids{rebind<Entity>(m_alloc)};
     Entity c = n->first_child;
     while (c.valid()) {
       kids.push_back(c);
@@ -1306,15 +1308,15 @@ private:
 
   qcache *make_query_cache() {
     using qalloc = rebind<qcache>;
-    qalloc a(alloc_);
+    qalloc a(m_alloc);
     qcache *p = std::allocator_traits<qalloc>::allocate(a, 1);
-    std::allocator_traits<qalloc>::construct(a, p, alloc_);
+    std::allocator_traits<qalloc>::construct(a, p, m_alloc);
     return p;
   }
 
   void destroy_query_cache(qcache *p) noexcept {
     using qalloc = rebind<qcache>;
-    qalloc a(alloc_);
+    qalloc a(m_alloc);
     std::allocator_traits<qalloc>::destroy(a, p);
     std::allocator_traits<qalloc>::deallocate(a, p, 1);
   }
@@ -1331,41 +1333,42 @@ private:
   }
 
   void move_from(basic_registry &&o) noexcept {
-    alloc_ = o.alloc_;
-    slots_ = std::move(o.slots_);
-    free_ = std::move(o.free_);
+    m_alloc = o.m_alloc;
+    m_slots = std::move(o.m_slots);
+    m_free = std::move(o.m_free);
     storages_ = std::move(o.storages_);
     metadata_ = std::move(o.metadata_);
     generations_ = std::move(o.generations_);
     hierarchy_ = std::move(o.hierarchy_);
     query_caches_ = std::move(o.query_caches_);
     query_index_ = std::move(o.query_index_);
-    alive_count_ = o.alive_count_;
-    relation_count_ = o.relation_count_;
-    registered_count_ = o.registered_count_;
-    hierarchy_version_ = o.hierarchy_version_;
+    m_alive_count = o.m_alive_count;
+    m_relation_count = o.m_relation_count;
+    m_registered_count = o.m_registered_count;
+    m_hierarchy_version = o.m_hierarchy_version;
     o.storages_.clear();
     o.query_caches_.clear();
-    o.alive_count_ = 0;
-    o.relation_count_ = 0;
-    o.registered_count_ = 0;
+    o.m_alive_count = 0;
+    o.m_relation_count = 0;
+    o.m_registered_count = 0;
   }
 
-  NX_NO_UNIQUE_ADDRESS Alloc alloc_{};
-  vector<entity_slot, rebind<entity_slot>> slots_{rebind<entity_slot>(alloc_)};
-  vector<repr, rebind<repr>> free_{rebind<repr>(alloc_)};
+  NX_NO_UNIQUE_ADDRESS Alloc m_alloc{};
+  vector<entity_slot, rebind<entity_slot>> m_slots{
+      rebind<entity_slot>(m_alloc)};
+  vector<repr, rebind<repr>> m_free{rebind<repr>(m_alloc)};
   vector<base_storage *, rebind<base_storage *>> storages_{
-      rebind<base_storage *>(alloc_)};
+      rebind<base_storage *>(m_alloc)};
   vector<component_metadata, rebind<component_metadata>> metadata_{
-      rebind<component_metadata>(alloc_)};
-  vector<u64, rebind<u64>> generations_{rebind<u64>(alloc_)};
-  hier_set hierarchy_{alloc_};
-  vector<qcache *, rebind<qcache *>> query_caches_{rebind<qcache *>(alloc_)};
+      rebind<component_metadata>(m_alloc)};
+  vector<u64, rebind<u64>> generations_{rebind<u64>(m_alloc)};
+  hier_set hierarchy_{m_alloc};
+  vector<qcache *, rebind<qcache *>> query_caches_{rebind<qcache *>(m_alloc)};
   qcache_index query_index_{};
-  usize alive_count_ = 0;
-  usize relation_count_ = 0;
-  usize registered_count_ = 0;
-  u64 hierarchy_version_ = 0;
+  usize m_alive_count = 0;
+  usize m_relation_count = 0;
+  usize m_registered_count = 0;
+  u64 m_hierarchy_version = 0;
 };
 
 /// Default registry: 32-bit entity handles, default nx allocator.
@@ -1399,41 +1402,41 @@ public:
   using cache_type = detail::query_cache<entity_type, allocator_type>;
 
   cached_query(Reg *reg, cache_type *cache) noexcept
-      : reg_(reg), cache_(cache) {}
+      : m_reg(reg), m_cache(cache) {}
 
   /// Number of matched entities (rebuilds the cache if stale).
   [[nodiscard]] usize size() {
     ensure_built();
-    return cache_->entities.size();
+    return m_cache->entities.size();
   }
   [[nodiscard]] bool empty() { return size() == 0; }
 
   /// Matched entities as a contiguous span (rebuilds the cache if stale).
   [[nodiscard]] std::span<const entity_type> entities() {
     ensure_built();
-    return {cache_->entities.data(), cache_->entities.size()};
+    return {m_cache->entities.data(), m_cache->entities.size()};
   }
 
   /// Invoke fn(entity, T&...) for each matched entity.
   template <typename Fn> void each(Fn &&fn) {
     ensure_built();
-    for (entity_type e : cache_->entities)
+    for (entity_type e : m_cache->entities)
       invoke(std::forward<Fn>(fn), e, std::index_sequence_for<T...>{});
   }
 
 private:
   void ensure_built() {
-    if (cache_->needs_rebuild(*reg_))
-      reg_->rebuild_query(*cache_);
+    if (m_cache->needs_rebuild(*m_reg))
+      m_reg->rebuild_query(*m_cache);
   }
 
   template <typename Fn, usize... I>
   void invoke(Fn &&fn, entity_type e, std::index_sequence<I...>) {
-    fn(e, reg_->template get<T>(e)...);
+    fn(e, m_reg->template get<T>(e)...);
   }
 
-  Reg *reg_;
-  cache_type *cache_;
+  Reg *m_reg;
+  cache_type *m_cache;
 };
 
 } // namespace nx::ecs

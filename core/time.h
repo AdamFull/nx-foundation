@@ -39,31 +39,31 @@ public:
   }
 
   // Truncating, like any integer division: 1999 ns is one microsecond.
-  [[nodiscard]] constexpr i64 nanos() const noexcept { return ns_; }
-  [[nodiscard]] constexpr i64 micros() const noexcept { return ns_ / 1'000; }
+  [[nodiscard]] constexpr i64 nanos() const noexcept { return m_ns; }
+  [[nodiscard]] constexpr i64 micros() const noexcept { return m_ns / 1'000; }
   [[nodiscard]] constexpr i64 millis() const noexcept {
-    return ns_ / 1'000'000;
+    return m_ns / 1'000'000;
   }
 
   // Fractional, for anything comparing two measurements rather than reporting
   // one - truncating to a microsecond throws away the difference between two
   // fast runs, which is exactly what a crossover search is looking at.
   [[nodiscard]] constexpr f64 micros_f() const noexcept {
-    return cast<f64>(ns_) / 1e3;
+    return cast<f64>(m_ns) / 1e3;
   }
   [[nodiscard]] constexpr f64 millis_f() const noexcept {
-    return cast<f64>(ns_) / 1e6;
+    return cast<f64>(m_ns) / 1e6;
   }
   [[nodiscard]] constexpr f64 seconds() const noexcept {
-    return cast<f64>(ns_) / 1e9;
+    return cast<f64>(m_ns) / 1e9;
   }
 
   constexpr duration &operator+=(const duration d) noexcept {
-    ns_ += d.ns_;
+    m_ns += d.m_ns;
     return *this;
   }
   constexpr duration &operator-=(const duration d) noexcept {
-    ns_ -= d.ns_;
+    m_ns -= d.m_ns;
     return *this;
   }
 
@@ -76,16 +76,16 @@ public:
     return a -= b;
   }
   [[nodiscard]] friend constexpr duration operator-(const duration d) noexcept {
-    return duration(-d.ns_);
+    return duration(-d.m_ns);
   }
 
   [[nodiscard]] friend constexpr auto operator<=>(duration, duration) = default;
   [[nodiscard]] friend constexpr bool operator==(duration, duration) = default;
 
 private:
-  explicit constexpr duration(const i64 ns) noexcept : ns_(ns) {}
+  explicit constexpr duration(const i64 ns) noexcept : m_ns(ns) {}
 
-  i64 ns_ = 0;
+  i64 m_ns = 0;
 };
 
 /// A point on the monotonic clock.
@@ -106,20 +106,20 @@ public:
 
   /// Nanoseconds since the clock's own zero. For handing a stamp to something
   /// that stores or transmits it; the value is only comparable within one run.
-  [[nodiscard]] constexpr u64 nanos() const noexcept { return ns_; }
+  [[nodiscard]] constexpr u64 nanos() const noexcept { return m_ns; }
   [[nodiscard]] static constexpr timestamp from_nanos(const u64 ns) noexcept {
     return timestamp(ns);
   }
 
   [[nodiscard]] constexpr duration
   operator-(const timestamp rhs) const noexcept {
-    return duration::from_nanos(cast<i64>(ns_) - cast<i64>(rhs.ns_));
+    return duration::from_nanos(cast<i64>(m_ns) - cast<i64>(rhs.m_ns));
   }
   [[nodiscard]] constexpr timestamp operator+(const duration d) const noexcept {
-    return timestamp(cast<u64>(cast<i64>(ns_) + d.nanos()));
+    return timestamp(cast<u64>(cast<i64>(m_ns) + d.nanos()));
   }
   [[nodiscard]] constexpr timestamp operator-(const duration d) const noexcept {
-    return timestamp(cast<u64>(cast<i64>(ns_) - d.nanos()));
+    return timestamp(cast<u64>(cast<i64>(m_ns) - d.nanos()));
   }
 
   [[nodiscard]] friend constexpr auto operator<=>(timestamp,
@@ -128,9 +128,9 @@ public:
                                                  timestamp) = default;
 
 private:
-  explicit constexpr timestamp(const u64 ns) noexcept : ns_(ns) {}
+  explicit constexpr timestamp(const u64 ns) noexcept : m_ns(ns) {}
 
-  u64 ns_ = 0;
+  u64 m_ns = 0;
 };
 
 /// Time since it was started, or since the last lap.
@@ -138,12 +138,12 @@ class stopwatch {
 public:
   /// Starts immediately: a stopwatch that had to be started separately would
   /// mostly be started on the line after it was declared.
-  stopwatch() noexcept : begin_(timestamp::now()) {}
+  stopwatch() noexcept : m_begin(timestamp::now()) {}
 
-  void restart() noexcept { begin_ = timestamp::now(); }
+  void restart() noexcept { m_begin = timestamp::now(); }
 
   [[nodiscard]] duration elapsed() const noexcept {
-    return timestamp::now() - begin_;
+    return timestamp::now() - m_begin;
   }
 
   /// Elapsed, and start again from that same instant. One clock read rather
@@ -151,15 +151,15 @@ public:
   /// between them.
   [[nodiscard]] duration lap() noexcept {
     const timestamp now = timestamp::now();
-    const duration d = now - begin_;
-    begin_ = now;
+    const duration d = now - m_begin;
+    m_begin = now;
     return d;
   }
 
-  [[nodiscard]] timestamp started() const noexcept { return begin_; }
+  [[nodiscard]] timestamp started() const noexcept { return m_begin; }
 
 private:
-  timestamp begin_;
+  timestamp m_begin;
 };
 
 /// Writes its own lifetime, in microseconds, into @p out.
@@ -169,18 +169,18 @@ private:
 /// stop on an early return.
 class scoped_micros {
 public:
-  explicit scoped_micros(u64 &out) noexcept : out_(out) {}
+  explicit scoped_micros(u64 &out) noexcept : m_out(out) {}
   ~scoped_micros() {
-    const i64 us = watch_.elapsed().micros();
-    out_ = us > 0 ? cast<u64>(us) : 0u;
+    const i64 us = m_watch.elapsed().micros();
+    m_out = us > 0 ? cast<u64>(us) : 0u;
   }
 
   scoped_micros(const scoped_micros &) = delete;
   scoped_micros &operator=(const scoped_micros &) = delete;
 
 private:
-  u64 &out_;
-  stopwatch watch_;
+  u64 &m_out;
+  stopwatch m_watch;
 };
 
 } // namespace nx

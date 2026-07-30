@@ -188,52 +188,52 @@ class path_view {
 public:
   constexpr path_view() noexcept = default;
 
-  constexpr path_view(const string_view s) noexcept { p_ = s; }
+  constexpr path_view(const string_view s) noexcept { m_p = s; }
 
   constexpr path_view(const char *s) noexcept : path_view(string_view(s)) {}
 
   template <class A>
   path_view(const basic_string<A> &s) noexcept : path_view(string_view(s)) {}
 
-  [[nodiscard]] constexpr string_view native() const noexcept { return p_; }
+  [[nodiscard]] constexpr string_view native() const noexcept { return m_p; }
   [[nodiscard]] std::span<const std::byte> as_bytes() const noexcept {
-    return std::as_bytes(std::span{p_.data(), p_.size()});
+    return std::as_bytes(std::span{m_p.data(), m_p.size()});
   }
-  [[nodiscard]] constexpr bool empty() const noexcept { return p_.empty(); }
+  [[nodiscard]] constexpr bool empty() const noexcept { return m_p.empty(); }
 
   [[nodiscard]] constexpr bool is_absolute() const noexcept {
-    return path::is_absolute(p_);
+    return path::is_absolute(m_p);
   }
   [[nodiscard]] constexpr bool is_relative() const noexcept {
-    return path::is_relative(p_);
+    return path::is_relative(m_p);
   }
   [[nodiscard]] constexpr path_view filename() const noexcept {
-    return path::filename(p_);
+    return path::filename(m_p);
   }
   [[nodiscard]] constexpr path_view stem() const noexcept {
-    return path::stem(p_);
+    return path::stem(m_p);
   }
   [[nodiscard]] constexpr string_view extension() const noexcept {
-    return path::extension(p_);
+    return path::extension(m_p);
   }
   [[nodiscard]] constexpr path_view parent_path() const noexcept {
-    return path::parent_path(p_);
+    return path::parent_path(m_p);
   }
   [[nodiscard]] constexpr string_view root_name() const noexcept {
-    return path::root_name(p_);
+    return path::root_name(m_p);
   }
   [[nodiscard]] constexpr bool has_extension() const noexcept {
-    return path::has_extension(p_);
+    return path::has_extension(m_p);
   }
   [[nodiscard]] string join(const path_view tail) const {
-    return path::join(p_, tail.native());
+    return path::join(m_p, tail.native());
   }
   [[nodiscard]] string operator/(const path_view tail) const {
-    return path::join(p_, tail.native());
+    return path::join(m_p, tail.native());
   }
 
 private:
-  string_view p_;
+  string_view m_p;
 };
 
 enum class io_error : u32 {
@@ -380,36 +380,36 @@ struct stream {
 class stream_ptr {
 public:
   stream_ptr() = default;
-  explicit stream_ptr(stream *s) noexcept : s_(s) {}
+  explicit stream_ptr(stream *s) noexcept : m_s(s) {}
   ~stream_ptr() { reset(); }
 
-  stream_ptr(stream_ptr &&o) noexcept : s_(o.s_) { o.s_ = nullptr; }
+  stream_ptr(stream_ptr &&o) noexcept : m_s(o.m_s) { o.m_s = nullptr; }
   stream_ptr &operator=(stream_ptr &&o) noexcept {
     if (this != &o) {
       reset();
-      s_ = o.s_;
-      o.s_ = nullptr;
+      m_s = o.m_s;
+      o.m_s = nullptr;
     }
     return *this;
   }
   stream_ptr(const stream_ptr &) = delete;
   stream_ptr &operator=(const stream_ptr &) = delete;
 
-  [[nodiscard]] stream *get() const noexcept { return s_; }
-  stream *operator->() const noexcept { return s_; }
-  stream &operator*() const noexcept { return *s_; }
-  [[nodiscard]] bool valid() const noexcept { return s_ != nullptr; }
-  explicit operator bool() const noexcept { return s_ != nullptr; }
+  [[nodiscard]] stream *get() const noexcept { return m_s; }
+  stream *operator->() const noexcept { return m_s; }
+  stream &operator*() const noexcept { return *m_s; }
+  [[nodiscard]] bool valid() const noexcept { return m_s != nullptr; }
+  explicit operator bool() const noexcept { return m_s != nullptr; }
 
   void reset() noexcept {
-    if (s_) {
-      release(s_);
-      s_ = nullptr;
+    if (m_s) {
+      release(m_s);
+      m_s = nullptr;
     }
   }
 
 private:
-  stream *s_ = nullptr;
+  stream *m_s = nullptr;
 };
 
 /// Opens @p path for reading.

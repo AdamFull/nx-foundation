@@ -15,10 +15,10 @@
  * classes, cache hierarchy and NUMA node count.
  */
 
-#include "foundation/core/callable.h"
 #include "foundation/containers/fixed_vector.h"
-#include "foundation/core/foundation.h"
 #include "foundation/containers/small_vector.h"
+#include "foundation/core/callable.h"
+#include "foundation/core/foundation.h"
 
 #include <chrono>
 
@@ -67,24 +67,24 @@ public:
   thread(const thread &) = delete;
   thread &operator=(const thread &) = delete;
 
-  thread(thread &&o) noexcept : handle_(o.handle_), id_(o.id_) {
-    o.handle_ = 0;
-    o.id_ = 0;
+  thread(thread &&o) noexcept : m_handle(o.m_handle), m_id(o.m_id) {
+    o.m_handle = 0;
+    o.m_id = 0;
   }
 
   thread &operator=(thread &&o) noexcept {
     if (this != &o) {
       if (joinable())
         join();
-      handle_ = o.handle_;
-      id_ = o.id_;
-      o.handle_ = 0;
-      o.id_ = 0;
+      m_handle = o.m_handle;
+      m_id = o.m_id;
+      o.m_handle = 0;
+      o.m_id = 0;
     }
     return *this;
   }
 
-  [[nodiscard]] bool joinable() const noexcept { return handle_ != 0; }
+  [[nodiscard]] bool joinable() const noexcept { return m_handle != 0; }
 
   /// Blocks until the thread finishes. Must be joinable.
   void join();
@@ -94,16 +94,16 @@ public:
 
   /// Opaque unique thread id. On Windows this is the OS thread id; on
   /// POSIX it is derived from the pthread handle (not the kernel tid).
-  [[nodiscard]] u64 id() const noexcept { return id_; }
+  [[nodiscard]] u64 id() const noexcept { return m_id; }
 
   /// Native handle: HANDLE on Windows, pthread_t on POSIX.
   [[nodiscard]] void *native_handle() const noexcept {
-    return reinterpret_cast<void *>(handle_);
+    return reinterpret_cast<void *>(m_handle);
   }
 
 private:
-  uintptr_t handle_ = 0;
-  u64 id_ = 0;
+  uintptr_t m_handle = 0;
+  u64 m_id = 0;
 };
 
 /// Operations on the calling thread.
@@ -140,10 +140,10 @@ enum class cache_type : u8 { Unified, Data, Instruction };
 
 /// One level of the cache hierarchy, aggregated over identical instances.
 struct cache_info {
-  u8 level = 0;          ///< 1, 2 or 3
+  u8 level = 0; ///< 1, 2 or 3
   cache_type type = cache_type::Unified;
-  u32 line_size = 0;     ///< bytes
-  u64 size = 0;          ///< bytes per instance
+  u32 line_size = 0; ///< bytes
+  u64 size = 0;      ///< bytes per instance
   u32 instance_count = 0;
 };
 

@@ -31,12 +31,12 @@
  * lexicographic; use id_string::lexical_less to sort by text.
  */
 
+#include "foundation/containers/hash_map.h"
 #include "foundation/core/foundation.h"
 #include "foundation/core/hash.h"
-#include "foundation/containers/hash_map.h"
 #include "foundation/strings/utf8_string.h"
-#include "foundation/threading/sync.h"
 #include "foundation/strings/utf8_string_view.h"
+#include "foundation/threading/sync.h"
 
 #include <cassert>
 #include <compare>
@@ -81,20 +81,20 @@ public:
     if (id == 0)
       return;
     {
-      scoped_shared_lock read(mutex_);
-      if (const auto it = map_.find(id); it != map_.end()) {
+      scoped_shared_lock read(m_mutex);
+      if (const auto it = m_map.find(id); it != m_map.end()) {
         assert(string_view(it->second.data, it->second.length) == s &&
                "nx::id_string: 64-bit hash collision between distinct strings");
         return;
       }
     }
-    scoped_lock write(mutex_);
-    if (const auto it = map_.find(id); it != map_.end()) {
+    scoped_lock write(m_mutex);
+    if (const auto it = m_map.find(id); it != m_map.end()) {
       assert(string_view(it->second.data, it->second.length) == s &&
              "nx::id_string: 64-bit hash collision between distinct strings");
       return;
     }
-    map_.emplace(id, store(s));
+    m_map.emplace(id, store(s));
   }
 
   [[nodiscard]] u64 intern(string_view s) {
@@ -108,20 +108,20 @@ public:
       out = entry{"", 0};
       return true;
     }
-    scoped_shared_lock read(mutex_);
-    const auto it = map_.find(id);
-    if (it == map_.end())
+    scoped_shared_lock read(m_mutex);
+    const auto it = m_map.find(id);
+    if (it == m_map.end())
       return false;
     out = it->second;
     return true;
   }
 
   [[nodiscard]] stats snapshot() const noexcept {
-    scoped_shared_lock read(mutex_);
+    scoped_shared_lock read(m_mutex);
     usize used = 0;
-    for (const page &p : pages_)
+    for (const page &p : m_pages)
       used += p.used;
-    return stats{map_.size(), used, pages_.size()};
+    return stats{m_map.size(), used, m_pages.size()};
   }
 
 private:
@@ -135,12 +135,13 @@ private:
 
   entry store(string_view s) {
     const usize need = s.size() + 1;
-    if (pages_.empty() || pages_.back().capacity - pages_.back().used < need) {
+    if (m_pages.empty() ||
+        m_pages.back().capacity - m_pages.back().used < need) {
       const usize capacity = nx::max(kPageSize, need);
       char *base = static_cast<char *>(mem_alloc(capacity));
-      pages_.push_back(page{base, 0, capacity});
+      m_pages.push_back(page{base, 0, capacity});
     }
-    page &p = pages_.back();
+    page &p = m_pages.back();
     char *dst = p.base + p.used;
     std::memcpy(dst, s.data(), s.size());
     dst[s.size()] = '\0';
@@ -148,9 +149,9 @@ private:
     return entry{dst, nx::cast<u32>(s.size())};
   }
 
-  mutable rw_lock mutex_;
-  hash_map<u64, entry> map_;
-  vector<page> pages_;
+  mutable rw_lock m_mutex;
+  hash_map<u64, entry> m_map;
+  vector<page> m_pages;
 };
 
 [[nodiscard]] inline id_string_pool &id_string_intern_pool() noexcept {
@@ -174,9 +175,10 @@ public:
 
   constexpr id_string() noexcept = default;
 
-  constexpr id_string(string_view s) noexcept : id_(detail::id_string_hash(s)) {
+  constexpr id_string(string_view s) noexcept
+      : m_id(detail::id_string_hash(s)) {
     if (!std::is_constant_evaluated() && !s.empty())
-      detail::id_string_intern_pool().register_bytes(id_, s);
+      detail::id_string_intern_pool().register_bytes(m_id, s);
   }
 
   constexpr id_string(const char *s) noexcept : id_string(string_view(s)) {}
@@ -186,7 +188,7 @@ public:
   /// Reconstruct from a previously serialized id without interning bytes.
   [[nodiscard]] static constexpr id_string from_id(id_type id) noexcept {
     id_string out;
-    out.id_ = id;
+    out.m_id = id;
     return out;
   }
 
@@ -194,26 +196,26 @@ public:
   [[nodiscard]] static consteval id_string
   from_literal(string_view s) noexcept {
     id_string out;
-    out.id_ = detail::id_string_hash(s);
+    out.m_id = detail::id_string_hash(s);
     return out;
   }
 
-  [[nodiscard]] constexpr id_type id() const noexcept { return id_; }
-  [[nodiscard]] constexpr bool empty() const noexcept { return id_ == 0; }
+  [[nodiscard]] constexpr id_type id() const noexcept { return m_id; }
+  [[nodiscard]] constexpr bool empty() const noexcept { return m_id == 0; }
   [[nodiscard]] constexpr explicit operator bool() const noexcept {
-    return id_ != 0;
+    return m_id != 0;
   }
 
   /// True when the original bytes are present in the intern pool.
   [[nodiscard]] bool is_resolvable() const noexcept {
     detail::id_string_pool::entry e;
-    return detail::id_string_intern_pool().lookup(id_, e);
+    return detail::id_string_intern_pool().lookup(m_id, e);
   }
 
   /// Original bytes if known, otherwise an empty view.
   [[nodiscard]] string_view view() const noexcept {
     detail::id_string_pool::entry e;
-    if (detail::id_string_intern_pool().lookup(id_, e))
+    if (detail::id_string_intern_pool().lookup(m_id, e))
       return string_view(e.data, e.length);
     return string_view{};
   }
@@ -221,7 +223,7 @@ public:
   /// Null-terminated original bytes if known, otherwise "".
   [[nodiscard]] const char *c_str() const noexcept {
     detail::id_string_pool::entry e;
-    if (detail::id_string_intern_pool().lookup(id_, e))
+    if (detail::id_string_intern_pool().lookup(m_id, e))
       return e.data;
     return "";
   }
@@ -229,23 +231,23 @@ public:
   [[nodiscard]] string to_string() const { return string(view()); }
 
   void swap(id_string &o) noexcept {
-    const id_type t = id_;
-    id_ = o.id_;
-    o.id_ = t;
+    const id_type t = m_id;
+    m_id = o.m_id;
+    o.m_id = t;
   }
 
   [[nodiscard]] friend constexpr bool operator==(id_string a,
                                                  id_string b) noexcept {
-    return a.id_ == b.id_;
+    return a.m_id == b.m_id;
   }
   [[nodiscard]] friend constexpr std::strong_ordering
   operator<=>(id_string a, id_string b) noexcept {
-    return a.id_ <=> b.id_;
+    return a.m_id <=> b.m_id;
   }
 
   [[nodiscard]] friend constexpr bool operator==(id_string a,
                                                  string_view b) noexcept {
-    return a.id_ == detail::id_string_hash(b);
+    return a.m_id == detail::id_string_hash(b);
   }
 
   /// Comparator that orders id_strings by their resolved text.
@@ -256,7 +258,7 @@ public:
   };
 
 private:
-  id_type id_ = 0;
+  id_type m_id = 0;
 };
 
 static_assert(sizeof(id_string) == sizeof(u64));

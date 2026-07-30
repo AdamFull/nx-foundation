@@ -44,8 +44,7 @@ template <usize N> class bit_array {
 
   using word_type = u64;
   static constexpr usize BITS_PER_WORD = 64;
-  static constexpr usize WORD_COUNT =
-      (N + BITS_PER_WORD - 1) / BITS_PER_WORD;
+  static constexpr usize WORD_COUNT = (N + BITS_PER_WORD - 1) / BITS_PER_WORD;
   /// Bits in use in the final word (0 means the word is full).
   static constexpr usize TAIL_BITS = N % BITS_PER_WORD;
   static constexpr word_type TAIL_MASK =
@@ -66,35 +65,35 @@ public:
   class reference {
   public:
     constexpr reference(bit_array &owner, const usize pos) noexcept
-        : owner_(&owner), pos_(pos) {}
+        : m_owner(&owner), m_pos(pos) {}
 
     constexpr reference &operator=(const bool value) noexcept {
-      owner_->set(pos_, value);
+      m_owner->set(m_pos, value);
       return *this;
     }
 
     constexpr reference &operator=(const reference &other) noexcept {
-      owner_->set(pos_, nx::cast<bool>(other));
+      m_owner->set(m_pos, nx::cast<bool>(other));
       return *this;
     }
 
     [[nodiscard]] constexpr operator bool() const noexcept {
-      return owner_->test(pos_);
+      return m_owner->test(m_pos);
     }
 
     /// Value of the referenced bit, inverted.
     [[nodiscard]] constexpr bool operator~() const noexcept {
-      return !owner_->test(pos_);
+      return !m_owner->test(m_pos);
     }
 
     constexpr reference &flip() noexcept {
-      owner_->flip(pos_);
+      m_owner->flip(m_pos);
       return *this;
     }
 
   private:
-    bit_array *owner_;
-    usize pos_;
+    bit_array *m_owner;
+    usize m_pos;
   };
 
   constexpr bit_array() noexcept = default;
@@ -266,10 +265,10 @@ public:
     } else {
       for (usize i = 0; i < WORD_COUNT - word_shift; ++i) {
         const word_type low = words_[i + word_shift] >> bit_shift;
-        const word_type high =
-            i + word_shift + 1 >= WORD_COUNT
-                ? word_type{0}
-                : words_[i + word_shift + 1] << (BITS_PER_WORD - bit_shift);
+        const word_type high = i + word_shift + 1 >= WORD_COUNT
+                                   ? word_type{0}
+                                   : words_[i + word_shift + 1]
+                                         << (BITS_PER_WORD - bit_shift);
         words_[i] = low | high;
       }
     }
@@ -325,8 +324,8 @@ private:
 
     usize word_index = pos / BITS_PER_WORD;
     // Mask off the bits below pos in the first word we look at.
-    word_type word = words_[word_index] &
-                     (~word_type{0} << (pos % BITS_PER_WORD));
+    word_type word =
+        words_[word_index] & (~word_type{0} << (pos % BITS_PER_WORD));
 
     for (;;) {
       if (word != 0)

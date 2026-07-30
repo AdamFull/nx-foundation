@@ -232,13 +232,13 @@ public:
     copy_ = [](void *d) -> void * {
       return allocate<FType>(*nx::cast<const FType *>(d));
     };
-    data_ = allocate<FType>(std::forward<F>(f));
+    m_data = allocate<FType>(std::forward<F>(f));
   }
 
   ~function() {
-    if (NX_LIKELY(data_ != nullptr)) {
-      destroy_(data_);
-      data_ = nullptr;
+    if (NX_LIKELY(m_data != nullptr)) {
+      destroy_(m_data);
+      m_data = nullptr;
       invoke_ = nullptr;
       destroy_ = nullptr;
       copy_ = nullptr;
@@ -247,58 +247,58 @@ public:
 
   NX_FORCE_INLINE function(function &&o) noexcept
       : invoke_(o.invoke_), destroy_(o.destroy_), copy_(o.copy_),
-        data_(o.data_) {
+        m_data(o.m_data) {
     o.invoke_ = nullptr;
     o.destroy_ = nullptr;
     o.copy_ = nullptr;
-    o.data_ = nullptr;
+    o.m_data = nullptr;
   }
 
   NX_FORCE_INLINE function &operator=(function &&o) noexcept {
     if (NX_LIKELY(this != &o)) {
-      if (NX_LIKELY(data_ != nullptr))
-        destroy_(data_);
+      if (NX_LIKELY(m_data != nullptr))
+        destroy_(m_data);
       invoke_ = o.invoke_;
       destroy_ = o.destroy_;
       copy_ = o.copy_;
-      data_ = o.data_;
+      m_data = o.m_data;
       o.invoke_ = nullptr;
       o.destroy_ = nullptr;
       o.copy_ = nullptr;
-      o.data_ = nullptr;
+      o.m_data = nullptr;
     }
     return *this;
   }
 
   NX_FORCE_INLINE function(const function &o) {
-    if (NX_LIKELY(o.data_ != nullptr)) {
+    if (NX_LIKELY(o.m_data != nullptr)) {
       invoke_ = o.invoke_;
       destroy_ = o.destroy_;
       copy_ = o.copy_;
-      data_ = copy_(o.data_);
+      m_data = copy_(o.m_data);
     }
   }
 
   NX_FORCE_INLINE function &operator=(const function &o) {
     if (NX_LIKELY(this != &o)) {
-      if (NX_LIKELY(data_ != nullptr))
-        destroy_(data_);
+      if (NX_LIKELY(m_data != nullptr))
+        destroy_(m_data);
       invoke_ = nullptr;
       destroy_ = nullptr;
       copy_ = nullptr;
-      data_ = nullptr;
-      if (NX_LIKELY(o.data_ != nullptr)) {
+      m_data = nullptr;
+      if (NX_LIKELY(o.m_data != nullptr)) {
         invoke_ = o.invoke_;
         destroy_ = o.destroy_;
         copy_ = o.copy_;
-        data_ = copy_(o.data_);
+        m_data = copy_(o.m_data);
       }
     }
     return *this;
   }
 
   NX_FORCE_INLINE R operator()(Args... args) const {
-    return invoke_(data_, std::forward<Args>(args)...);
+    return invoke_(m_data, std::forward<Args>(args)...);
   }
 
   [[nodiscard]] NX_FORCE_INLINE bool valid() const noexcept {
@@ -310,7 +310,7 @@ private:
   R (*invoke_)(void *, Args...) noexcept(false) = nullptr;
   void (*destroy_)(void *) noexcept = nullptr;
   void *(*copy_)(void *) noexcept(false) = nullptr;
-  void *data_ = nullptr;
+  void *m_data = nullptr;
 };
 
 template <typename> class function_ref;
@@ -330,7 +330,7 @@ public:
              !std::is_function_v<std::remove_pointer_t<std::decay_t<F>>> &&
              std::is_invocable_r_v<R, F &, Args...>)
   function_ref(F &&f NX_LIFETIMEBOUND) noexcept {
-    data_.obj =
+    m_data.obj =
         const_cast<void *>(static_cast<const void *>(std::addressof(f)));
     call_ = [](const storage s, Args... args) -> R {
       return (*static_cast<std::decay_t<F> *>(s.obj))(
@@ -343,7 +343,7 @@ public:
   template <typename FR, typename... FArgs>
     requires std::is_invocable_r_v<R, FR (*)(FArgs...), Args...>
   function_ref(FR (*fn)(FArgs...)) noexcept {
-    data_.fun = reinterpret_cast<void (*)()>(fn);
+    m_data.fun = reinterpret_cast<void (*)()>(fn);
     call_ = [](const storage s, Args... args) -> R {
       return reinterpret_cast<FR (*)(FArgs...)>(s.fun)(
           std::forward<Args>(args)...);
@@ -351,7 +351,7 @@ public:
   }
 
   R operator()(Args... args) const {
-    return call_(data_, std::forward<Args>(args)...);
+    return call_(m_data, std::forward<Args>(args)...);
   }
 
   [[nodiscard]] constexpr explicit operator bool() const noexcept {
@@ -359,7 +359,7 @@ public:
   }
 
 private:
-  storage data_{nullptr};
+  storage m_data{nullptr};
   R (*call_)(storage, Args...) = nullptr;
 };
 

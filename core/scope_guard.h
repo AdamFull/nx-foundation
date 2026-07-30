@@ -22,11 +22,11 @@ namespace nx {
 template <typename F> class [[nodiscard]] scope_guard {
 public:
   explicit scope_guard(F fn) noexcept(std::is_nothrow_move_constructible_v<F>)
-      : fn_(std::move(fn)) {}
+      : m_fn(std::move(fn)) {}
 
   scope_guard(scope_guard &&o) noexcept(std::is_nothrow_move_constructible_v<F>)
-      : fn_(std::move(o.fn_)), active_(o.active_) {
-    o.active_ = false;
+      : m_fn(std::move(o.m_fn)), m_active(o.m_active) {
+    o.m_active = false;
   }
 
   scope_guard(const scope_guard &) = delete;
@@ -34,15 +34,15 @@ public:
   scope_guard &operator=(scope_guard &&) = delete;
 
   ~scope_guard() {
-    if (active_)
-      fn_();
+    if (m_active)
+      m_fn();
   }
 
-  void dismiss() noexcept { active_ = false; }
+  void dismiss() noexcept { m_active = false; }
 
 private:
-  F fn_;
-  bool active_ = true;
+  F m_fn;
+  bool m_active = true;
 };
 
 template <typename F> scope_guard(F) -> scope_guard<F>;

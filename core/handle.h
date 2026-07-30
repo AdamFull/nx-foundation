@@ -36,7 +36,7 @@ public:
   static constexpr Repr max_index = index_mask - 1;
   static constexpr Repr max_version = version_mask;
 
-  constexpr basic_handle() noexcept : value_(null_value) {}
+  constexpr basic_handle() noexcept : m_value(null_value) {}
 
   [[nodiscard]] static constexpr basic_handle
   from_parts(Repr index, Repr version) noexcept {
@@ -53,12 +53,12 @@ public:
   }
 
   [[nodiscard]] constexpr Repr index() const noexcept {
-    return value_ & index_mask;
+    return m_value & index_mask;
   }
   [[nodiscard]] constexpr Repr version() const noexcept {
-    return value_ >> IndexBits;
+    return m_value >> IndexBits;
   }
-  [[nodiscard]] constexpr Repr raw() const noexcept { return value_; }
+  [[nodiscard]] constexpr Repr raw() const noexcept { return m_value; }
 
   [[nodiscard]] constexpr bool valid() const noexcept {
     return index() != null_index;
@@ -66,25 +66,23 @@ public:
   [[nodiscard]] constexpr explicit operator bool() const noexcept {
     return valid();
   }
-  void invalidate() noexcept {
-    value_ = null_value;
-  }
+  void invalidate() noexcept { m_value = null_value; }
 
   [[nodiscard]] friend constexpr bool operator==(basic_handle a,
                                                  basic_handle b) noexcept {
-    return a.value_ == b.value_;
+    return a.m_value == b.m_value;
   }
   [[nodiscard]] friend constexpr std::strong_ordering
   operator<=>(basic_handle a, basic_handle b) noexcept {
-    return a.value_ <=> b.value_;
+    return a.m_value <=> b.m_value;
   }
 
 private:
   static constexpr Repr null_value = static_cast<Repr>(~Repr(0));
 
-  explicit constexpr basic_handle(Repr v) noexcept : value_(v) {}
+  explicit constexpr basic_handle(Repr v) noexcept : m_value(v) {}
 
-  Repr value_;
+  Repr m_value;
 };
 
 using handle32 = basic_handle<u32, 24>;

@@ -162,20 +162,20 @@ template <typename E, typename T, usize N = nx::cast<usize>(E::Count)>
   requires std::is_enum_v<E>
 class map {
 public:
-  constexpr T &operator[](E e) noexcept { return data_[nx::cast<usize>(e)]; }
+  constexpr T &operator[](E e) noexcept { return m_data[nx::cast<usize>(e)]; }
   constexpr const T &operator[](E e) const noexcept {
-    return data_[nx::cast<usize>(e)];
+    return m_data[nx::cast<usize>(e)];
   }
 
   constexpr usize size() const noexcept { return N; }
 
-  constexpr auto begin() noexcept { return data_.begin(); }
-  constexpr auto end() noexcept { return data_.end(); }
-  constexpr auto begin() const noexcept { return data_.begin(); }
-  constexpr auto end() const noexcept { return data_.end(); }
+  constexpr auto begin() noexcept { return m_data.begin(); }
+  constexpr auto end() noexcept { return m_data.end(); }
+  constexpr auto begin() const noexcept { return m_data.begin(); }
+  constexpr auto end() const noexcept { return m_data.end(); }
 
 private:
-  std::array<T, N> data_{};
+  std::array<T, N> m_data{};
 };
 
 template <typename E>

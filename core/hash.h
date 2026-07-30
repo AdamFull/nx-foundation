@@ -33,10 +33,10 @@ public:
   using value_type = T;
 
   constexpr basic_fnv1a() noexcept = default;
-  explicit constexpr basic_fnv1a(const T seed) noexcept : hash_(seed) {}
+  explicit constexpr basic_fnv1a(const T seed) noexcept : m_hash(seed) {}
 
   constexpr basic_fnv1a &combine(const T value) noexcept {
-    hash_ = nx::cast<T>((hash_ ^ value) * Prime);
+    m_hash = nx::cast<T>((m_hash ^ value) * Prime);
     return *this;
   }
 
@@ -58,10 +58,10 @@ public:
     return *this;
   }
 
-  [[nodiscard]] constexpr T value() const noexcept { return hash_; }
+  [[nodiscard]] constexpr T value() const noexcept { return m_hash; }
 
 private:
-  T hash_ = Basis;
+  T m_hash = Basis;
 };
 
 using fnv1a32 = basic_fnv1a<u32, FNV1A32_BASIS, FNV1A32_PRIME>;

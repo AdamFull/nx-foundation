@@ -258,53 +258,53 @@ public:
   static constexpr usize npos = nx::cast<usize>(-1);
 
   basic_string() noexcept(std::is_nothrow_default_constructible_v<Alloc>)
-      : alloc_() {
+      : m_alloc() {
     init_empty();
   }
-  explicit basic_string(const Alloc &a) noexcept : alloc_(a) { init_empty(); }
+  explicit basic_string(const Alloc &a) noexcept : m_alloc(a) { init_empty(); }
 
   template <detail::char_like C>
-  basic_string(const C *s, const Alloc &a = Alloc()) : alloc_(a) {
+  basic_string(const C *s, const Alloc &a = Alloc()) : m_alloc(a) {
     init_empty();
     append(s);
   }
   template <detail::char_like C>
-  basic_string(const C *s, usize n, const Alloc &a = Alloc()) : alloc_(a) {
+  basic_string(const C *s, usize n, const Alloc &a = Alloc()) : m_alloc(a) {
     init_empty();
     append(s, n);
   }
   template <detail::char_like C>
-  basic_string(usize count, C c, const Alloc &a = Alloc()) : alloc_(a) {
+  basic_string(usize count, C c, const Alloc &a = Alloc()) : m_alloc(a) {
     init_empty();
     append(count, c);
   }
   template <detail::char_like C>
-  basic_string(C c, const Alloc &a = Alloc()) : alloc_(a) {
+  basic_string(C c, const Alloc &a = Alloc()) : m_alloc(a) {
     init_empty();
     append_char(c);
   }
 
   template <detail::stringish S>
-  explicit basic_string(const S &s, const Alloc &a = Alloc()) : alloc_(a) {
+  explicit basic_string(const S &s, const Alloc &a = Alloc()) : m_alloc(a) {
     init_empty();
     append(s);
   }
 
   basic_string(const basic_string &o)
-      : alloc_(ATraits::select_on_container_copy_construction(o.alloc_)) {
+      : m_alloc(ATraits::select_on_container_copy_construction(o.m_alloc)) {
     init_empty();
     append_bytes(o.data(), o.size());
   }
-  basic_string(const basic_string &o, const Alloc &a) : alloc_(a) {
+  basic_string(const basic_string &o, const Alloc &a) : m_alloc(a) {
     init_empty();
     append_bytes(o.data(), o.size());
   }
 
-  basic_string(basic_string &&o) noexcept : alloc_(std::move(o.alloc_)) {
+  basic_string(basic_string &&o) noexcept : m_alloc(std::move(o.m_alloc)) {
     steal(o);
   }
-  basic_string(basic_string &&o, const Alloc &a) : alloc_(a) {
-    if (alloc_ == o.alloc_)
+  basic_string(basic_string &&o, const Alloc &a) : m_alloc(a) {
+    if (m_alloc == o.m_alloc)
       steal(o);
     else {
       init_empty();
@@ -317,11 +317,11 @@ public:
   basic_string &operator=(const basic_string &o) {
     if (NX_LIKELY(this != &o)) {
       if constexpr (ATraits::propagate_on_container_copy_assignment::value) {
-        if (alloc_ != o.alloc_) {
+        if (m_alloc != o.m_alloc) {
           free_heap();
           init_empty();
         }
-        alloc_ = o.alloc_;
+        m_alloc = o.m_alloc;
       }
       assign(string_view(o.data(), o.size()));
     }
@@ -334,9 +334,9 @@ public:
     if (NX_LIKELY(this != &o)) {
       if constexpr (ATraits::propagate_on_container_move_assignment::value) {
         free_heap();
-        alloc_ = std::move(o.alloc_);
+        m_alloc = std::move(o.m_alloc);
         steal(o);
-      } else if (alloc_ == o.alloc_) {
+      } else if (m_alloc == o.m_alloc) {
         free_heap();
         steal(o);
       } else
@@ -359,13 +359,13 @@ public:
     return *this;
   }
 
-  [[nodiscard]] Alloc get_allocator() const noexcept { return alloc_; }
+  [[nodiscard]] Alloc get_allocator() const noexcept { return m_alloc; }
 
   template <detail::char_like C> basic_string &assign(const C *s, usize n) {
     if constexpr (sizeof(C) == 1) {
       const auto *b = reinterpret_cast<const char *>(s);
       if (NX_UNLIKELY(aliases(b))) {
-        basic_string tmp(s, n, alloc_);
+        basic_string tmp(s, n, m_alloc);
         return *this = std::move(tmp);
       }
       clear();
@@ -422,10 +422,10 @@ public:
   }
 
   [[nodiscard]] NX_FORCE_INLINE char *data() noexcept {
-    return reinterpret_cast<char *>(is_heap() ? heap_.data : sso_.data);
+    return reinterpret_cast<char *>(is_heap() ? m_heap.data : m_sso.data);
   }
   [[nodiscard]] NX_FORCE_INLINE const char *data() const noexcept {
-    return reinterpret_cast<const char *>(is_heap() ? heap_.data : sso_.data);
+    return reinterpret_cast<const char *>(is_heap() ? m_heap.data : m_sso.data);
   }
   [[nodiscard]] const char *c_str() const noexcept { return data(); }
 
@@ -450,7 +450,7 @@ public:
 
   [[nodiscard]] bool empty() const noexcept { return size() == 0; }
   [[nodiscard]] NX_FORCE_INLINE usize size() const noexcept {
-    return is_heap() ? heap_.size : sso_.size;
+    return is_heap() ? m_heap.size : m_sso.size;
   }
   [[nodiscard]] usize length() const noexcept { return size(); }
   [[nodiscard]] NX_FORCE_INLINE usize capacity() const noexcept {
@@ -466,13 +466,13 @@ public:
   void shrink_to_fit() {
     if (!is_heap())
       return;
-    const usize sz = heap_.size;
+    const usize sz = m_heap.size;
     if (sz <= SSO_CAPACITY) {
-      char8_t *old = heap_.data;
+      char8_t *old = m_heap.data;
       const usize old_alloc = heap_capacity() + 1;
-      std::memcpy(sso_.data, old, sz + 1);
-      sso_.size = nx::cast<u8>(sz);
-      ATraits::deallocate(alloc_, old, old_alloc);
+      std::memcpy(m_sso.data, old, sz + 1);
+      m_sso.size = nx::cast<u8>(sz);
+      ATraits::deallocate(m_alloc, old, old_alloc);
     } else if (heap_capacity() > sz)
       reallocate(sz);
   }
@@ -559,7 +559,7 @@ public:
     if (n == 0)
       return *this;
     if (NX_UNLIKELY(aliases(sv.data()))) {
-      basic_string tmp(sv, alloc_);
+      basic_string tmp(sv, m_alloc);
       return insert(pos, string_view(tmp.data(), tmp.size()));
     }
     const usize sz = size();
@@ -583,11 +583,11 @@ public:
 
   void swap(basic_string &o) noexcept {
     using std::swap;
-    const Raw tmp = raw_;
-    raw_ = o.raw_;
-    o.raw_ = tmp;
+    const Raw tmp = m_raw;
+    m_raw = o.m_raw;
+    o.m_raw = tmp;
     if constexpr (ATraits::propagate_on_container_swap::value)
-      swap(alloc_, o.alloc_);
+      swap(m_alloc, o.m_alloc);
   }
 
   [[nodiscard]] string_view view() const noexcept { return {data(), size()}; }
@@ -625,7 +625,7 @@ public:
 
   [[nodiscard]] basic_string substr(const usize pos = 0,
                                     const usize count = npos) const {
-    return basic_string(view().substr(pos, count), alloc_);
+    return basic_string(view().substr(pos, count), m_alloc);
   }
 
   [[nodiscard]] int compare(string_view sv) const noexcept {
@@ -738,29 +738,29 @@ private:
   };
 
   union {
-    Raw raw_;
-    Heap heap_;
-    Sso sso_;
+    Raw m_raw;
+    Heap m_heap;
+    Sso m_sso;
   };
-  NX_NO_UNIQUE_ADDRESS Alloc alloc_;
+  NX_NO_UNIQUE_ADDRESS Alloc m_alloc;
 
   [[nodiscard]] NX_FORCE_INLINE bool is_heap() const noexcept {
-    return (sso_.size & 0x80u) != 0;
+    return (m_sso.size & 0x80u) != 0;
   }
   [[nodiscard]] NX_FORCE_INLINE usize heap_capacity() const noexcept {
-    return heap_.capacity & ~HEAP_MASK;
+    return m_heap.capacity & ~HEAP_MASK;
   }
 
   NX_FORCE_INLINE void init_empty() noexcept {
-    sso_.size = 0;
-    sso_.data[0] = u8'\0';
+    m_sso.size = 0;
+    m_sso.data[0] = u8'\0';
   }
 
   NX_FORCE_INLINE void set_size(usize n) noexcept {
     if (is_heap())
-      heap_.size = n;
+      m_heap.size = n;
     else
-      sso_.size = nx::cast<u8>(n);
+      m_sso.size = nx::cast<u8>(n);
     data()[n] = '\0';
   }
 
@@ -785,32 +785,32 @@ private:
   // Allocates a buffer of new_cap + 1 bytes and migrates the contents.
   void reallocate(const usize new_cap) {
     const usize sz = size();
-    const char8_t *src = is_heap() ? heap_.data : sso_.data;
-    char8_t *nb = ATraits::allocate(alloc_, new_cap + 1);
+    const char8_t *src = is_heap() ? m_heap.data : m_sso.data;
+    char8_t *nb = ATraits::allocate(m_alloc, new_cap + 1);
     std::memcpy(nb, src, sz);
     nb[sz] = u8'\0';
 
     char8_t *old = nullptr;
     usize old_alloc = 0;
     if (is_heap()) {
-      old = heap_.data;
+      old = m_heap.data;
       old_alloc = heap_capacity() + 1;
     }
-    heap_.data = nb;
-    heap_.size = sz;
-    heap_.capacity = new_cap | HEAP_MASK;
+    m_heap.data = nb;
+    m_heap.size = sz;
+    m_heap.capacity = new_cap | HEAP_MASK;
     if (old)
-      ATraits::deallocate(alloc_, old, old_alloc);
+      ATraits::deallocate(m_alloc, old, old_alloc);
   }
 
   NX_FORCE_INLINE void free_heap() noexcept {
     if (is_heap())
-      ATraits::deallocate(alloc_, heap_.data, heap_capacity() + 1);
+      ATraits::deallocate(m_alloc, m_heap.data, heap_capacity() + 1);
   }
 
   // Takes ownership of o's buffer and leaves o empty. Allocators untouched.
   NX_FORCE_INLINE void steal(basic_string &o) noexcept {
-    raw_ = o.raw_;
+    m_raw = o.m_raw;
     o.init_empty();
   }
 

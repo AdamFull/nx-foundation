@@ -22,8 +22,8 @@ public:
   static constexpr usize MIN_CROSSOVER = 4 * 1024;
   static constexpr usize MAX_CROSSOVER = 4 * 1024 * 1024;
 
-  [[nodiscard]] usize crossover() const noexcept { return crossover_; }
-  void set_crossover(usize n) noexcept { crossover_ = n; }
+  [[nodiscard]] usize crossover() const noexcept { return m_crossover; }
+  void set_crossover(usize n) noexcept { m_crossover = n; }
 
   /// Serial compaction: keep in[i] where @p keep(in[i]), in order. Returns the
   /// survivor count. @p out must hold at least in.size() elements.
@@ -43,7 +43,7 @@ public:
   template <class T, class Keep>
   usize compact(std::span<const T> in, std::span<T> out, Keep keep,
                 thread_pool &pool) {
-    if (in.size() < crossover_ || pool.worker_count() == 0)
+    if (in.size() < m_crossover || pool.worker_count() == 0)
       return compact_serial(in, out, keep);
     return compact_parallel(in, out, keep, pool);
   }
@@ -62,10 +62,10 @@ public:
 
     const u32 chunks = workers + 1; // the caller is a participant too
     const usize per_chunk = (n + chunks - 1) / chunks;
-    flags_.resize(n);
-    counts_.resize(chunks);
-    u8 *const flags = flags_.data();
-    u32 *const counts = counts_.data();
+    m_flags.resize(n);
+    m_counts.resize(chunks);
+    u8 *const flags = m_flags.data();
+    u32 *const counts = m_counts.data();
     const T *const src = in.data();
     T *const dst = out.data();
 
@@ -125,7 +125,7 @@ public:
   template <class T, class Produce>
   usize transform_compact(usize count, std::span<T> scratch, std::span<T> out,
                           Produce produce, thread_pool &pool) {
-    if (count < crossover_ || pool.worker_count() == 0)
+    if (count < m_crossover || pool.worker_count() == 0)
       return transform_compact_serial(count, out, produce);
     return transform_compact_parallel(count, scratch, out, produce, pool);
   }
@@ -144,10 +144,10 @@ public:
 
     const u32 chunks = workers + 1;
     const usize per_chunk = (count + chunks - 1) / chunks;
-    flags_.resize(count);
-    counts_.resize(chunks);
-    u8 *const flags = flags_.data();
-    u32 *const counts = counts_.data();
+    m_flags.resize(count);
+    m_counts.resize(chunks);
+    u8 *const flags = m_flags.data();
+    u32 *const counts = m_counts.data();
     T *const scr = scratch.data();
     T *const dst = out.data();
 
@@ -188,7 +188,7 @@ public:
   void calibrate(thread_pool &pool, GenElem gen, Keep keep) {
     using T = std::decay_t<decltype(gen(usize{0}))>;
     if (pool.worker_count() == 0) {
-      crossover_ = ~usize{0};
+      m_crossover = ~usize{0};
       return;
     }
 
@@ -224,13 +224,13 @@ public:
         break;
       }
     }
-    crossover_ = nx::min(nx::max(cross, MIN_CROSSOVER), MAX_CROSSOVER);
+    m_crossover = nx::min(nx::max(cross, MIN_CROSSOVER), MAX_CROSSOVER);
   }
 
 private:
-  usize crossover_ = DEFAULT_CROSSOVER;
-  nx::vector<u8> flags_;
-  nx::vector<u32> counts_;
+  usize m_crossover = DEFAULT_CROSSOVER;
+  nx::vector<u8> m_flags;
+  nx::vector<u32> m_counts;
 };
 
 } // namespace nx

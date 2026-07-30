@@ -94,13 +94,13 @@ public:
     friend class flat_map;
 
   protected:
-    key_compare comp_;
-    explicit value_compare(key_compare c) : comp_(std::move(c)) {}
+    key_compare m_comp;
+    explicit value_compare(key_compare c) : m_comp(std::move(c)) {}
 
   public:
     template <typename L, typename R>
     [[nodiscard]] bool operator()(const L &lhs, const R &rhs) const {
-      return comp_(lhs.first, rhs.first);
+      return m_comp(lhs.first, rhs.first);
     }
   };
 
@@ -213,11 +213,11 @@ public:
 
   flat_map() = default;
 
-  explicit flat_map(const key_compare &comp) : comp_(comp) {}
+  explicit flat_map(const key_compare &comp) : m_comp(comp) {}
 
   flat_map(key_container_type keys, mapped_container_type values,
            const key_compare &comp = key_compare())
-      : c_{std::move(keys), std::move(values)}, comp_(comp) {
+      : c_{std::move(keys), std::move(values)}, m_comp(comp) {
     assert(c_.keys.size() == c_.values.size());
     sort_and_unique();
   }
@@ -225,33 +225,33 @@ public:
   flat_map(sorted_unique_t, key_container_type keys,
            mapped_container_type values,
            const key_compare &comp = key_compare())
-      : c_{std::move(keys), std::move(values)}, comp_(comp) {
+      : c_{std::move(keys), std::move(values)}, m_comp(comp) {
     assert(c_.keys.size() == c_.values.size());
     assert(is_sorted_unique());
   }
 
   template <std::input_iterator It>
   flat_map(It first, It last, const key_compare &comp = key_compare())
-      : comp_(comp) {
+      : m_comp(comp) {
     insert(first, last);
   }
 
   template <std::input_iterator It>
   flat_map(sorted_unique_t, It first, It last,
            const key_compare &comp = key_compare())
-      : comp_(comp) {
+      : m_comp(comp) {
     insert(sorted_unique, first, last);
   }
 
   flat_map(std::initializer_list<value_type> il,
            const key_compare &comp = key_compare())
-      : comp_(comp) {
+      : m_comp(comp) {
     insert(il.begin(), il.end());
   }
 
   flat_map(sorted_unique_t, std::initializer_list<value_type> il,
            const key_compare &comp = key_compare())
-      : comp_(comp) {
+      : m_comp(comp) {
     insert(sorted_unique, il.begin(), il.end());
   }
 
@@ -264,14 +264,14 @@ public:
   flat_map(const key_compare &comp, const Alloc2 &a)
       : c_{std::make_obj_using_allocator<key_container_type>(a),
            std::make_obj_using_allocator<mapped_container_type>(a)},
-        comp_(comp) {}
+        m_comp(comp) {}
 
   template <typename Alloc2, std::enable_if_t<uses_alloc_v<Alloc2>, i32> = 0>
   flat_map(const flat_map &o, const Alloc2 &a)
       : c_{std::make_obj_using_allocator<key_container_type>(a, o.c_.keys),
            std::make_obj_using_allocator<mapped_container_type>(a,
                                                                 o.c_.values)},
-        comp_(o.comp_) {}
+        m_comp(o.m_comp) {}
 
   template <typename Alloc2, std::enable_if_t<uses_alloc_v<Alloc2>, i32> = 0>
   flat_map(flat_map &&o, const Alloc2 &a)
@@ -279,7 +279,7 @@ public:
                a, std::move(o.c_.keys)),
            std::make_obj_using_allocator<mapped_container_type>(
                a, std::move(o.c_.values))},
-        comp_(std::move(o.comp_)) {}
+        m_comp(std::move(o.m_comp)) {}
 
   flat_map(const flat_map &) = default;
   flat_map(flat_map &&) = default;
@@ -611,9 +611,9 @@ public:
     return c_.values;
   }
 
-  [[nodiscard]] key_compare key_comp() const { return comp_; }
+  [[nodiscard]] key_compare key_comp() const { return m_comp; }
   [[nodiscard]] value_compare value_comp() const {
-    return value_compare{comp_};
+    return value_compare{m_comp};
   }
 
   void swap(flat_map &o) noexcept(
@@ -623,7 +623,7 @@ public:
     using std::swap;
     swap(c_.keys, o.c_.keys);
     swap(c_.values, o.c_.values);
-    swap(comp_, o.comp_);
+    swap(m_comp, o.m_comp);
   }
 
   friend void swap(flat_map &a, flat_map &b) noexcept(noexcept(a.swap(b))) {
@@ -675,24 +675,24 @@ private:
   template <typename K>
   [[nodiscard]] size_type lower_bound_index(const K &k) const {
     return static_cast<size_type>(
-        std::lower_bound(c_.keys.begin(), c_.keys.end(), k, comp_) -
+        std::lower_bound(c_.keys.begin(), c_.keys.end(), k, m_comp) -
         c_.keys.begin());
   }
   template <typename K>
   [[nodiscard]] size_type upper_bound_index(const K &k) const {
     return static_cast<size_type>(
-        std::upper_bound(c_.keys.begin(), c_.keys.end(), k, comp_) -
+        std::upper_bound(c_.keys.begin(), c_.keys.end(), k, m_comp) -
         c_.keys.begin());
   }
 
   template <typename K1, typename K2>
   [[nodiscard]] bool key_equiv(const K1 &a, const K2 &b) const {
-    return !comp_(a, b) && !comp_(b, a);
+    return !m_comp(a, b) && !m_comp(b, a);
   }
 
   template <typename K> [[nodiscard]] size_type find_index(const K &k) const {
     const size_type i = lower_bound_index(k);
-    if (i < size() && !comp_(k, c_.keys[i]))
+    if (i < size() && !m_comp(k, c_.keys[i]))
       return i;
     return size();
   }
@@ -701,7 +701,7 @@ private:
   static auto equal_range_impl(Self &self, const K &k) {
     const size_type lo = self.lower_bound_index(k);
     const size_type hi =
-        (lo < self.size() && !self.comp_(k, self.c_.keys[lo])) ? lo + 1 : lo;
+        (lo < self.size() && !self.m_comp(k, self.c_.keys[lo])) ? lo + 1 : lo;
     return std::pair{self.iterator_at(lo), self.iterator_at(hi)};
   }
 
@@ -729,7 +729,7 @@ private:
 
   [[nodiscard]] bool is_sorted_unique() const {
     for (size_type i = 1; i < size(); ++i)
-      if (!comp_(c_.keys[i - 1], c_.keys[i]))
+      if (!m_comp(c_.keys[i - 1], c_.keys[i]))
         return false;
     return true;
   }
@@ -751,13 +751,13 @@ private:
       order[i] = i;
     std::stable_sort(order.begin(), order.end(),
                      [this](size_type a, size_type b) {
-                       return comp_(c_.keys[a], c_.keys[b]);
+                       return m_comp(c_.keys[a], c_.keys[b]);
                      });
 
     vector<size_type> kept;
     kept.reserve(n);
     for (size_type p = 0; p < n; ++p) {
-      if (p == 0 || comp_(c_.keys[order[p - 1]], c_.keys[order[p]]))
+      if (p == 0 || m_comp(c_.keys[order[p - 1]], c_.keys[order[p]]))
         kept.push_back(order[p]);
     }
 
@@ -774,7 +774,7 @@ private:
   }
 
   NX_NO_UNIQUE_ADDRESS containers c_{};
-  NX_NO_UNIQUE_ADDRESS key_compare comp_{};
+  NX_NO_UNIQUE_ADDRESS key_compare m_comp{};
 };
 
 template <typename Key, typename T, typename Compare, typename KC, typename MC,

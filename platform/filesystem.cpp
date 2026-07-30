@@ -1149,45 +1149,45 @@ namespace {
 class memory_stream final : public stream {
 public:
   memory_stream(const void *data, const usize size) noexcept
-      : data_(static_cast<const u8 *>(data)), size_(size) {}
+      : m_data(static_cast<const u8 *>(data)), m_size(size) {}
 
   usize read(void *dst, const usize bytes) override {
-    const usize n = min(bytes, size_ - cursor_);
+    const usize n = min(bytes, m_size - m_cursor);
     if (n)
-      std::memcpy(dst, data_ + cursor_, n);
-    cursor_ += n;
+      std::memcpy(dst, m_data + m_cursor, n);
+    m_cursor += n;
     return n;
   }
 
   bool seek(const i64 offset, const seek_origin origin) override {
-    const i64 base = origin == seek_origin::begin    ? 0
-                     : origin == seek_origin::current ? nx::cast<i64>(cursor_)
-                                                      : nx::cast<i64>(size_);
+    const i64 base = origin == seek_origin::begin     ? 0
+                     : origin == seek_origin::current ? nx::cast<i64>(m_cursor)
+                                                      : nx::cast<i64>(m_size);
     const i64 pos = base + offset;
-    if (pos < 0 || pos > nx::cast<i64>(size_))
+    if (pos < 0 || pos > nx::cast<i64>(m_size))
       return false;
-    cursor_ = nx::cast<usize>(pos);
+    m_cursor = nx::cast<usize>(pos);
     return true;
   }
 
-  [[nodiscard]] i64 tell() const override { return nx::cast<i64>(cursor_); }
-  [[nodiscard]] i64 size() const override { return nx::cast<i64>(size_); }
-  [[nodiscard]] bool eof() const override { return cursor_ >= size_; }
+  [[nodiscard]] i64 tell() const override { return nx::cast<i64>(m_cursor); }
+  [[nodiscard]] i64 size() const override { return nx::cast<i64>(m_size); }
+  [[nodiscard]] bool eof() const override { return m_cursor >= m_size; }
 
 private:
-  const u8 *data_ = nullptr;
-  usize size_ = 0;
-  usize cursor_ = 0;
+  const u8 *m_data = nullptr;
+  usize m_size = 0;
+  usize m_cursor = 0;
 };
 
 #if defined(NX_PLATFORM_WINDOWS)
 
 class file_stream final : public stream {
 public:
-  explicit file_stream(const HANDLE h) noexcept : h_(h) {}
+  explicit file_stream(const HANDLE h) noexcept : m_h(h) {}
   ~file_stream() override {
-    if (h_ != INVALID_HANDLE_VALUE)
-      ::CloseHandle(h_);
+    if (m_h != INVALID_HANDLE_VALUE)
+      ::CloseHandle(m_h);
   }
 
   usize read(void *dst, const usize bytes) override {
@@ -1196,10 +1196,10 @@ public:
     while (total < bytes) {
       const DWORD want = nx::cast<DWORD>(min<usize>(bytes - total, 1u << 30));
       DWORD got = 0;
-      if (!::ReadFile(h_, p + total, want, &got, nullptr))
+      if (!::ReadFile(m_h, p + total, want, &got, nullptr))
         break;
       if (got == 0) {
-        at_eof_ = true;
+        m_at_eof = true;
         break;
       }
       total += got;
@@ -1210,13 +1210,13 @@ public:
   bool seek(const i64 offset, const seek_origin origin) override {
     LARGE_INTEGER dist;
     dist.QuadPart = offset;
-    const DWORD method = origin == seek_origin::begin    ? FILE_BEGIN
+    const DWORD method = origin == seek_origin::begin     ? FILE_BEGIN
                          : origin == seek_origin::current ? FILE_CURRENT
                                                           : FILE_END;
     LARGE_INTEGER np;
-    if (!::SetFilePointerEx(h_, dist, &np, method))
+    if (!::SetFilePointerEx(m_h, dist, &np, method))
       return false;
-    at_eof_ = false;
+    m_at_eof = false;
     return true;
   }
 
@@ -1224,52 +1224,52 @@ public:
     LARGE_INTEGER zero;
     zero.QuadPart = 0;
     LARGE_INTEGER np;
-    if (!::SetFilePointerEx(h_, zero, &np, FILE_CURRENT))
+    if (!::SetFilePointerEx(m_h, zero, &np, FILE_CURRENT))
       return -1;
     return np.QuadPart;
   }
 
   [[nodiscard]] i64 size() const override {
     LARGE_INTEGER sz;
-    if (!::GetFileSizeEx(h_, &sz))
+    if (!::GetFileSizeEx(m_h, &sz))
       return -1;
     return sz.QuadPart;
   }
 
   [[nodiscard]] bool eof() const override {
-    if (at_eof_)
+    if (m_at_eof)
       return true;
     const i64 t = tell(), s = size();
     return t >= 0 && s >= 0 && t >= s;
   }
 
 private:
-  HANDLE h_ = INVALID_HANDLE_VALUE;
-  bool at_eof_ = false;
+  HANDLE m_h = INVALID_HANDLE_VALUE;
+  bool m_at_eof = false;
 };
 
 #elif defined(NX_PLATFORM_POSIX)
 
 class file_stream final : public stream {
 public:
-  explicit file_stream(const int fd) noexcept : fd_(fd) {}
+  explicit file_stream(const int fd) noexcept : m_fd(fd) {}
   ~file_stream() override {
-    if (fd_ >= 0)
-      ::close(fd_);
+    if (m_fd >= 0)
+      ::close(m_fd);
   }
 
   usize read(void *dst, const usize bytes) override {
     usize total = 0;
     auto *p = static_cast<u8 *>(dst);
     while (total < bytes) {
-      const ssize_t got = ::read(fd_, p + total, bytes - total);
+      const ssize_t got = ::read(m_fd, p + total, bytes - total);
       if (got < 0) {
         if (errno == EINTR)
           continue;
         break;
       }
       if (got == 0) {
-        at_eof_ = true;
+        m_at_eof = true;
         break;
       }
       total += nx::cast<usize>(got);
@@ -1278,37 +1278,37 @@ public:
   }
 
   bool seek(const i64 offset, const seek_origin origin) override {
-    const int whence = origin == seek_origin::begin    ? SEEK_SET
+    const int whence = origin == seek_origin::begin     ? SEEK_SET
                        : origin == seek_origin::current ? SEEK_CUR
                                                         : SEEK_END;
-    if (::lseek(fd_, nx::cast<off_t>(offset), whence) < 0)
+    if (::lseek(m_fd, nx::cast<off_t>(offset), whence) < 0)
       return false;
-    at_eof_ = false;
+    m_at_eof = false;
     return true;
   }
 
   [[nodiscard]] i64 tell() const override {
-    const off_t p = ::lseek(fd_, 0, SEEK_CUR);
+    const off_t p = ::lseek(m_fd, 0, SEEK_CUR);
     return p < 0 ? -1 : nx::cast<i64>(p);
   }
 
   [[nodiscard]] i64 size() const override {
     struct stat st;
-    if (::fstat(fd_, &st) != 0)
+    if (::fstat(m_fd, &st) != 0)
       return -1;
     return nx::cast<i64>(st.st_size);
   }
 
   [[nodiscard]] bool eof() const override {
-    if (at_eof_)
+    if (m_at_eof)
       return true;
     const i64 t = tell(), s = size();
     return t >= 0 && s >= 0 && t >= s;
   }
 
 private:
-  int fd_ = -1;
-  bool at_eof_ = false;
+  int m_fd = -1;
+  bool m_at_eof = false;
 };
 
 #endif
@@ -1331,9 +1331,8 @@ io_result<stream_ptr> open_file(const path_view path) {
   if (!wp.ok)
     return err(file_error{io_error::InvalidArgument, 0});
 
-  const HANDLE h =
-      ::CreateFileW(wp.ptr, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  const HANDLE h = ::CreateFileW(wp.ptr, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE)
     return err(map_last_error(io_error::OpenFailed));
 

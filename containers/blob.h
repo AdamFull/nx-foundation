@@ -45,57 +45,57 @@ public:
   using const_reverse_iterator = std::reverse_iterator<const T *>;
 
   blob() noexcept(std::is_nothrow_default_constructible_v<Alloc>) {}
-  explicit blob(const Alloc &a) noexcept : alloc_(a) {}
+  explicit blob(const Alloc &a) noexcept : m_alloc(a) {}
 
-  explicit blob(usize count, const Alloc &a = Alloc()) : alloc_(a) {
-    data_ = allocate_n(count);
+  explicit blob(usize count, const Alloc &a = Alloc()) : m_alloc(a) {
+    m_data = allocate_n(count);
     usize i = 0;
     try {
       for (; i < count; ++i)
-        ATraits::construct(alloc_, data_ + i);
+        ATraits::construct(m_alloc, m_data + i);
     } catch (...) {
-      destroy_range(data_, i);
-      deallocate_n(data_, count);
-      data_ = nullptr;
+      destroy_range(m_data, i);
+      deallocate_n(m_data, count);
+      m_data = nullptr;
       throw;
     }
-    size_ = count;
+    m_size = count;
   }
 
-  blob(usize count, const T &value, const Alloc &a = Alloc()) : alloc_(a) {
-    data_ = allocate_n(count);
+  blob(usize count, const T &value, const Alloc &a = Alloc()) : m_alloc(a) {
+    m_data = allocate_n(count);
     usize i = 0;
     try {
       for (; i < count; ++i)
-        ATraits::construct(alloc_, data_ + i, value);
+        ATraits::construct(m_alloc, m_data + i, value);
     } catch (...) {
-      destroy_range(data_, i);
-      deallocate_n(data_, count);
-      data_ = nullptr;
+      destroy_range(m_data, i);
+      deallocate_n(m_data, count);
+      m_data = nullptr;
       throw;
     }
-    size_ = count;
+    m_size = count;
   }
 
   template <std::input_iterator It>
-  blob(It first, It last, const Alloc &a = Alloc()) : alloc_(a) {
+  blob(It first, It last, const Alloc &a = Alloc()) : m_alloc(a) {
     if constexpr (std::forward_iterator<It>) {
       const auto n = nx::cast<usize>(std::distance(first, last));
-      data_ = allocate_n(n);
+      m_data = allocate_n(n);
       usize i = 0;
       try {
         for (; first != last; ++first, ++i)
-          ATraits::construct(alloc_, data_ + i, *first);
+          ATraits::construct(m_alloc, m_data + i, *first);
       } catch (...) {
-        destroy_range(data_, i);
-        deallocate_n(data_, n);
-        data_ = nullptr;
+        destroy_range(m_data, i);
+        deallocate_n(m_data, n);
+        m_data = nullptr;
         throw;
       }
-      size_ = n;
+      m_size = n;
     } else {
       // Single-pass source: buffer first, then take a single fixed allocation.
-      vector<T, Alloc> tmp(alloc_);
+      vector<T, Alloc> tmp(m_alloc);
       for (; first != last; ++first)
         tmp.push_back(*first);
       assign_move_from(tmp.data(), tmp.size());
@@ -109,19 +109,19 @@ public:
       : blob(sp.begin(), sp.end(), a) {}
 
   blob(const blob &o)
-      : alloc_(ATraits::select_on_container_copy_construction(o.alloc_)) {
-    assign_copy_from(o.data_, o.size_);
+      : m_alloc(ATraits::select_on_container_copy_construction(o.m_alloc)) {
+    assign_copy_from(o.m_data, o.m_size);
   }
-  blob(const blob &o, const Alloc &a) : alloc_(a) {
-    assign_copy_from(o.data_, o.size_);
+  blob(const blob &o, const Alloc &a) : m_alloc(a) {
+    assign_copy_from(o.m_data, o.m_size);
   }
 
-  blob(blob &&o) noexcept : alloc_(std::move(o.alloc_)) { steal(o); }
-  blob(blob &&o, const Alloc &a) : alloc_(a) {
-    if (alloc_ == o.alloc_)
+  blob(blob &&o) noexcept : m_alloc(std::move(o.m_alloc)) { steal(o); }
+  blob(blob &&o, const Alloc &a) : m_alloc(a) {
+    if (m_alloc == o.m_alloc)
       steal(o);
     else {
-      assign_move_from(o.data_, o.size_);
+      assign_move_from(o.m_data, o.m_size);
       o.free_all();
     }
   }
@@ -132,11 +132,11 @@ public:
     if (this == &o)
       return *this;
     if constexpr (ATraits::propagate_on_container_copy_assignment::value) {
-      if (alloc_ != o.alloc_)
+      if (m_alloc != o.m_alloc)
         free_all();
-      alloc_ = o.alloc_;
+      m_alloc = o.m_alloc;
     }
-    assign_copy_from(o.data_, o.size_);
+    assign_copy_from(o.m_data, o.m_size);
     return *this;
   }
 
@@ -147,13 +147,13 @@ public:
       return *this;
     if constexpr (ATraits::propagate_on_container_move_assignment::value) {
       free_all();
-      alloc_ = std::move(o.alloc_);
+      m_alloc = std::move(o.m_alloc);
       steal(o);
-    } else if (alloc_ == o.alloc_) {
+    } else if (m_alloc == o.m_alloc) {
       free_all();
       steal(o);
     } else {
-      assign_move_from(o.data_, o.size_);
+      assign_move_from(o.m_data, o.m_size);
       o.free_all();
     }
     return *this;
@@ -165,8 +165,8 @@ public:
   [[nodiscard]] static blob from_owned(T *data, usize size,
                                        const Alloc &a = Alloc()) noexcept {
     blob b(a);
-    b.data_ = data;
-    b.size_ = size;
+    b.m_data = data;
+    b.m_size = size;
     return b;
   }
 
@@ -177,63 +177,63 @@ public:
 
   /// Releases ownership of the buffer to the caller, leaving the blob empty.
   [[nodiscard]] owned release() noexcept {
-    owned r{data_, size_};
-    data_ = nullptr;
-    size_ = 0;
+    owned r{m_data, m_size};
+    m_data = nullptr;
+    m_size = 0;
     return r;
   }
 
-  [[nodiscard]] Alloc get_allocator() const noexcept { return alloc_; }
+  [[nodiscard]] Alloc get_allocator() const noexcept { return m_alloc; }
 
   [[nodiscard]] reference at(usize i) {
-    if (i >= size_)
+    if (i >= m_size)
       throw std::out_of_range("nx::blob::at");
-    return data_[i];
+    return m_data[i];
   }
   [[nodiscard]] const_reference at(usize i) const {
-    if (i >= size_)
+    if (i >= m_size)
       throw std::out_of_range("nx::blob::at");
-    return data_[i];
+    return m_data[i];
   }
 
   [[nodiscard]] reference operator[](usize i) noexcept {
-    assert(i < size_);
-    return data_[i];
+    assert(i < m_size);
+    return m_data[i];
   }
   [[nodiscard]] const_reference operator[](usize i) const noexcept {
-    assert(i < size_);
-    return data_[i];
+    assert(i < m_size);
+    return m_data[i];
   }
   [[nodiscard]] reference front() noexcept {
     assert(!empty());
-    return data_[0];
+    return m_data[0];
   }
   [[nodiscard]] const_reference front() const noexcept {
     assert(!empty());
-    return data_[0];
+    return m_data[0];
   }
   [[nodiscard]] reference back() noexcept {
     assert(!empty());
-    return data_[size_ - 1];
+    return m_data[m_size - 1];
   }
   [[nodiscard]] const_reference back() const noexcept {
     assert(!empty());
-    return data_[size_ - 1];
+    return m_data[m_size - 1];
   }
 
-  [[nodiscard]] pointer data() noexcept { return data_; }
-  [[nodiscard]] const_pointer data() const noexcept { return data_; }
+  [[nodiscard]] pointer data() noexcept { return m_data; }
+  [[nodiscard]] const_pointer data() const noexcept { return m_data; }
 
-  [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
-  [[nodiscard]] usize size() const noexcept { return size_; }
-  [[nodiscard]] usize bytes_size() const noexcept { return size_ * sizeof(T); }
+  [[nodiscard]] bool empty() const noexcept { return m_size == 0; }
+  [[nodiscard]] usize size() const noexcept { return m_size; }
+  [[nodiscard]] usize bytes_size() const noexcept { return m_size * sizeof(T); }
 
-  [[nodiscard]] iterator begin() noexcept { return data_; }
-  [[nodiscard]] iterator end() noexcept { return data_ + size_; }
-  [[nodiscard]] const_iterator begin() const noexcept { return data_; }
-  [[nodiscard]] const_iterator end() const noexcept { return data_ + size_; }
-  [[nodiscard]] const_iterator cbegin() const noexcept { return data_; }
-  [[nodiscard]] const_iterator cend() const noexcept { return data_ + size_; }
+  [[nodiscard]] iterator begin() noexcept { return m_data; }
+  [[nodiscard]] iterator end() noexcept { return m_data + m_size; }
+  [[nodiscard]] const_iterator begin() const noexcept { return m_data; }
+  [[nodiscard]] const_iterator end() const noexcept { return m_data + m_size; }
+  [[nodiscard]] const_iterator cbegin() const noexcept { return m_data; }
+  [[nodiscard]] const_iterator cend() const noexcept { return m_data + m_size; }
   [[nodiscard]] reverse_iterator rbegin() noexcept {
     return reverse_iterator{end()};
   }
@@ -254,22 +254,22 @@ public:
   }
 
   [[nodiscard]] vector<T, Alloc> to_vector() const {
-    return vector<T, Alloc>(data_, data_ + size_, alloc_);
+    return vector<T, Alloc>(m_data, m_data + m_size, m_alloc);
   }
 
-  operator std::span<const T>() const noexcept { return {data_, size_}; }
-  explicit operator std::span<T>() noexcept { return {data_, size_}; }
+  operator std::span<const T>() const noexcept { return {m_data, m_size}; }
+  explicit operator std::span<T>() noexcept { return {m_data, m_size}; }
 
   void swap(blob &o) noexcept {
     using std::swap;
     if constexpr (ATraits::propagate_on_container_swap::value)
-      swap(alloc_, o.alloc_);
-    swap(data_, o.data_);
-    swap(size_, o.size_);
+      swap(m_alloc, o.m_alloc);
+    swap(m_data, o.m_data);
+    swap(m_size, o.m_size);
   }
 
   [[nodiscard]] friend bool operator==(const blob &a, const blob &b) {
-    return a.size_ == b.size_ && std::equal(a.begin(), a.end(), b.begin());
+    return a.m_size == b.m_size && std::equal(a.begin(), a.end(), b.begin());
   }
   [[nodiscard]] friend auto operator<=>(const blob &a, const blob &b)
     requires std::three_way_comparable<T>
@@ -279,33 +279,33 @@ public:
   }
 
 private:
-  NX_NO_UNIQUE_ADDRESS Alloc alloc_;
-  T *data_ = nullptr;
-  usize size_ = 0;
+  NX_NO_UNIQUE_ADDRESS Alloc m_alloc;
+  T *m_data = nullptr;
+  usize m_size = 0;
 
-  T *allocate_n(usize n) { return n ? ATraits::allocate(alloc_, n) : nullptr; }
+  T *allocate_n(usize n) { return n ? ATraits::allocate(m_alloc, n) : nullptr; }
   void deallocate_n(T *p, usize n) noexcept {
     if (p)
-      ATraits::deallocate(alloc_, p, n);
+      ATraits::deallocate(m_alloc, p, n);
   }
   void destroy_range(T *p, usize n) noexcept {
     if constexpr (!std::is_trivially_destructible_v<T>)
       for (usize i = 0; i < n; ++i)
-        ATraits::destroy(alloc_, p + i);
+        ATraits::destroy(m_alloc, p + i);
   }
 
   void free_all() noexcept {
-    destroy_range(data_, size_);
-    deallocate_n(data_, size_);
-    data_ = nullptr;
-    size_ = 0;
+    destroy_range(m_data, m_size);
+    deallocate_n(m_data, m_size);
+    m_data = nullptr;
+    m_size = 0;
   }
 
   void steal(blob &o) noexcept {
-    data_ = o.data_;
-    size_ = o.size_;
-    o.data_ = nullptr;
-    o.size_ = 0;
+    m_data = o.m_data;
+    m_size = o.m_size;
+    o.m_data = nullptr;
+    o.m_size = 0;
   }
 
   void assign_copy_from(const T *src, usize n) {
@@ -316,14 +316,14 @@ private:
     usize i = 0;
     try {
       for (; i < n; ++i)
-        ATraits::construct(alloc_, nd + i, src[i]);
+        ATraits::construct(m_alloc, nd + i, src[i]);
     } catch (...) {
       destroy_range(nd, i);
       deallocate_n(nd, n);
       throw;
     }
-    data_ = nd;
-    size_ = n;
+    m_data = nd;
+    m_size = n;
   }
 
   void assign_move_from(T *src, usize n) {
@@ -334,14 +334,14 @@ private:
     usize i = 0;
     try {
       for (; i < n; ++i)
-        ATraits::construct(alloc_, nd + i, std::move(src[i]));
+        ATraits::construct(m_alloc, nd + i, std::move(src[i]));
     } catch (...) {
       destroy_range(nd, i);
       deallocate_n(nd, n);
       throw;
     }
-    data_ = nd;
-    size_ = n;
+    m_data = nd;
+    m_size = n;
   }
 
   template <typename, typename> friend class blob;

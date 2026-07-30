@@ -77,18 +77,18 @@ public:
 
     template <bool C = Const, std::enable_if_t<C, int> = 0>
     iterator_t(const iterator_t<false> &o) noexcept
-        : pool_(o.pool_), index_(o.index_) {}
+        : m_pool(o.m_pool), m_index(o.m_index) {}
 
-    reference operator*() const noexcept { return *pool_->value_ptr(index_); }
-    pointer operator->() const noexcept { return pool_->value_ptr(index_); }
+    reference operator*() const noexcept { return *m_pool->value_ptr(m_index); }
+    pointer operator->() const noexcept { return m_pool->value_ptr(m_index); }
 
     [[nodiscard]] handle_type handle() const noexcept {
-      return Handle::from_parts(nx::cast<repr>(index_),
-                                pool_->slot_at(index_).version);
+      return Handle::from_parts(nx::cast<repr>(m_index),
+                                m_pool->slot_at(m_index).version);
     }
 
     iterator_t &operator++() noexcept {
-      index_ = pool_->next_occupied(index_ + 1);
+      m_index = m_pool->next_occupied(m_index + 1);
       return *this;
     }
     iterator_t operator++(int) noexcept {
@@ -97,7 +97,7 @@ public:
       return tmp;
     }
     iterator_t &operator--() noexcept {
-      index_ = pool_->prev_occupied(index_ - 1);
+      m_index = m_pool->prev_occupied(m_index - 1);
       return *this;
     }
     iterator_t operator--(int) noexcept {
@@ -108,11 +108,11 @@ public:
 
     [[nodiscard]] friend bool operator==(const iterator_t &a,
                                          const iterator_t &b) noexcept {
-      return a.index_ == b.index_;
+      return a.m_index == b.m_index;
     }
     [[nodiscard]] friend bool operator!=(const iterator_t &a,
                                          const iterator_t &b) noexcept {
-      return a.index_ != b.index_;
+      return a.m_index != b.m_index;
     }
 
   private:
@@ -121,10 +121,10 @@ public:
     using pool_ptr =
         std::conditional_t<Const, const stable_pool *, stable_pool *>;
 
-    iterator_t(pool_ptr p, usize i) noexcept : pool_(p), index_(i) {}
+    iterator_t(pool_ptr p, usize i) noexcept : m_pool(p), m_index(i) {}
 
-    pool_ptr pool_ = nullptr;
-    usize index_ = 0;
+    pool_ptr m_pool = nullptr;
+    usize m_index = 0;
   };
 
   using iterator = iterator_t<false>;
@@ -133,22 +133,22 @@ public:
   stable_pool() noexcept(std::is_nothrow_default_constructible_v<Alloc>) {}
 
   explicit stable_pool(const Alloc &alloc) noexcept
-      : alloc_(alloc), salloc_(alloc), pages_(page_ptr_alloc(alloc)) {}
+      : m_alloc(alloc), m_salloc(alloc), m_pages(page_ptr_alloc(alloc)) {}
 
   stable_pool(const stable_pool &other)
-      : alloc_(
-            alloc_traits::select_on_container_copy_construction(other.alloc_)),
-        salloc_(alloc_), pages_(page_ptr_alloc(alloc_)) {
+      : m_alloc(
+            alloc_traits::select_on_container_copy_construction(other.m_alloc)),
+        m_salloc(m_alloc), m_pages(page_ptr_alloc(m_alloc)) {
     copy_from(other);
   }
 
   stable_pool(stable_pool &&other) noexcept
-      : alloc_(std::move(other.alloc_)), salloc_(std::move(other.salloc_)),
-        pages_(std::move(other.pages_)), free_head_(other.free_head_),
-        size_(other.size_), capacity_(other.capacity_) {
-    other.free_head_ = Handle::null_index;
-    other.size_ = 0;
-    other.capacity_ = 0;
+      : m_alloc(std::move(other.m_alloc)), m_salloc(std::move(other.m_salloc)),
+        m_pages(std::move(other.m_pages)), m_free_head(other.m_free_head),
+        m_size(other.m_size), m_capacity(other.m_capacity) {
+    other.m_free_head = Handle::null_index;
+    other.m_size = 0;
+    other.m_capacity = 0;
   }
 
   ~stable_pool() { destroy_all(); }
@@ -158,8 +158,8 @@ public:
       return *this;
     clear_and_release();
     if constexpr (alloc_traits::propagate_on_container_copy_assignment::value) {
-      alloc_ = other.alloc_;
-      salloc_ = slot_alloc(alloc_);
+      m_alloc = other.m_alloc;
+      m_salloc = slot_alloc(m_alloc);
     }
     copy_from(other);
     return *this;
@@ -170,27 +170,27 @@ public:
       return *this;
     clear_and_release();
     if constexpr (alloc_traits::propagate_on_container_move_assignment::value) {
-      alloc_ = std::move(other.alloc_);
-      salloc_ = std::move(other.salloc_);
+      m_alloc = std::move(other.m_alloc);
+      m_salloc = std::move(other.m_salloc);
     }
-    pages_ = std::move(other.pages_);
-    free_head_ = other.free_head_;
-    size_ = other.size_;
-    capacity_ = other.capacity_;
-    other.free_head_ = Handle::null_index;
-    other.size_ = 0;
-    other.capacity_ = 0;
+    m_pages = std::move(other.m_pages);
+    m_free_head = other.m_free_head;
+    m_size = other.m_size;
+    m_capacity = other.m_capacity;
+    other.m_free_head = Handle::null_index;
+    other.m_size = 0;
+    other.m_capacity = 0;
     return *this;
   }
 
-  [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
-  [[nodiscard]] usize size() const noexcept { return size_; }
-  [[nodiscard]] usize capacity() const noexcept { return capacity_; }
+  [[nodiscard]] bool empty() const noexcept { return m_size == 0; }
+  [[nodiscard]] usize size() const noexcept { return m_size; }
+  [[nodiscard]] usize capacity() const noexcept { return m_capacity; }
   [[nodiscard]] usize max_size() const noexcept { return Handle::max_index; }
 
   [[nodiscard]] bool contains(Handle h) const noexcept {
     const repr idx = h.index();
-    if (idx >= capacity_)
+    if (idx >= m_capacity)
       return false;
     const slot &s = slot_at(idx);
     return s.st == state::occupied && s.version == h.version();
@@ -205,12 +205,12 @@ public:
     try {
       ::new (static_cast<void *>(s.storage)) T(std::forward<Args>(args)...);
     } catch (...) {
-      s.next_free = free_head_;
-      free_head_ = idx;
+      s.next_free = m_free_head;
+      m_free_head = idx;
       throw;
     }
     s.st = state::occupied;
-    ++size_;
+    ++m_size;
     return Handle::from_parts(idx, s.version);
   }
 
@@ -220,7 +220,7 @@ public:
     const repr idx = h.index();
     slot &s = slot_at(idx);
     value_ptr(idx)->~T();
-    --size_;
+    --m_size;
     recycle(idx, s);
     return true;
   }
@@ -253,12 +253,12 @@ public:
   }
 
   void reserve(const usize n) {
-    while (capacity_ < n)
+    while (m_capacity < n)
       add_page();
   }
 
   void clear() noexcept {
-    for (usize idx = 0; idx < capacity_; ++idx) {
+    for (usize idx = 0; idx < m_capacity; ++idx) {
       slot &s = slot_at(idx);
       if (s.st == state::occupied) {
         value_ptr(idx)->~T();
@@ -270,32 +270,34 @@ public:
       }
     }
     rebuild_free_list();
-    size_ = 0;
+    m_size = 0;
   }
 
   [[nodiscard]] iterator begin() noexcept {
     return iterator(this, next_occupied(0));
   }
-  [[nodiscard]] iterator end() noexcept { return iterator(this, capacity_); }
+  [[nodiscard]] iterator end() noexcept { return iterator(this, m_capacity); }
   [[nodiscard]] const_iterator begin() const noexcept {
     return const_iterator(this, next_occupied(0));
   }
   [[nodiscard]] const_iterator end() const noexcept {
-    return const_iterator(this, capacity_);
+    return const_iterator(this, m_capacity);
   }
   [[nodiscard]] const_iterator cbegin() const noexcept { return begin(); }
   [[nodiscard]] const_iterator cend() const noexcept { return end(); }
 
-  [[nodiscard]] allocator_type get_allocator() const noexcept { return alloc_; }
+  [[nodiscard]] allocator_type get_allocator() const noexcept {
+    return m_alloc;
+  }
 
 private:
   template <bool> friend class iterator_t;
 
   slot &slot_at(const usize idx) noexcept {
-    return pages_[idx >> page_shift][idx & page_mask];
+    return m_pages[idx >> page_shift][idx & page_mask];
   }
   const slot &slot_at(const usize idx) const noexcept {
-    return pages_[idx >> page_shift][idx & page_mask];
+    return m_pages[idx >> page_shift][idx & page_mask];
   }
   T *value_ptr(const usize idx) noexcept {
     return std::launder(reinterpret_cast<T *>(slot_at(idx).storage));
@@ -305,10 +307,10 @@ private:
   }
 
   usize next_occupied(const usize from) const noexcept {
-    for (usize i = from; i < capacity_; ++i)
+    for (usize i = from; i < m_capacity; ++i)
       if (slot_at(i).st == state::occupied)
         return i;
-    return capacity_;
+    return m_capacity;
   }
   usize prev_occupied(const usize from) const noexcept {
     for (usize i = from; i + 1 > 0; --i) {
@@ -317,30 +319,30 @@ private:
       if (i == 0)
         break;
     }
-    return capacity_;
+    return m_capacity;
   }
 
   void add_page() {
-    const usize base = capacity_;
+    const usize base = m_capacity;
     assert(base < Handle::null_index && "stable_pool: index space exhausted");
-    slot *page = slot_alloc_traits::allocate(salloc_, page_size);
+    slot *page = slot_alloc_traits::allocate(m_salloc, page_size);
     for (usize i = 0; i < page_size; ++i) {
       slot &s = page[i];
       s.version = 0;
       s.st = state::free;
       s.next_free =
-          (i + 1 < page_size) ? nx::cast<repr>(base + i + 1) : free_head_;
+          (i + 1 < page_size) ? nx::cast<repr>(base + i + 1) : m_free_head;
     }
-    pages_.push_back(page);
-    capacity_ += page_size;
-    free_head_ = nx::cast<repr>(base);
+    m_pages.push_back(page);
+    m_capacity += page_size;
+    m_free_head = nx::cast<repr>(base);
   }
 
   repr acquire_slot() {
-    if (free_head_ == Handle::null_index)
+    if (m_free_head == Handle::null_index)
       add_page();
-    const repr idx = free_head_;
-    free_head_ = slot_at(idx).next_free;
+    const repr idx = m_free_head;
+    m_free_head = slot_at(idx).next_free;
     return idx;
   }
 
@@ -348,45 +350,45 @@ private:
     if (s.version < Handle::max_version) {
       ++s.version;
       s.st = state::free;
-      s.next_free = free_head_;
-      free_head_ = idx;
+      s.next_free = m_free_head;
+      m_free_head = idx;
     } else {
       s.st = state::retired;
     }
   }
 
   void rebuild_free_list() noexcept {
-    free_head_ = Handle::null_index;
-    for (usize i = capacity_; i-- > 0;) {
+    m_free_head = Handle::null_index;
+    for (usize i = m_capacity; i-- > 0;) {
       slot &s = slot_at(i);
       if (s.st == state::free) {
-        s.next_free = free_head_;
-        free_head_ = nx::cast<repr>(i);
+        s.next_free = m_free_head;
+        m_free_head = nx::cast<repr>(i);
       }
     }
   }
 
   void destroy_all() noexcept {
-    for (usize idx = 0; idx < capacity_; ++idx) {
+    for (usize idx = 0; idx < m_capacity; ++idx) {
       slot &s = slot_at(idx);
       if (s.st == state::occupied)
         value_ptr(idx)->~T();
     }
-    for (slot *page : pages_)
-      slot_alloc_traits::deallocate(salloc_, page, page_size);
-    pages_.clear();
+    for (slot *page : m_pages)
+      slot_alloc_traits::deallocate(m_salloc, page, page_size);
+    m_pages.clear();
   }
 
   void clear_and_release() noexcept {
     destroy_all();
-    free_head_ = Handle::null_index;
-    size_ = 0;
-    capacity_ = 0;
+    m_free_head = Handle::null_index;
+    m_size = 0;
+    m_capacity = 0;
   }
 
   void copy_from(const stable_pool &other) {
-    reserve(other.capacity_);
-    for (usize idx = 0; idx < other.capacity_; ++idx) {
+    reserve(other.m_capacity);
+    for (usize idx = 0; idx < other.m_capacity; ++idx) {
       const slot &src = other.slot_at(idx);
       slot &dst = slot_at(idx);
       dst.version = src.version;
@@ -395,15 +397,15 @@ private:
         ::new (static_cast<void *>(dst.storage)) T(*other.value_ptr(idx));
     }
     rebuild_free_list();
-    size_ = other.size_;
+    m_size = other.m_size;
   }
 
-  NX_NO_UNIQUE_ADDRESS Alloc alloc_;
-  NX_NO_UNIQUE_ADDRESS slot_alloc salloc_;
-  vector<slot *, page_ptr_alloc> pages_;
-  repr free_head_ = Handle::null_index;
-  usize size_ = 0;
-  usize capacity_ = 0;
+  NX_NO_UNIQUE_ADDRESS Alloc m_alloc;
+  NX_NO_UNIQUE_ADDRESS slot_alloc m_salloc;
+  vector<slot *, page_ptr_alloc> m_pages;
+  repr m_free_head = Handle::null_index;
+  usize m_size = 0;
+  usize m_capacity = 0;
 };
 
 } // namespace nx

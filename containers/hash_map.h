@@ -50,36 +50,37 @@ constexpr bool ctrl_is_empty_or_deleted(ctrl_t c) noexcept {
 // position index*(1<<Shift)+(1<<Shift)-1, so iteration yields slot indices.
 template <typename T, i32 Bits, i32 Shift = 0> class bit_mask {
 public:
-  explicit bit_mask(T mask) noexcept : mask_(mask) {}
+  explicit bit_mask(T mask) noexcept : m_mask(mask) {}
 
   bit_mask &operator++() noexcept {
-    mask_ &= (mask_ - 1);
+    m_mask &= (m_mask - 1);
     return *this;
   }
-  explicit operator bool() const noexcept { return mask_ != 0; }
+  explicit operator bool() const noexcept { return m_mask != 0; }
   u32 operator*() const noexcept { return lowest_bit_set(); }
 
   [[nodiscard]] u32 lowest_bit_set() const noexcept {
-    return static_cast<u32>(std::countr_zero(mask_)) >> Shift;
+    return static_cast<u32>(std::countr_zero(m_mask)) >> Shift;
   }
   [[nodiscard]] u32 trailing_zeros() const noexcept {
-    return static_cast<u32>(std::countr_zero(mask_)) >> Shift;
+    return static_cast<u32>(std::countr_zero(m_mask)) >> Shift;
   }
   [[nodiscard]] u32 leading_zeros() const noexcept {
     constexpr i32 total = Bits << Shift;
     constexpr i32 extra = static_cast<i32>(sizeof(T) * 8) - total;
-    return static_cast<u32>(std::countl_zero(static_cast<T>(mask_ << extra))) >>
+    return static_cast<u32>(
+               std::countl_zero(static_cast<T>(m_mask << extra))) >>
            Shift;
   }
 
   [[nodiscard]] bit_mask begin() const noexcept { return *this; }
   [[nodiscard]] bit_mask end() const noexcept { return bit_mask(0); }
   friend bool operator!=(const bit_mask &a, const bit_mask &b) noexcept {
-    return a.mask_ != b.mask_;
+    return a.m_mask != b.m_mask;
   }
 
 private:
-  T mask_;
+  T m_mask;
 };
 
 #if NX_HASHMAP_SSE2
@@ -294,14 +295,16 @@ public:
 
     template <bool C = Const, std::enable_if_t<C, i32> = 0>
     iterator_t(const iterator_t<false> &o) noexcept
-        : ctrl_(o.ctrl_), slot_(o.slot_) {}
+        : m_ctrl(o.m_ctrl), m_slot(o.m_slot) {}
 
-    reference operator*() const noexcept { return slot_->value; }
-    pointer operator->() const noexcept { return std::addressof(slot_->value); }
+    reference operator*() const noexcept { return m_slot->value; }
+    pointer operator->() const noexcept {
+      return std::addressof(m_slot->value);
+    }
 
     iterator_t &operator++() noexcept {
-      ++ctrl_;
-      ++slot_;
+      ++m_ctrl;
+      ++m_slot;
       skip_empty_or_deleted();
       return *this;
     }
@@ -312,32 +315,32 @@ public:
     }
 
     friend bool operator==(const iterator_t &a, const iterator_t &b) noexcept {
-      return a.ctrl_ == b.ctrl_;
+      return a.m_ctrl == b.m_ctrl;
     }
     friend bool operator!=(const iterator_t &a, const iterator_t &b) noexcept {
-      return a.ctrl_ != b.ctrl_;
+      return a.m_ctrl != b.m_ctrl;
     }
 
   private:
     friend class flat_hash_map;
     template <bool> friend class iterator_t;
 
-    iterator_t(ctrl_t *c, slot_type *s) noexcept : ctrl_(c), slot_(s) {}
+    iterator_t(ctrl_t *c, slot_type *s) noexcept : m_ctrl(c), m_slot(s) {}
 
     void skip_empty_or_deleted() noexcept {
-      while (detail::ctrl_is_empty_or_deleted(*ctrl_)) {
-        u32 shift = group(ctrl_).count_leading_empty_or_deleted();
-        ctrl_ += shift;
-        slot_ += shift;
+      while (detail::ctrl_is_empty_or_deleted(*m_ctrl)) {
+        u32 shift = group(m_ctrl).count_leading_empty_or_deleted();
+        m_ctrl += shift;
+        m_slot += shift;
       }
-      if (*ctrl_ == ctrl_t::sentinel) {
-        ctrl_ = nullptr;
-        slot_ = nullptr;
+      if (*m_ctrl == ctrl_t::sentinel) {
+        m_ctrl = nullptr;
+        m_slot = nullptr;
       }
     }
 
-    ctrl_t *ctrl_ = nullptr;
-    slot_type *slot_ = nullptr;
+    ctrl_t *m_ctrl = nullptr;
+    slot_type *m_slot = nullptr;
   };
 
   using iterator = iterator_t<false>;
@@ -346,66 +349,66 @@ public:
   flat_hash_map() noexcept(std::is_nothrow_default_constructible_v<Alloc>) =
       default;
 
-  explicit flat_hash_map(const Alloc &alloc) noexcept : alloc_(alloc) {}
+  explicit flat_hash_map(const Alloc &alloc) noexcept : m_alloc(alloc) {}
 
   explicit flat_hash_map(usize bucket_count, const Alloc &alloc = Alloc())
-      : alloc_(alloc) {
+      : m_alloc(alloc) {
     if (bucket_count)
       reserve(bucket_count);
   }
 
   template <typename It>
   flat_hash_map(It first, It last, const Alloc &alloc = Alloc())
-      : alloc_(alloc) {
+      : m_alloc(alloc) {
     insert(first, last);
   }
 
   flat_hash_map(std::initializer_list<value_type> il,
                 const Alloc &alloc = Alloc())
-      : alloc_(alloc) {
+      : m_alloc(alloc) {
     insert(il.begin(), il.end());
   }
 
   flat_hash_map(const flat_hash_map &o)
-      : alloc_(alloc_traits::select_on_container_copy_construction(o.alloc_)),
+      : m_alloc(alloc_traits::select_on_container_copy_construction(o.m_alloc)),
         hash_fn_(o.hash_fn_), eq_(o.eq_) {
-    if (o.size_ == 0)
+    if (o.m_size == 0)
       return;
-    reserve(o.size_);
+    reserve(o.m_size);
     for (const value_type &kv : o) {
       auto [idx, inserted] = find_or_prepare_insert(kv.first);
       (void)inserted;
-      construct(slots_ + idx, kv);
+      construct(m_slots + idx, kv);
     }
   }
 
   flat_hash_map(const flat_hash_map &o, const Alloc &alloc)
-      : alloc_(alloc), hash_fn_(o.hash_fn_), eq_(o.eq_) {
-    if (o.size_ == 0)
+      : m_alloc(alloc), hash_fn_(o.hash_fn_), eq_(o.eq_) {
+    if (o.m_size == 0)
       return;
-    reserve(o.size_);
+    reserve(o.m_size);
     for (const value_type &kv : o) {
       auto [idx, inserted] = find_or_prepare_insert(kv.first);
       (void)inserted;
-      construct(slots_ + idx, kv);
+      construct(m_slots + idx, kv);
     }
   }
 
   flat_hash_map(flat_hash_map &&o) noexcept
-      : ctrl_(o.ctrl_), slots_(o.slots_), size_(o.size_),
-        capacity_(o.capacity_), growth_left_(o.growth_left_),
-        alloc_(std::move(o.alloc_)), hash_fn_(std::move(o.hash_fn_)),
+      : m_ctrl(o.m_ctrl), m_slots(o.m_slots), m_size(o.m_size),
+        m_capacity(o.m_capacity), m_growth_left(o.m_growth_left),
+        m_alloc(std::move(o.m_alloc)), hash_fn_(std::move(o.hash_fn_)),
         eq_(std::move(o.eq_)) {
-    o.ctrl_ = empty_group();
-    o.slots_ = nullptr;
-    o.size_ = 0;
-    o.capacity_ = 0;
-    o.growth_left_ = 0;
+    o.m_ctrl = empty_group();
+    o.m_slots = nullptr;
+    o.m_size = 0;
+    o.m_capacity = 0;
+    o.m_growth_left = 0;
   }
 
   flat_hash_map(flat_hash_map &&o, const Alloc &alloc)
-      : alloc_(alloc), hash_fn_(std::move(o.hash_fn_)), eq_(std::move(o.eq_)) {
-    if (alloc_ == o.alloc_)
+      : m_alloc(alloc), hash_fn_(std::move(o.hash_fn_)), eq_(std::move(o.eq_)) {
+    if (m_alloc == o.m_alloc)
       steal_storage_from(o);
     else
       move_elements_from(o);
@@ -416,10 +419,10 @@ public:
       return *this;
 
     if constexpr (alloc_traits::propagate_on_container_copy_assignment::value) {
-      flat_hash_map tmp(o, o.alloc_);
+      flat_hash_map tmp(o, o.m_alloc);
       swap(tmp);
     } else {
-      flat_hash_map tmp(o, alloc_);
+      flat_hash_map tmp(o, m_alloc);
       swap(tmp);
     }
     return *this;
@@ -433,11 +436,11 @@ public:
 
     if constexpr (alloc_traits::propagate_on_container_move_assignment::value) {
       destroy_and_free();
-      alloc_ = std::move(o.alloc_);
+      m_alloc = std::move(o.m_alloc);
       steal_storage_from(o);
       hash_fn_ = std::move(o.hash_fn_);
       eq_ = std::move(o.eq_);
-    } else if (alloc_ == o.alloc_) {
+    } else if (m_alloc == o.m_alloc) {
       destroy_and_free();
       steal_storage_from(o);
       hash_fn_ = std::move(o.hash_fn_);
@@ -454,16 +457,16 @@ public:
   ~flat_hash_map() { destroy_and_free(); }
 
   iterator begin() noexcept {
-    if (capacity_ == 0)
+    if (m_capacity == 0)
       return end();
-    iterator it{ctrl_, slots_};
+    iterator it{m_ctrl, m_slots};
     it.skip_empty_or_deleted();
     return it;
   }
   const_iterator begin() const noexcept {
-    if (capacity_ == 0)
+    if (m_capacity == 0)
       return end();
-    const_iterator it{ctrl_, slots_};
+    const_iterator it{m_ctrl, m_slots};
     it.skip_empty_or_deleted();
     return it;
   }
@@ -472,42 +475,44 @@ public:
   const_iterator end() const noexcept { return const_iterator{}; }
   const_iterator cend() const noexcept { return const_iterator{}; }
 
-  [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
-  [[nodiscard]] usize size() const noexcept { return size_; }
-  [[nodiscard]] usize capacity() const noexcept { return capacity_; }
-  [[nodiscard]] usize bucket_count() const noexcept { return capacity_; }
+  [[nodiscard]] bool empty() const noexcept { return m_size == 0; }
+  [[nodiscard]] usize size() const noexcept { return m_size; }
+  [[nodiscard]] usize capacity() const noexcept { return m_capacity; }
+  [[nodiscard]] usize bucket_count() const noexcept { return m_capacity; }
   [[nodiscard]] f32 load_factor() const noexcept {
-    return capacity_ ? static_cast<f32>(size_) / static_cast<f32>(capacity_)
-                     : 0.0f;
+    return m_capacity ? static_cast<f32>(m_size) / static_cast<f32>(m_capacity)
+                      : 0.0f;
   }
   [[nodiscard]] static f32 max_load_factor() noexcept { return 0.875f; }
   hasher hash_function() const { return hash_fn_; }
   key_equal key_eq() const { return eq_; }
-  [[nodiscard]] allocator_type get_allocator() const noexcept { return alloc_; }
+  [[nodiscard]] allocator_type get_allocator() const noexcept {
+    return m_alloc;
+  }
 
   void clear() noexcept {
-    if (capacity_ == 0)
+    if (m_capacity == 0)
       return;
     if constexpr (!std::is_trivially_destructible_v<value_type>) {
-      for (usize i = 0; i != capacity_; ++i)
-        if (detail::ctrl_is_full(ctrl_[i]))
-          destroy(slots_ + i);
+      for (usize i = 0; i != m_capacity; ++i)
+        if (detail::ctrl_is_full(m_ctrl[i]))
+          destroy(m_slots + i);
     }
     reset_ctrl();
-    size_ = 0;
-    growth_left_ = capacity_to_growth(capacity_);
+    m_size = 0;
+    m_growth_left = capacity_to_growth(m_capacity);
   }
 
   std::pair<iterator, bool> insert(const value_type &v) {
     auto [idx, inserted] = find_or_prepare_insert(v.first);
     if (inserted)
-      construct(slots_ + idx, v);
+      construct(m_slots + idx, v);
     return {iterator_at(idx), inserted};
   }
   std::pair<iterator, bool> insert(value_type &&v) {
     auto [idx, inserted] = find_or_prepare_insert(v.first);
     if (inserted)
-      construct(slots_ + idx, std::move(v));
+      construct(m_slots + idx, std::move(v));
     return {iterator_at(idx), inserted};
   }
   template <typename P,
@@ -538,7 +543,7 @@ public:
 
     auto [idx, inserted] = find_or_prepare_insert(tmp->value.first);
     if (inserted)
-      move_construct(slots_ + idx, tmp);
+      move_construct(m_slots + idx, tmp);
     return {iterator_at(idx), inserted};
   }
 
@@ -572,13 +577,13 @@ public:
     usize idx = find_index(k);
     if (idx == NPOS)
       throw std::out_of_range("flat_hash_map::at");
-    return slots_[idx].value.second;
+    return m_slots[idx].value.second;
   }
   const T &at(const Key &k) const {
     usize idx = find_index(k);
     if (idx == NPOS)
       throw std::out_of_range("flat_hash_map::at");
-    return slots_[idx].value.second;
+    return m_slots[idx].value.second;
   }
 
   iterator find(const Key &k) {
@@ -627,16 +632,16 @@ public:
     return 1;
   }
   iterator erase(const_iterator pos) {
-    auto idx = static_cast<usize>(pos.ctrl_ - ctrl_);
+    auto idx = static_cast<usize>(pos.m_ctrl - m_ctrl);
     erase_at(idx);
-    iterator it{ctrl_ + idx, slots_ + idx};
+    iterator it{m_ctrl + idx, m_slots + idx};
     it.skip_empty_or_deleted();
     return it;
   }
   iterator erase(iterator pos) {
-    auto idx = static_cast<usize>(pos.ctrl_ - ctrl_);
+    auto idx = static_cast<usize>(pos.m_ctrl - m_ctrl);
     erase_at(idx);
-    iterator it{ctrl_ + idx, slots_ + idx};
+    iterator it{m_ctrl + idx, m_slots + idx};
     it.skip_empty_or_deleted();
     return it;
   }
@@ -648,17 +653,17 @@ public:
     target = max(target, min_capacity());
     while (capacity_to_growth(target) < n)
       target = target * 2 + 1;
-    if (target > capacity_)
+    if (target > m_capacity)
       resize(target);
   }
 
   void rehash(const usize n) {
-    const usize lower = growth_to_lowerbound_capacity(size_);
+    const usize lower = growth_to_lowerbound_capacity(m_size);
     usize target = normalize_capacity(max(n, lower));
-    if (size_ != 0)
+    if (m_size != 0)
       target = max(target, min_capacity());
-    if (target != capacity_ &&
-        (target > capacity_ || size_ <= capacity_to_growth(target)))
+    if (target != m_capacity &&
+        (target > m_capacity || m_size <= capacity_to_growth(target)))
       resize(target == 0 ? min_capacity() : target);
   }
 
@@ -667,22 +672,22 @@ public:
       alloc_traits::is_always_equal::value) {
     using std::swap;
     if constexpr (alloc_traits::propagate_on_container_swap::value) {
-      swap(alloc_, o.alloc_);
+      swap(m_alloc, o.m_alloc);
     } else {
-      assert(alloc_ == o.alloc_ &&
+      assert(m_alloc == o.m_alloc &&
              "flat_hash_map::swap: non-propagating unequal allocators");
     }
-    swap(ctrl_, o.ctrl_);
-    swap(slots_, o.slots_);
-    swap(size_, o.size_);
-    swap(capacity_, o.capacity_);
-    swap(growth_left_, o.growth_left_);
+    swap(m_ctrl, o.m_ctrl);
+    swap(m_slots, o.m_slots);
+    swap(m_size, o.m_size);
+    swap(m_capacity, o.m_capacity);
+    swap(m_growth_left, o.m_growth_left);
     swap(hash_fn_, o.hash_fn_);
     swap(eq_, o.eq_);
   }
 
   friend bool operator==(const flat_hash_map &a, const flat_hash_map &b) {
-    if (a.size_ != b.size_)
+    if (a.m_size != b.m_size)
       return false;
     for (const value_type &kv : a) {
       const_iterator it = b.find(kv.first);
@@ -717,20 +722,20 @@ private:
   }
 
   struct probe_seq {
-    usize mask_;
-    usize offset_;
-    usize index_ = 0;
+    usize m_mask;
+    usize m_offset;
+    usize m_index = 0;
     probe_seq(const usize hash, const usize mask) noexcept
-        : mask_(mask), offset_(hash & mask) {}
-    [[nodiscard]] usize offset() const noexcept { return offset_; }
+        : m_mask(mask), m_offset(hash & mask) {}
+    [[nodiscard]] usize offset() const noexcept { return m_offset; }
     [[nodiscard]] usize offset(const usize i) const noexcept {
-      return (offset_ + i) & mask_;
+      return (m_offset + i) & m_mask;
     }
     void next() noexcept {
-      index_ += group::WIDTH;
-      offset_ = (offset_ + index_) & mask_;
+      m_index += group::WIDTH;
+      m_offset = (m_offset + m_index) & m_mask;
     }
-    [[nodiscard]] usize index() const noexcept { return index_; }
+    [[nodiscard]] usize index() const noexcept { return m_index; }
   };
 
   template <typename K> usize hash_key(const K &key) const {
@@ -742,18 +747,18 @@ private:
   }
 
   probe_seq probe(const usize hash) const noexcept {
-    return probe_seq(hash >> 7, capacity_);
+    return probe_seq(hash >> 7, m_capacity);
   }
   static u8 h2(const usize hash) noexcept {
     return static_cast<u8>(hash & 0x7F);
   }
 
   template <typename... Args> void construct(slot_type *s, Args &&...args) {
-    alloc_traits::construct(alloc_, std::addressof(s->value),
+    alloc_traits::construct(m_alloc, std::addressof(s->value),
                             std::forward<Args>(args)...);
   }
   void destroy(slot_type *s) noexcept {
-    alloc_traits::destroy(alloc_, std::addressof(s->value));
+    alloc_traits::destroy(m_alloc, std::addressof(s->value));
   }
   void move_construct(slot_type *to, slot_type *from) {
     construct(to, std::move(from->mutable_value.first),
@@ -761,13 +766,14 @@ private:
   }
 
   void set_ctrl(const usize i, const ctrl_t h) const noexcept {
-    ctrl_[i] = h;
-    ctrl_[((i - CLONED) & capacity_) + (CLONED & capacity_)] = h;
+    m_ctrl[i] = h;
+    m_ctrl[((i - CLONED) & m_capacity) + (CLONED & m_capacity)] = h;
   }
 
   void reset_ctrl() const noexcept {
-    std::memset(ctrl_, static_cast<u8>(ctrl_t::empty), capacity_ + 1 + CLONED);
-    ctrl_[capacity_] = ctrl_t::sentinel;
+    std::memset(m_ctrl, static_cast<u8>(ctrl_t::empty),
+                m_capacity + 1 + CLONED);
+    m_ctrl[m_capacity] = ctrl_t::sentinel;
   }
 
   static constexpr usize ctrl_count(const usize cap) noexcept {
@@ -775,8 +781,8 @@ private:
   }
 
   void initialize(const usize new_cap) {
-    ctrl_allocator ctrl_alloc(alloc_);
-    slot_allocator slot_alloc(alloc_);
+    ctrl_allocator ctrl_alloc(m_alloc);
+    slot_allocator slot_alloc(m_alloc);
 
     ctrl_t *new_ctrl = nullptr;
     slot_type *new_slots = nullptr;
@@ -791,17 +797,17 @@ private:
       throw;
     }
 
-    ctrl_ = new_ctrl;
-    slots_ = new_slots;
-    capacity_ = new_cap;
+    m_ctrl = new_ctrl;
+    m_slots = new_slots;
+    m_capacity = new_cap;
     reset_ctrl();
-    growth_left_ = capacity_to_growth(new_cap) - size_;
+    m_growth_left = capacity_to_growth(new_cap) - m_size;
   }
 
   void deallocate_storage(ctrl_t *ctrl, slot_type *slots,
                           const usize cap) noexcept {
-    ctrl_allocator ctrl_alloc(alloc_);
-    slot_allocator slot_alloc(alloc_);
+    ctrl_allocator ctrl_alloc(m_alloc);
+    slot_allocator slot_alloc(m_alloc);
     if (slots)
       slot_traits::deallocate(slot_alloc, slots, cap);
     if (ctrl && ctrl != empty_group())
@@ -809,16 +815,16 @@ private:
   }
 
   usize find_index(const auto &key) const {
-    if (capacity_ == 0)
+    if (m_capacity == 0)
       return NPOS;
     const usize hash = hash_key(key);
     auto seq = probe(hash);
     const u8 tag = h2(hash);
     while (true) {
-      group g(ctrl_ + seq.offset());
+      group g(m_ctrl + seq.offset());
       for (u32 i : g.match(tag)) {
         const usize idx = seq.offset(i);
-        if (NX_LIKELY(eq_(slots_[idx].value.first, key)))
+        if (NX_LIKELY(eq_(m_slots[idx].value.first, key)))
           return idx;
       }
       if (NX_LIKELY(static_cast<bool>(g.match_empty())))
@@ -834,7 +840,7 @@ private:
   FindInfo find_first_non_full(const usize hash) const {
     auto seq = probe(hash);
     while (true) {
-      group g(ctrl_ + seq.offset());
+      group g(m_ctrl + seq.offset());
       if (auto mask = g.match_empty_or_deleted())
         return {seq.offset(*mask), seq.index()};
       seq.next();
@@ -843,29 +849,29 @@ private:
 
   usize prepare_insert(const usize hash) {
     FindInfo target = find_first_non_full(hash);
-    if (NX_UNLIKELY(growth_left_ == 0 &&
-                    !detail::ctrl_is_deleted(ctrl_[target.offset]))) {
+    if (NX_UNLIKELY(m_growth_left == 0 &&
+                    !detail::ctrl_is_deleted(m_ctrl[target.offset]))) {
       rehash_and_grow_if_necessary();
       target = find_first_non_full(hash);
     }
-    ++size_;
-    growth_left_ -= detail::ctrl_is_empty(ctrl_[target.offset]) ? 1 : 0;
+    ++m_size;
+    m_growth_left -= detail::ctrl_is_empty(m_ctrl[target.offset]) ? 1 : 0;
     set_ctrl(target.offset, static_cast<ctrl_t>(h2(hash)));
     return target.offset;
   }
 
   template <typename K>
   std::pair<usize, bool> find_or_prepare_insert(const K &key) {
-    if (capacity_ == 0)
+    if (m_capacity == 0)
       resize(min_capacity());
     const usize hash = hash_key(key);
     auto seq = probe(hash);
     const u8 tag = h2(hash);
     while (true) {
-      group g(ctrl_ + seq.offset());
+      group g(m_ctrl + seq.offset());
       for (u32 i : g.match(tag)) {
         const usize idx = seq.offset(i);
-        if (NX_LIKELY(eq_(slots_[idx].value.first, key)))
+        if (NX_LIKELY(eq_(m_slots[idx].value.first, key)))
           return {idx, false};
       }
       if (NX_LIKELY(static_cast<bool>(g.match_empty())))
@@ -879,7 +885,7 @@ private:
   std::pair<iterator, bool> try_emplace_impl(K &&k, Args &&...args) {
     auto [idx, inserted] = find_or_prepare_insert(k);
     if (inserted)
-      construct(slots_ + idx, std::piecewise_construct,
+      construct(m_slots + idx, std::piecewise_construct,
                 std::forward_as_tuple(std::forward<K>(k)),
                 std::forward_as_tuple(std::forward<Args>(args)...));
     return {iterator_at(idx), inserted};
@@ -889,47 +895,47 @@ private:
   std::pair<iterator, bool> insert_or_assign_impl(K &&k, M &&obj) {
     auto [idx, inserted] = find_or_prepare_insert(k);
     if (inserted)
-      construct(slots_ + idx, std::piecewise_construct,
+      construct(m_slots + idx, std::piecewise_construct,
                 std::forward_as_tuple(std::forward<K>(k)),
                 std::forward_as_tuple(std::forward<M>(obj)));
     else
-      slots_[idx].value.second = std::forward<M>(obj);
+      m_slots[idx].value.second = std::forward<M>(obj);
     return {iterator_at(idx), inserted};
   }
 
   void erase_at(usize idx) {
-    destroy(slots_ + idx);
+    destroy(m_slots + idx);
     erase_meta_only(idx);
   }
 
   void erase_meta_only(const usize idx) noexcept {
-    --size_;
-    const usize index_before = (idx - group::WIDTH) & capacity_;
-    const auto empty_after = group(ctrl_ + idx).match_empty();
-    const auto empty_before = group(ctrl_ + index_before).match_empty();
+    --m_size;
+    const usize index_before = (idx - group::WIDTH) & m_capacity;
+    const auto empty_after = group(m_ctrl + idx).match_empty();
+    const auto empty_before = group(m_ctrl + index_before).match_empty();
     const bool was_never_full =
         static_cast<bool>(empty_before) && static_cast<bool>(empty_after) &&
         (empty_after.trailing_zeros() + empty_before.leading_zeros()) <
             group::WIDTH;
     set_ctrl(idx, was_never_full ? ctrl_t::empty : ctrl_t::deleted);
-    growth_left_ += was_never_full ? 1 : 0;
+    m_growth_left += was_never_full ? 1 : 0;
   }
 
   void rehash_and_grow_if_necessary() {
-    if (capacity_ == 0) {
+    if (m_capacity == 0) {
       resize(min_capacity());
-    } else if (capacity_ > group::WIDTH &&
-               size_ * usize{32} <= capacity_ * usize{25}) {
-      resize(capacity_);
+    } else if (m_capacity > group::WIDTH &&
+               m_size * usize{32} <= m_capacity * usize{25}) {
+      resize(m_capacity);
     } else {
-      resize(capacity_ * 2 + 1);
+      resize(m_capacity * 2 + 1);
     }
   }
 
   void resize(const usize new_capacity) {
-    ctrl_t *old_ctrl = ctrl_;
-    slot_type *old_slots = slots_;
-    const usize old_capacity = capacity_;
+    ctrl_t *old_ctrl = m_ctrl;
+    slot_type *old_slots = m_slots;
+    const usize old_capacity = m_capacity;
     const bool had_alloc = old_capacity != 0;
 
     initialize(new_capacity);
@@ -940,7 +946,7 @@ private:
           const usize hash = hash_key(old_slots[i].value.first);
           const FindInfo t = find_first_non_full(hash);
           set_ctrl(t.offset, static_cast<ctrl_t>(h2(hash)));
-          move_construct(slots_ + t.offset, old_slots + i);
+          move_construct(m_slots + t.offset, old_slots + i);
           destroy(old_slots + i);
         }
       }
@@ -949,65 +955,65 @@ private:
   }
 
   void destroy_and_free() noexcept {
-    if (capacity_ == 0)
+    if (m_capacity == 0)
       return;
     if constexpr (!std::is_trivially_destructible_v<value_type>) {
-      for (usize i = 0; i != capacity_; ++i)
-        if (detail::ctrl_is_full(ctrl_[i]))
-          destroy(slots_ + i);
+      for (usize i = 0; i != m_capacity; ++i)
+        if (detail::ctrl_is_full(m_ctrl[i]))
+          destroy(m_slots + i);
     }
-    deallocate_storage(ctrl_, slots_, capacity_);
-    ctrl_ = empty_group();
-    slots_ = nullptr;
-    size_ = 0;
-    capacity_ = 0;
-    growth_left_ = 0;
+    deallocate_storage(m_ctrl, m_slots, m_capacity);
+    m_ctrl = empty_group();
+    m_slots = nullptr;
+    m_size = 0;
+    m_capacity = 0;
+    m_growth_left = 0;
   }
 
   void steal_storage_from(flat_hash_map &o) noexcept {
-    ctrl_ = o.ctrl_;
-    slots_ = o.slots_;
-    size_ = o.size_;
-    capacity_ = o.capacity_;
-    growth_left_ = o.growth_left_;
-    o.ctrl_ = empty_group();
-    o.slots_ = nullptr;
-    o.size_ = 0;
-    o.capacity_ = 0;
-    o.growth_left_ = 0;
+    m_ctrl = o.m_ctrl;
+    m_slots = o.m_slots;
+    m_size = o.m_size;
+    m_capacity = o.m_capacity;
+    m_growth_left = o.m_growth_left;
+    o.m_ctrl = empty_group();
+    o.m_slots = nullptr;
+    o.m_size = 0;
+    o.m_capacity = 0;
+    o.m_growth_left = 0;
   }
 
   void move_elements_from(flat_hash_map &o) {
-    if (o.size_ == 0)
+    if (o.m_size == 0)
       return;
-    reserve(o.size_);
-    for (usize i = 0; i != o.capacity_; ++i) {
-      if (detail::ctrl_is_full(o.ctrl_[i])) {
-        auto &src = o.slots_[i].mutable_value;
+    reserve(o.m_size);
+    for (usize i = 0; i != o.m_capacity; ++i) {
+      if (detail::ctrl_is_full(o.m_ctrl[i])) {
+        auto &src = o.m_slots[i].mutable_value;
         auto [idx, inserted] = find_or_prepare_insert(src.first);
         (void)inserted;
-        construct(slots_ + idx, std::move(src.first), std::move(src.second));
-        o.destroy(o.slots_ + i);
+        construct(m_slots + idx, std::move(src.first), std::move(src.second));
+        o.destroy(o.m_slots + i);
       }
     }
     o.reset_ctrl();
-    o.size_ = 0;
-    o.growth_left_ = capacity_to_growth(o.capacity_);
+    o.m_size = 0;
+    o.m_growth_left = capacity_to_growth(o.m_capacity);
   }
 
   iterator iterator_at(usize i) noexcept {
-    return iterator{ctrl_ + i, slots_ + i};
+    return iterator{m_ctrl + i, m_slots + i};
   }
   const_iterator iterator_at(usize i) const noexcept {
-    return const_iterator{ctrl_ + i, slots_ + i};
+    return const_iterator{m_ctrl + i, m_slots + i};
   }
 
-  ctrl_t *ctrl_ = empty_group();
-  slot_type *slots_ = nullptr;
-  usize size_ = 0;
-  usize capacity_ = 0;
-  usize growth_left_ = 0;
-  NX_NO_UNIQUE_ADDRESS Alloc alloc_{};
+  ctrl_t *m_ctrl = empty_group();
+  slot_type *m_slots = nullptr;
+  usize m_size = 0;
+  usize m_capacity = 0;
+  usize m_growth_left = 0;
+  NX_NO_UNIQUE_ADDRESS Alloc m_alloc{};
   NX_NO_UNIQUE_ADDRESS Hash hash_fn_{};
   NX_NO_UNIQUE_ADDRESS KeyEqual eq_{};
 };

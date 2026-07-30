@@ -20,9 +20,9 @@
  * therefore must be copy-constructible.
  */
 
-#include "foundation/core/callable.h"
 #include "foundation/containers/concurrent_queue.h"
 #include "foundation/containers/small_vector.h"
+#include "foundation/core/callable.h"
 #include "foundation/threading/sync.h"
 #include "foundation/threading/thread.h"
 
@@ -76,14 +76,14 @@ class task_group {
 public:
   task_group() = default;
   ~task_group() {
-    assert(pending_.load(std::memory_order_acquire) == 0 &&
+    assert(m_pending.load(std::memory_order_acquire) == 0 &&
            "task_group destroyed with tasks still pending");
   }
   task_group(const task_group &) = delete;
   task_group &operator=(const task_group &) = delete;
 
   [[nodiscard]] bool done() const noexcept {
-    return pending_.load(std::memory_order_acquire) == 0;
+    return m_pending.load(std::memory_order_acquire) == 0;
   }
 
   /// Blocks until all tasks in the group finished, executing queued pool
@@ -93,8 +93,8 @@ public:
 private:
   friend class thread_pool;
 
-  std::atomic<u32> pending_{0};
-  thread_pool *pool_ = nullptr;
+  std::atomic<u32> m_pending{0};
+  thread_pool *m_pool = nullptr;
 };
 
 /**
@@ -115,21 +115,21 @@ public:
   future(const future &) = delete;
   future &operator=(const future &) = delete;
 
-  future(future &&o) noexcept : state_(o.state_) { o.state_ = nullptr; }
+  future(future &&o) noexcept : m_state(o.m_state) { o.m_state = nullptr; }
 
   future &operator=(future &&o) noexcept {
     if (this != &o) {
       reset();
-      state_ = o.state_;
-      o.state_ = nullptr;
+      m_state = o.m_state;
+      o.m_state = nullptr;
     }
     return *this;
   }
 
-  [[nodiscard]] bool valid() const noexcept { return state_ != nullptr; }
+  [[nodiscard]] bool valid() const noexcept { return m_state != nullptr; }
 
   [[nodiscard]] bool ready() const noexcept {
-    return state_ && state_->ready.load(std::memory_order_acquire) != 0;
+    return m_state && m_state->ready.load(std::memory_order_acquire) != 0;
   }
 
   void wait() noexcept;
@@ -138,16 +138,16 @@ public:
 
 private:
   friend class thread_pool;
-  explicit future(detail::future_state<T> *s) noexcept : state_(s) {}
+  explicit future(detail::future_state<T> *s) noexcept : m_state(s) {}
 
   void reset() noexcept {
-    if (state_) {
-      detail::future_state_release(state_);
-      state_ = nullptr;
+    if (m_state) {
+      detail::future_state_release(m_state);
+      m_state = nullptr;
     }
   }
 
-  detail::future_state<T> *state_ = nullptr;
+  detail::future_state<T> *m_state = nullptr;
 };
 
 /**
@@ -181,7 +181,7 @@ public:
   thread_pool &operator=(const thread_pool &) = delete;
 
   [[nodiscard]] u32 worker_count() const noexcept {
-    return nx::cast<u32>(workers_.size());
+    return nx::cast<u32>(m_workers.size());
   }
 
   /// True if the calling thread is one of this pool's workers.
@@ -225,8 +225,7 @@ public:
 
   /// Calls body(i) for every i in [begin, end) across the pool. Blocks
   /// until complete; the calling thread executes chunks too.
-  template <typename F>
-  void parallel_for(usize begin, usize end, F &&body) {
+  template <typename F> void parallel_for(usize begin, usize end, F &&body) {
     parallel_for(begin, end, 0, std::forward<F>(body));
   }
 
@@ -310,12 +309,12 @@ private:
   void run_task(detail::pool_task &t) noexcept;
   void worker_loop(worker &w) noexcept;
 
-  small_vector<worker *, 32> workers_;
-  mpmc::Queue<detail::pool_task, SHARED_QUEUE_SIZE> shared_queue_;
+  small_vector<worker *, 32> m_workers;
+  mpmc::Queue<detail::pool_task, SHARED_QUEUE_SIZE> m_shared_queue;
 
-  mutex overflow_mutex_;
-  vector<detail::pool_task> overflow_;
-  usize overflow_head_ = 0;
+  mutex m_overflow_mutex;
+  vector<detail::pool_task> m_overflow;
+  usize m_overflow_head = 0;
   std::atomic<u32> overflow_count_{0};
 
   std::atomic<u32> unfinished_{0}; // queued + running tasks
@@ -326,11 +325,11 @@ private:
 };
 
 template <typename T> void future<T>::wait() noexcept {
-  if (!state_)
+  if (!m_state)
     return;
-  std::atomic<u32> &ready = state_->ready;
+  std::atomic<u32> &ready = m_state->ready;
   while (ready.load(std::memory_order_acquire) == 0) {
-    if (state_->pool && state_->pool->help_execute_one())
+    if (m_state->pool && m_state->pool->help_execute_one())
       continue;
     futex::wait(&ready, 0, detail::WAIT_FOREVER);
   }
@@ -342,7 +341,7 @@ template <typename T> T future<T>::get() {
   if constexpr (std::is_void_v<T>) {
     reset();
   } else {
-    T result = std::move(*state_->value());
+    T result = std::move(*m_state->value());
     reset();
     return result;
   }
@@ -350,9 +349,8 @@ template <typename T> T future<T>::get() {
 
 template <class T, class Fn>
 void parallel_collect(thread_pool *pool, const usize count,
-                      const usize parallel_min,
-                      nx::vector<nx::vector<T>> &bins, nx::vector<T> &out,
-                      Fn &&body) {
+                      const usize parallel_min, nx::vector<nx::vector<T>> &bins,
+                      nx::vector<T> &out, Fn &&body) {
   if (count == 0)
     return;
   if (pool == nullptr || count < parallel_min) {

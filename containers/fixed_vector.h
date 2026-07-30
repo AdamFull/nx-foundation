@@ -49,14 +49,14 @@ public:
 
   explicit fixed_vector(const usize count) {
     assert(count <= N);
-    for (; size_ < count; ++size_)
-      new (ptr() + size_) T();
+    for (; m_size < count; ++m_size)
+      new (ptr() + m_size) T();
   }
 
   fixed_vector(const usize count, const T &value) {
     assert(count <= N);
-    for (; size_ < count; ++size_)
-      new (ptr() + size_) T(value);
+    for (; m_size < count; ++m_size)
+      new (ptr() + m_size) T(value);
   }
 
   template <std::input_iterator It> fixed_vector(It first, It last) {
@@ -68,16 +68,16 @@ public:
   explicit fixed_vector(std::span<const T> sp) { assign(sp.begin(), sp.end()); }
 
   fixed_vector(const fixed_vector &other) {
-    for (usize i = 0; i < other.size_; ++i)
+    for (usize i = 0; i < other.m_size; ++i)
       new (ptr() + i) T(other.ptr()[i]);
-    size_ = other.size_;
+    m_size = other.m_size;
   }
 
   fixed_vector(fixed_vector &&other) noexcept(
       std::is_nothrow_move_constructible_v<T>) {
-    for (usize i = 0; i < other.size_; ++i)
+    for (usize i = 0; i < other.m_size; ++i)
       new (ptr() + i) T(std::move(other.ptr()[i]));
-    size_ = other.size_;
+    m_size = other.m_size;
     other.clear();
   }
 
@@ -93,9 +93,9 @@ public:
       std::is_nothrow_move_constructible_v<T>) {
     if (this != &other) {
       clear();
-      for (usize i = 0; i < other.size_; ++i)
+      for (usize i = 0; i < other.m_size; ++i)
         new (ptr() + i) T(std::move(other.ptr()[i]));
-      size_ = other.size_;
+      m_size = other.m_size;
       other.clear();
     }
     return *this;
@@ -111,7 +111,7 @@ public:
     clear();
     for (usize i = 0; i < count; ++i)
       new (ptr() + i) T(value);
-    size_ = count;
+    m_size = count;
   }
 
   template <std::input_iterator It> void assign(It first, It last) {
@@ -123,22 +123,22 @@ public:
   void assign(std::initializer_list<T> il) { assign(il.begin(), il.end()); }
 
   [[nodiscard]] reference at(usize i) {
-    if (i >= size_)
+    if (i >= m_size)
       throw std::out_of_range("fixed_vector::at");
     return ptr()[i];
   }
   [[nodiscard]] const_reference at(usize i) const {
-    if (i >= size_)
+    if (i >= m_size)
       throw std::out_of_range("fixed_vector::at");
     return ptr()[i];
   }
 
   [[nodiscard]] reference operator[](usize i) noexcept {
-    assert(i < size_);
+    assert(i < m_size);
     return ptr()[i];
   }
   [[nodiscard]] const_reference operator[](usize i) const noexcept {
-    assert(i < size_);
+    assert(i < m_size);
     return ptr()[i];
   }
   [[nodiscard]] reference front() noexcept {
@@ -151,21 +151,21 @@ public:
   }
   [[nodiscard]] reference back() noexcept {
     assert(!empty());
-    return ptr()[size_ - 1];
+    return ptr()[m_size - 1];
   }
   [[nodiscard]] const_reference back() const noexcept {
     assert(!empty());
-    return ptr()[size_ - 1];
+    return ptr()[m_size - 1];
   }
   [[nodiscard]] pointer data() noexcept { return ptr(); }
   [[nodiscard]] const_pointer data() const noexcept { return ptr(); }
 
   [[nodiscard]] iterator begin() noexcept { return ptr(); }
-  [[nodiscard]] iterator end() noexcept { return ptr() + size_; }
+  [[nodiscard]] iterator end() noexcept { return ptr() + m_size; }
   [[nodiscard]] const_iterator begin() const noexcept { return ptr(); }
-  [[nodiscard]] const_iterator end() const noexcept { return ptr() + size_; }
+  [[nodiscard]] const_iterator end() const noexcept { return ptr() + m_size; }
   [[nodiscard]] const_iterator cbegin() const noexcept { return ptr(); }
-  [[nodiscard]] const_iterator cend() const noexcept { return ptr() + size_; }
+  [[nodiscard]] const_iterator cend() const noexcept { return ptr() + m_size; }
   [[nodiscard]] reverse_iterator rbegin() noexcept {
     return reverse_iterator{end()};
   }
@@ -185,8 +185,8 @@ public:
     return const_reverse_iterator{cbegin()};
   }
 
-  [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
-  [[nodiscard]] usize size() const noexcept { return size_; }
+  [[nodiscard]] bool empty() const noexcept { return m_size == 0; }
+  [[nodiscard]] usize size() const noexcept { return m_size; }
   [[nodiscard]] usize max_size() const noexcept { return N; }
   [[nodiscard]] usize capacity() const noexcept { return N; }
 
@@ -197,33 +197,33 @@ public:
   void shrink_to_fit() const noexcept {}
 
   void clear() noexcept {
-    for (usize i = 0; i < size_; ++i)
+    for (usize i = 0; i < m_size; ++i)
       ptr()[i].~T();
-    size_ = 0;
+    m_size = 0;
   }
 
   void push_back(const T &v) { emplace_back(v); }
   void push_back(T &&v) { emplace_back(std::move(v)); }
 
   template <typename... Args> reference emplace_back(Args &&...args) {
-    assert(size_ < N && "fixed_vector: capacity exceeded");
-    new (ptr() + size_) T(std::forward<Args>(args)...);
-    return ptr()[size_++];
+    assert(m_size < N && "fixed_vector: capacity exceeded");
+    new (ptr() + m_size) T(std::forward<Args>(args)...);
+    return ptr()[m_size++];
   }
 
   void pop_back() noexcept {
     assert(!empty());
-    ptr()[--size_].~T();
+    ptr()[--m_size].~T();
   }
 
   template <typename... Args>
   iterator emplace(const_iterator pos, Args &&...args) {
-    assert(size_ < N && "fixed_vector: capacity exceeded");
+    assert(m_size < N && "fixed_vector: capacity exceeded");
     usize off = nx::cast<usize>(pos - ptr());
     T *p = ptr() + off;
-    shift_right(p, ptr() + size_, 1);
+    shift_right(p, ptr() + m_size, 1);
     new (p) T(std::forward<Args>(args)...);
-    ++size_;
+    ++m_size;
     return p;
   }
 
@@ -235,13 +235,13 @@ public:
   iterator insert(const_iterator pos, const usize count, const T &v) {
     if (count == 0)
       return const_cast<iterator>(pos);
-    assert(size_ + count <= N && "fixed_vector: capacity exceeded");
+    assert(m_size + count <= N && "fixed_vector: capacity exceeded");
     usize off = nx::cast<usize>(pos - ptr());
     T *p = ptr() + off;
-    shift_right(p, ptr() + size_, count);
+    shift_right(p, ptr() + m_size, count);
     for (usize i = 0; i < count; ++i)
       new (p + i) T(v);
-    size_ += count;
+    m_size += count;
     return p;
   }
 
@@ -252,20 +252,20 @@ public:
       const usize count = nx::cast<usize>(std::distance(first, last));
       if (count == 0)
         return ptr() + off;
-      assert(size_ + count <= N && "fixed_vector: capacity exceeded");
+      assert(m_size + count <= N && "fixed_vector: capacity exceeded");
       T *p = ptr() + off;
-      shift_right(p, ptr() + size_, count);
+      shift_right(p, ptr() + m_size, count);
       for (usize i = 0; first != last; ++first, ++i)
         new (p + i) T(*first);
-      size_ += count;
+      m_size += count;
       return p;
     } else {
       // Append to end then rotate into position — avoids heap, handles unknown
       // count.
-      usize tail = size_;
+      usize tail = m_size;
       for (; first != last; ++first)
         emplace_back(*first);
-      std::rotate(ptr() + off, ptr() + tail, ptr() + size_);
+      std::rotate(ptr() + off, ptr() + tail, ptr() + m_size);
       return ptr() + off;
     }
   }
@@ -282,63 +282,63 @@ public:
     const usize n = nx::cast<usize>(l - f);
     if (n == 0)
       return f;
-    T *new_end = std::move(l, ptr() + size_, f);
-    for (T *p = new_end; p != ptr() + size_; ++p)
+    T *new_end = std::move(l, ptr() + m_size, f);
+    for (T *p = new_end; p != ptr() + m_size; ++p)
       p->~T();
-    size_ -= n;
+    m_size -= n;
     return f;
   }
 
   void resize(const usize count) {
     assert(count <= N && "fixed_vector: capacity exceeded");
-    if (count < size_) {
-      for (usize i = count; i < size_; ++i)
+    if (count < m_size) {
+      for (usize i = count; i < m_size; ++i)
         ptr()[i].~T();
     } else {
-      for (usize i = size_; i < count; ++i)
+      for (usize i = m_size; i < count; ++i)
         new (ptr() + i) T();
     }
-    size_ = count;
+    m_size = count;
   }
 
   void resize(usize count, const T &value) {
     assert(count <= N && "fixed_vector: capacity exceeded");
-    if (count < size_) {
-      for (usize i = count; i < size_; ++i)
+    if (count < m_size) {
+      for (usize i = count; i < m_size; ++i)
         ptr()[i].~T();
     } else {
-      for (usize i = size_; i < count; ++i)
+      for (usize i = m_size; i < count; ++i)
         new (ptr() + i) T(value);
     }
-    size_ = count;
+    m_size = count;
   }
 
   void swap(fixed_vector &other) noexcept(std::is_nothrow_swappable_v<T>) {
     if (this == &other)
       return;
-    const usize min_s = nx::min(size_, other.size_);
+    const usize min_s = nx::min(m_size, other.m_size);
     for (usize i = 0; i < min_s; ++i)
       std::swap(ptr()[i], other.ptr()[i]);
-    if (size_ > other.size_) {
-      for (usize i = other.size_; i < size_; ++i) {
+    if (m_size > other.m_size) {
+      for (usize i = other.m_size; i < m_size; ++i) {
         new (other.ptr() + i) T(std::move(ptr()[i]));
         ptr()[i].~T();
       }
     } else {
-      for (usize i = size_; i < other.size_; ++i) {
+      for (usize i = m_size; i < other.m_size; ++i) {
         new (ptr() + i) T(std::move(other.ptr()[i]));
         other.ptr()[i].~T();
       }
     }
-    std::swap(size_, other.size_);
+    std::swap(m_size, other.m_size);
   }
 
-  operator std::span<const T>() const noexcept { return {ptr(), size_}; }
-  explicit operator std::span<T>() noexcept { return {ptr(), size_}; }
+  operator std::span<const T>() const noexcept { return {ptr(), m_size}; }
+  explicit operator std::span<T>() noexcept { return {ptr(), m_size}; }
 
   [[nodiscard]] friend bool operator==(const fixed_vector &a,
                                        const fixed_vector &b) {
-    return a.size_ == b.size_ && std::equal(a.begin(), a.end(), b.begin());
+    return a.m_size == b.m_size && std::equal(a.begin(), a.end(), b.begin());
   }
 
   [[nodiscard]] friend auto operator<=>(const fixed_vector &a,
@@ -351,7 +351,7 @@ public:
 
 private:
   alignas(T) std::byte storage_[N * sizeof(T)];
-  usize size_ = 0;
+  usize m_size = 0;
 
   T *ptr() noexcept { return reinterpret_cast<T *>(storage_); }
   const T *ptr() const noexcept {

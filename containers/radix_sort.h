@@ -153,15 +153,15 @@ public:
   static constexpr usize MIN_CROSSOVER = 8 * 1024;
   static constexpr usize MAX_CROSSOVER = 4 * 1024 * 1024;
 
-  [[nodiscard]] usize crossover() const noexcept { return crossover_; }
-  void set_crossover(usize n) noexcept { crossover_ = n; }
+  [[nodiscard]] usize crossover() const noexcept { return m_crossover; }
+  void set_crossover(usize n) noexcept { m_crossover = n; }
 
   /// Serial below the crossover, the parallel region above it.
   template <radix_key Key, typename Value>
   void sort(std::span<Key> keys, std::span<Value> values,
             std::span<Key> key_scratch, std::span<Value> value_scratch,
             thread_pool &pool) {
-    if (keys.size() < crossover_ || pool.worker_count() == 0) {
+    if (keys.size() < m_crossover || pool.worker_count() == 0) {
       radix_sort_pairs(keys, values, key_scratch, value_scratch);
       return;
     }
@@ -181,7 +181,7 @@ public:
 
   template <class KeyGen> void calibrate(thread_pool &pool, KeyGen key_gen) {
     if (pool.worker_count() == 0) {
-      crossover_ = ~usize{0}; // no team: never parallel
+      m_crossover = ~usize{0}; // no team: never parallel
       return;
     }
 
@@ -228,7 +228,7 @@ public:
         break;
       }
     }
-    crossover_ = nx::min(nx::max(cross, MIN_CROSSOVER), MAX_CROSSOVER);
+    m_crossover = nx::min(nx::max(cross, MIN_CROSSOVER), MAX_CROSSOVER);
   }
 
   /// The parallel region path regardless of size. sort() calls this above the
@@ -254,11 +254,11 @@ public:
 
     const u32 chunks = workers + 1; // the caller is a participant too
     const usize per_chunk = (count + chunks - 1) / chunks;
-    histograms_.resize(nx::cast<usize>(chunks) * PASSES *
-                       detail::RADIX_BUCKETS);
-    offsets_.resize(nx::cast<usize>(chunks) * detail::RADIX_BUCKETS);
-    u32 *const hist = histograms_.data();
-    u32 *const offs = offsets_.data();
+    m_histograms.resize(nx::cast<usize>(chunks) * PASSES *
+                        detail::RADIX_BUCKETS);
+    m_offsets.resize(nx::cast<usize>(chunks) * detail::RADIX_BUCKETS);
+    u32 *const hist = m_histograms.data();
+    u32 *const offs = m_offsets.data();
     const auto hrow = [=](const u32 chunk, const u32 pass) {
       return hist +
              ((nx::cast<usize>(chunk) * PASSES + pass) * detail::RADIX_BUCKETS);
@@ -367,9 +367,9 @@ public:
   }
 
 private:
-  usize crossover_ = DEFAULT_CROSSOVER;
-  nx::vector<u32> histograms_;
-  nx::vector<u32> offsets_;
+  usize m_crossover = DEFAULT_CROSSOVER;
+  nx::vector<u32> m_histograms;
+  nx::vector<u32> m_offsets;
 };
 
 /// Buffers sort_by_key reuses between calls. One per caller; not thread-safe.

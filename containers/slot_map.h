@@ -40,7 +40,7 @@ class slot_map {
 
   struct sparse_slot {
     repr version;
-    repr dense; // index into dense_ when live; free_sentinel when not live
+    repr dense; // index into m_dense when live; free_sentinel when not live
   };
   using sparse_alloc = alloc_traits::template rebind_alloc<sparse_slot>;
 
@@ -63,29 +63,29 @@ public:
   slot_map() = default;
 
   explicit slot_map(const Alloc &alloc)
-      : dense_(alloc), dense_to_sparse_(repr_alloc(alloc)),
-        sparse_(sparse_alloc(alloc)), free_(repr_alloc(alloc)) {}
+      : m_dense(alloc), m_dense_to_sparse(repr_alloc(alloc)),
+        m_sparse(sparse_alloc(alloc)), m_free(repr_alloc(alloc)) {}
 
-  [[nodiscard]] bool empty() const noexcept { return dense_.empty(); }
-  [[nodiscard]] usize size() const noexcept { return dense_.size(); }
-  [[nodiscard]] usize capacity() const noexcept { return dense_.capacity(); }
+  [[nodiscard]] bool empty() const noexcept { return m_dense.empty(); }
+  [[nodiscard]] usize size() const noexcept { return m_dense.size(); }
+  [[nodiscard]] usize capacity() const noexcept { return m_dense.capacity(); }
   [[nodiscard]] usize max_size() const noexcept { return Handle::max_index; }
 
-  [[nodiscard]] pointer data() noexcept { return dense_.data(); }
-  [[nodiscard]] const_pointer data() const noexcept { return dense_.data(); }
+  [[nodiscard]] pointer data() noexcept { return m_dense.data(); }
+  [[nodiscard]] const_pointer data() const noexcept { return m_dense.data(); }
 
   [[nodiscard]] std::span<T> as_span() noexcept {
-    return {dense_.data(), dense_.size()};
+    return {m_dense.data(), m_dense.size()};
   }
   [[nodiscard]] std::span<const T> as_span() const noexcept {
-    return {dense_.data(), dense_.size()};
+    return {m_dense.data(), m_dense.size()};
   }
 
   [[nodiscard]] bool contains(Handle h) const noexcept {
     const repr idx = h.index();
-    if (idx >= sparse_.size())
+    if (idx >= m_sparse.size())
       return false;
-    const sparse_slot &s = sparse_[idx];
+    const sparse_slot &s = m_sparse[idx];
     return s.dense != free_sentinel && s.version == h.version();
   }
 
@@ -94,110 +94,110 @@ public:
 
   template <typename... Args> [[nodiscard]] Handle emplace(Args &&...args) {
     const repr idx = acquire_sparse();
-    const repr d = nx::cast<repr>(dense_.size());
+    const repr d = nx::cast<repr>(m_dense.size());
     try {
-      dense_to_sparse_.push_back(idx);
+      m_dense_to_sparse.push_back(idx);
     } catch (...) {
       release_sparse(idx);
       throw;
     }
     try {
-      dense_.emplace_back(std::forward<Args>(args)...);
+      m_dense.emplace_back(std::forward<Args>(args)...);
     } catch (...) {
-      dense_to_sparse_.pop_back();
+      m_dense_to_sparse.pop_back();
       release_sparse(idx);
       throw;
     }
-    sparse_[idx].dense = d;
-    return Handle::from_parts(idx, sparse_[idx].version);
+    m_sparse[idx].dense = d;
+    return Handle::from_parts(idx, m_sparse[idx].version);
   }
 
   bool erase(Handle h) {
     if (!contains(h))
       return false;
     const repr idx = h.index();
-    const repr d = sparse_[idx].dense;
-    const repr last = nx::cast<repr>(dense_.size() - 1);
+    const repr d = m_sparse[idx].dense;
+    const repr last = nx::cast<repr>(m_dense.size() - 1);
     if (d != last) {
-      dense_[d] = std::move(dense_[last]);
-      const repr moved = dense_to_sparse_[last];
-      dense_to_sparse_[d] = moved;
-      sparse_[moved].dense = d;
+      m_dense[d] = std::move(m_dense[last]);
+      const repr moved = m_dense_to_sparse[last];
+      m_dense_to_sparse[d] = moved;
+      m_sparse[moved].dense = d;
     }
-    dense_.pop_back();
-    dense_to_sparse_.pop_back();
+    m_dense.pop_back();
+    m_dense_to_sparse.pop_back();
 
-    sparse_slot &s = sparse_[idx];
+    sparse_slot &s = m_sparse[idx];
     s.dense = free_sentinel;
     if (s.version < Handle::max_version) {
       ++s.version;
-      free_.push_back(idx);
+      m_free.push_back(idx);
     }
     return true;
   }
 
   [[nodiscard]] T *try_get(Handle h) noexcept {
-    return contains(h) ? &dense_[sparse_[h.index()].dense] : nullptr;
+    return contains(h) ? &m_dense[m_sparse[h.index()].dense] : nullptr;
   }
   [[nodiscard]] const T *try_get(Handle h) const noexcept {
-    return contains(h) ? &dense_[sparse_[h.index()].dense] : nullptr;
+    return contains(h) ? &m_dense[m_sparse[h.index()].dense] : nullptr;
   }
 
   [[nodiscard]] reference operator[](Handle h) noexcept {
     assert(contains(h));
-    return dense_[sparse_[h.index()].dense];
+    return m_dense[m_sparse[h.index()].dense];
   }
   [[nodiscard]] const_reference operator[](Handle h) const noexcept {
     assert(contains(h));
-    return dense_[sparse_[h.index()].dense];
+    return m_dense[m_sparse[h.index()].dense];
   }
 
   [[nodiscard]] reference at(Handle h) {
     if (!contains(h))
       throw std::out_of_range("slot_map::at");
-    return dense_[sparse_[h.index()].dense];
+    return m_dense[m_sparse[h.index()].dense];
   }
   [[nodiscard]] const_reference at(Handle h) const {
     if (!contains(h))
       throw std::out_of_range("slot_map::at");
-    return dense_[sparse_[h.index()].dense];
+    return m_dense[m_sparse[h.index()].dense];
   }
 
   // Recover the handle for the element currently at a dense position. Useful
   // when iterating values and needing to refer back to a stable handle.
   [[nodiscard]] Handle handle_at(usize dense_index) const noexcept {
-    assert(dense_index < dense_.size());
-    const repr idx = dense_to_sparse_[dense_index];
-    return Handle::from_parts(idx, sparse_[idx].version);
+    assert(dense_index < m_dense.size());
+    const repr idx = m_dense_to_sparse[dense_index];
+    return Handle::from_parts(idx, m_sparse[idx].version);
   }
 
   void reserve(usize n) {
-    dense_.reserve(n);
-    dense_to_sparse_.reserve(n);
-    sparse_.reserve(n);
+    m_dense.reserve(n);
+    m_dense_to_sparse.reserve(n);
+    m_sparse.reserve(n);
   }
 
   void clear() noexcept {
-    while (!dense_.empty()) {
-      const repr idx = dense_to_sparse_.back();
-      sparse_slot &s = sparse_[idx];
+    while (!m_dense.empty()) {
+      const repr idx = m_dense_to_sparse.back();
+      sparse_slot &s = m_sparse[idx];
       s.dense = free_sentinel;
       if (s.version < Handle::max_version) {
         ++s.version;
-        free_.push_back(idx);
+        m_free.push_back(idx);
       }
-      dense_.pop_back();
-      dense_to_sparse_.pop_back();
+      m_dense.pop_back();
+      m_dense_to_sparse.pop_back();
     }
   }
 
-  [[nodiscard]] iterator begin() noexcept { return dense_.data(); }
+  [[nodiscard]] iterator begin() noexcept { return m_dense.data(); }
   [[nodiscard]] iterator end() noexcept {
-    return dense_.data() + dense_.size();
+    return m_dense.data() + m_dense.size();
   }
-  [[nodiscard]] const_iterator begin() const noexcept { return dense_.data(); }
+  [[nodiscard]] const_iterator begin() const noexcept { return m_dense.data(); }
   [[nodiscard]] const_iterator end() const noexcept {
-    return dense_.data() + dense_.size();
+    return m_dense.data() + m_dense.size();
   }
   [[nodiscard]] const_iterator cbegin() const noexcept { return begin(); }
   [[nodiscard]] const_iterator cend() const noexcept { return end(); }
@@ -219,37 +219,37 @@ public:
   [[nodiscard]] const_reverse_iterator crend() const noexcept { return rend(); }
 
   [[nodiscard]] allocator_type get_allocator() const noexcept {
-    return dense_.get_allocator();
+    return m_dense.get_allocator();
   }
 
 private:
   repr acquire_sparse() {
-    if (!free_.empty()) {
-      const repr idx = free_.back();
-      free_.pop_back();
+    if (!m_free.empty()) {
+      const repr idx = m_free.back();
+      m_free.pop_back();
       return idx;
     }
-    assert(sparse_.size() < Handle::null_index &&
+    assert(m_sparse.size() < Handle::null_index &&
            "slot_map: index space exhausted");
-    const repr idx = nx::cast<repr>(sparse_.size());
-    sparse_.push_back(sparse_slot{0, free_sentinel});
-    free_.reserve(sparse_.size());
+    const repr idx = nx::cast<repr>(m_sparse.size());
+    m_sparse.push_back(sparse_slot{0, free_sentinel});
+    m_free.reserve(m_sparse.size());
     return idx;
   }
 
   void release_sparse(repr idx) noexcept {
-    sparse_slot &s = sparse_[idx];
+    sparse_slot &s = m_sparse[idx];
     s.dense = free_sentinel;
     if (s.version < Handle::max_version) {
       ++s.version;
-      free_.push_back(idx);
+      m_free.push_back(idx);
     }
   }
 
-  vector<T, Alloc> dense_;
-  vector<repr, repr_alloc> dense_to_sparse_;
-  vector<sparse_slot, sparse_alloc> sparse_;
-  vector<repr, repr_alloc> free_;
+  vector<T, Alloc> m_dense;
+  vector<repr, repr_alloc> m_dense_to_sparse;
+  vector<sparse_slot, sparse_alloc> m_sparse;
+  vector<repr, repr_alloc> m_free;
 };
 
 } // namespace nx

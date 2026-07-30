@@ -103,8 +103,8 @@ thread::thread(entry_fn fn, const thread_options &opts) {
     release(start);
     return;
   }
-  handle_ = h;
-  id_ = tid;
+  m_handle = h;
+  m_id = tid;
 #elif NX_PLATFORM_POSIX
   pthread_attr_t attr;
   pthread_attr_init(&attr);
@@ -118,35 +118,35 @@ thread::thread(entry_fn fn, const thread_options &opts) {
     release(start);
     return;
   }
-  handle_ = to_handle(t);
-  id_ = nx::cast<u64>(handle_);
+  m_handle = to_handle(t);
+  m_id = nx::cast<u64>(m_handle);
 #endif
 }
 
 void thread::join() {
   assert(joinable() && "thread::join on a non-joinable thread");
-  assert(id_ != this_thread::id() && "thread::join on itself");
+  assert(m_id != this_thread::id() && "thread::join on itself");
 
 #if NX_HAS_WINDOWS_API
-  WaitForSingleObject(reinterpret_cast<HANDLE>(handle_), INFINITE);
-  CloseHandle(reinterpret_cast<HANDLE>(handle_));
+  WaitForSingleObject(reinterpret_cast<HANDLE>(m_handle), INFINITE);
+  CloseHandle(reinterpret_cast<HANDLE>(m_handle));
 #elif NX_PLATFORM_POSIX
-  pthread_join(from_handle(handle_), nullptr);
+  pthread_join(from_handle(m_handle), nullptr);
 #endif
-  handle_ = 0;
-  id_ = 0;
+  m_handle = 0;
+  m_id = 0;
 }
 
 void thread::detach() {
   assert(joinable() && "thread::detach on a non-joinable thread");
 
 #if NX_HAS_WINDOWS_API
-  CloseHandle(reinterpret_cast<HANDLE>(handle_));
+  CloseHandle(reinterpret_cast<HANDLE>(m_handle));
 #elif NX_PLATFORM_POSIX
-  pthread_detach(from_handle(handle_));
+  pthread_detach(from_handle(m_handle));
 #endif
-  handle_ = 0;
-  id_ = 0;
+  m_handle = 0;
+  m_id = 0;
 }
 
 // nx::this_thread
@@ -554,8 +554,7 @@ void query_topology(topology_info &t) noexcept {
   // Hybrid CPUs (every Apple silicon part) describe themselves as a list of
   // "perf levels", ordered fastest first. Our efficiency_class runs the other
   // way - 0 is the most efficient - so the ranks are inverted below.
-  const u32 levels =
-      max<u32>(1, nx::cast<u32>(sysctl_or("hw.nperflevels", 1)));
+  const u32 levels = max<u32>(1, nx::cast<u32>(sysctl_or("hw.nperflevels", 1)));
   t.efficiency_class_count = levels;
 
   // No API maps a physical core to its logical cpu ids, and set_affinity() is
@@ -598,9 +597,8 @@ void query_topology(topology_info &t) noexcept {
   // whole array - Darwin publishes 10 entries, so leave generous headroom.
   u64 cache_config[32] = {};
   usize config_size = sizeof(cache_config);
-  const bool has_config =
-      sysctlbyname("hw.cacheconfig", cache_config, &config_size, nullptr, 0) ==
-      0;
+  const bool has_config = sysctlbyname("hw.cacheconfig", cache_config,
+                                       &config_size, nullptr, 0) == 0;
   const auto instances_of = [&](const usize level) noexcept -> u32 {
     if (!has_config || level >= config_size / sizeof(u64) ||
         cache_config[level] == 0)

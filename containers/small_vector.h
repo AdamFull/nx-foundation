@@ -22,9 +22,9 @@ namespace nx {
 /**
  * @brief Dynamic vector that keeps its first @p N elements inline.
  *
- * Behaves like std::vector but avoids the heap while the size stays within @p N;
- * it spills to an allocation only when it grows beyond the inline buffer. Good
- * for collections that are usually small but occasionally large.
+ * Behaves like std::vector but avoids the heap while the size stays within @p
+ * N; it spills to an allocation only when it grows beyond the inline buffer.
+ * Good for collections that are usually small but occasionally large.
  *
  * @tparam T     Element type.
  * @tparam N     Number of elements kept inline before spilling to the heap.
@@ -51,69 +51,70 @@ public:
 
   small_vector() noexcept(std::is_nothrow_default_constructible_v<Alloc>) {}
 
-  explicit small_vector(const Alloc &alloc) noexcept : alloc_(alloc) {}
+  explicit small_vector(const Alloc &alloc) noexcept : m_alloc(alloc) {}
 
   explicit small_vector(const usize count, const Alloc &alloc = Alloc())
-      : alloc_(alloc) {
+      : m_alloc(alloc) {
     resize(count);
   }
 
   small_vector(const usize count, const T &value, const Alloc &alloc = Alloc())
-      : alloc_(alloc) {
+      : m_alloc(alloc) {
     assign(count, value);
   }
 
   template <std::input_iterator It>
   small_vector(It first, It last, const Alloc &alloc = Alloc())
-      : alloc_(alloc) {
+      : m_alloc(alloc) {
     assign(first, last);
   }
 
   small_vector(std::initializer_list<T> il, const Alloc &alloc = Alloc())
-      : alloc_(alloc) {
+      : m_alloc(alloc) {
     assign(il.begin(), il.end());
   }
 
   explicit small_vector(std::span<const T> sp, const Alloc &alloc = Alloc())
-      : alloc_(alloc) {
+      : m_alloc(alloc) {
     assign(sp.begin(), sp.end());
   }
 
   small_vector(const small_vector &other)
-      : alloc_(
-            alloc_traits::select_on_container_copy_construction(other.alloc_)) {
-    reserve(other.size_);
-    for (usize i = 0; i < other.size_; ++i)
-      alloc_traits::construct(alloc_, data_ + i, other.data_[i]);
-    size_ = other.size_;
+      : m_alloc(alloc_traits::select_on_container_copy_construction(
+            other.m_alloc)) {
+    reserve(other.m_size);
+    for (usize i = 0; i < other.m_size; ++i)
+      alloc_traits::construct(m_alloc, m_data + i, other.m_data[i]);
+    m_size = other.m_size;
   }
 
-  small_vector(const small_vector &other, const Alloc &alloc) : alloc_(alloc) {
-    reserve(other.size_);
-    for (usize i = 0; i < other.size_; ++i)
-      alloc_traits::construct(alloc_, data_ + i, other.data_[i]);
-    size_ = other.size_;
+  small_vector(const small_vector &other, const Alloc &alloc) : m_alloc(alloc) {
+    reserve(other.m_size);
+    for (usize i = 0; i < other.m_size; ++i)
+      alloc_traits::construct(m_alloc, m_data + i, other.m_data[i]);
+    m_size = other.m_size;
   }
 
   small_vector(small_vector &&other) noexcept(
       std::is_nothrow_move_constructible_v<T>)
-      : alloc_(std::move(other.alloc_)) {
+      : m_alloc(std::move(other.m_alloc)) {
     steal_or_move(other);
   }
 
   small_vector(small_vector &&other, const Alloc &alloc) noexcept(
       std::is_nothrow_move_constructible_v<T>)
-      : alloc_(alloc) {
-    if (alloc_ == other.alloc_)
+      : m_alloc(alloc) {
+    if (m_alloc == other.m_alloc)
       steal_or_move(other);
     else {
-      reserve(other.size_);
-      for (usize i = 0; i < other.size_; ++i) {
-        alloc_traits::construct(alloc_, data_ + i, std::move(other.data_[i]));
-        alloc_traits::destroy(alloc_, other.data_ + i);
+      reserve(other.m_size);
+      for (usize i = 0; i < other.m_size; ++i) {
+        alloc_traits::construct(m_alloc, m_data + i,
+                                std::move(other.m_data[i]));
+        alloc_traits::destroy(m_alloc, other.m_data + i);
       }
-      size_ = other.size_;
-      other.size_ = 0;
+      m_size = other.m_size;
+      other.m_size = 0;
     }
   }
 
@@ -124,9 +125,9 @@ public:
       return *this;
 
     if constexpr (alloc_traits::propagate_on_container_copy_assignment::value) {
-      if (alloc_ != other.alloc_) {
+      if (m_alloc != other.m_alloc) {
         release();
-        alloc_ = other.alloc_;
+        m_alloc = other.m_alloc;
       }
     }
     assign(other.begin(), other.end());
@@ -142,20 +143,21 @@ public:
     release();
 
     if constexpr (alloc_traits::propagate_on_container_move_assignment::value) {
-      alloc_ = std::move(other.alloc_);
+      m_alloc = std::move(other.m_alloc);
       steal_or_move(other);
     } else {
-      if (alloc_ == other.alloc_)
+      if (m_alloc == other.m_alloc)
         steal_or_move(other);
       else {
-        if (other.size_ > capacity_)
-          reallocate(other.size_);
-        for (usize i = 0; i < other.size_; ++i) {
-          alloc_traits::construct(alloc_, data_ + i, std::move(other.data_[i]));
-          alloc_traits::destroy(alloc_, other.data_ + i);
+        if (other.m_size > m_capacity)
+          reallocate(other.m_size);
+        for (usize i = 0; i < other.m_size; ++i) {
+          alloc_traits::construct(m_alloc, m_data + i,
+                                  std::move(other.m_data[i]));
+          alloc_traits::destroy(m_alloc, other.m_data + i);
         }
-        size_ = other.size_;
-        other.size_ = 0;
+        m_size = other.m_size;
+        other.m_size = 0;
       }
     }
     return *this;
@@ -168,19 +170,19 @@ public:
 
   void assign(const usize count, const T &value) {
     clear();
-    if (count > capacity_)
+    if (count > m_capacity)
       reallocate(count);
 
     for (usize i = 0; i < count; ++i)
-      alloc_traits::construct(alloc_, data_ + i, value);
-    size_ = count;
+      alloc_traits::construct(m_alloc, m_data + i, value);
+    m_size = count;
   }
 
   template <std::input_iterator It> void assign(It first, It last) {
     clear();
     if constexpr (std::random_access_iterator<It>) {
       if (usize count = cast<usize>(std::distance(first, last));
-          count > capacity_)
+          count > m_capacity)
         reallocate(count);
     }
     for (; first != last; ++first)
@@ -190,49 +192,49 @@ public:
   void assign(std::initializer_list<T> il) { assign(il.begin(), il.end()); }
 
   [[nodiscard]] reference at(usize i) {
-    if (i >= size_)
+    if (i >= m_size)
       throw std::out_of_range("small_vector::at");
-    return data_[i];
+    return m_data[i];
   }
   [[nodiscard]] const_reference at(usize i) const {
-    if (i >= size_)
+    if (i >= m_size)
       throw std::out_of_range("small_vector::at");
-    return data_[i];
+    return m_data[i];
   }
 
   [[nodiscard]] reference operator[](usize i) noexcept {
-    assert(i < size_);
-    return data_[i];
+    assert(i < m_size);
+    return m_data[i];
   }
   [[nodiscard]] const_reference operator[](usize i) const noexcept {
-    assert(i < size_);
-    return data_[i];
+    assert(i < m_size);
+    return m_data[i];
   }
   [[nodiscard]] reference front() noexcept {
     assert(!empty());
-    return data_[0];
+    return m_data[0];
   }
   [[nodiscard]] const_reference front() const noexcept {
     assert(!empty());
-    return data_[0];
+    return m_data[0];
   }
   [[nodiscard]] reference back() noexcept {
     assert(!empty());
-    return data_[size_ - 1];
+    return m_data[m_size - 1];
   }
   [[nodiscard]] const_reference back() const noexcept {
     assert(!empty());
-    return data_[size_ - 1];
+    return m_data[m_size - 1];
   }
-  [[nodiscard]] pointer data() noexcept { return data_; }
-  [[nodiscard]] const_pointer data() const noexcept { return data_; }
+  [[nodiscard]] pointer data() noexcept { return m_data; }
+  [[nodiscard]] const_pointer data() const noexcept { return m_data; }
 
-  [[nodiscard]] iterator begin() noexcept { return data_; }
-  [[nodiscard]] iterator end() noexcept { return data_ + size_; }
-  [[nodiscard]] const_iterator begin() const noexcept { return data_; }
-  [[nodiscard]] const_iterator end() const noexcept { return data_ + size_; }
-  [[nodiscard]] const_iterator cbegin() const noexcept { return data_; }
-  [[nodiscard]] const_iterator cend() const noexcept { return data_ + size_; }
+  [[nodiscard]] iterator begin() noexcept { return m_data; }
+  [[nodiscard]] iterator end() noexcept { return m_data + m_size; }
+  [[nodiscard]] const_iterator begin() const noexcept { return m_data; }
+  [[nodiscard]] const_iterator end() const noexcept { return m_data + m_size; }
+  [[nodiscard]] const_iterator cbegin() const noexcept { return m_data; }
+  [[nodiscard]] const_iterator cend() const noexcept { return m_data + m_size; }
   [[nodiscard]] reverse_iterator rbegin() noexcept {
     return reverse_iterator{end()};
   }
@@ -252,15 +254,15 @@ public:
     return const_reverse_iterator{cbegin()};
   }
 
-  [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
-  [[nodiscard]] usize size() const noexcept { return size_; }
+  [[nodiscard]] bool empty() const noexcept { return m_size == 0; }
+  [[nodiscard]] usize size() const noexcept { return m_size; }
   [[nodiscard]] usize max_size() const noexcept {
-    return alloc_traits::max_size(alloc_);
+    return alloc_traits::max_size(m_alloc);
   }
-  [[nodiscard]] usize capacity() const noexcept { return capacity_; }
+  [[nodiscard]] usize capacity() const noexcept { return m_capacity; }
 
   void reserve(usize n) {
-    if (n > capacity_)
+    if (n > m_capacity)
       reallocate(n);
   }
 
@@ -268,49 +270,50 @@ public:
     if (is_inline())
       return;
 
-    if (size_ <= N) {
-      T *old_data = data_;
-      usize old_cap = capacity_;
-      data_ = inline_ptr();
-      capacity_ = N;
-      for (usize i = 0; i < size_; ++i) {
-        alloc_traits::construct(alloc_, data_ + i, std::move(old_data[i]));
-        alloc_traits::destroy(alloc_, old_data + i);
+    if (m_size <= N) {
+      T *old_data = m_data;
+      usize old_cap = m_capacity;
+      m_data = inline_ptr();
+      m_capacity = N;
+      for (usize i = 0; i < m_size; ++i) {
+        alloc_traits::construct(m_alloc, m_data + i, std::move(old_data[i]));
+        alloc_traits::destroy(m_alloc, old_data + i);
       }
-      alloc_traits::deallocate(alloc_, old_data, old_cap);
-    } else if (size_ < capacity_)
-      reallocate(size_);
+      alloc_traits::deallocate(m_alloc, old_data, old_cap);
+    } else if (m_size < m_capacity)
+      reallocate(m_size);
   }
 
   void clear() noexcept {
-    for (usize i = 0; i < size_; ++i)
-      alloc_traits::destroy(alloc_, data_ + i);
-    size_ = 0;
+    for (usize i = 0; i < m_size; ++i)
+      alloc_traits::destroy(m_alloc, m_data + i);
+    m_size = 0;
   }
 
   void push_back(const T &v) { emplace_back(v); }
   void push_back(T &&v) { emplace_back(std::move(v)); }
 
   template <typename... Args> reference emplace_back(Args &&...args) {
-    if (size_ == capacity_)
+    if (m_size == m_capacity)
       grow();
-    alloc_traits::construct(alloc_, data_ + size_, std::forward<Args>(args)...);
-    return data_[size_++];
+    alloc_traits::construct(m_alloc, m_data + m_size,
+                            std::forward<Args>(args)...);
+    return m_data[m_size++];
   }
 
   void pop_back() noexcept {
     assert(!empty());
-    alloc_traits::destroy(alloc_, data_ + --size_);
+    alloc_traits::destroy(m_alloc, m_data + --m_size);
   }
 
   template <typename... Args>
   iterator emplace(const_iterator pos, Args &&...args) {
-    usize off = nx::cast<usize>(pos - data_);
+    usize off = nx::cast<usize>(pos - m_data);
     ensure_space(1);
-    T *p = data_ + off;
+    T *p = m_data + off;
     shift_right(p, 1);
-    alloc_traits::construct(alloc_, p, std::forward<Args>(args)...);
-    ++size_;
+    alloc_traits::construct(m_alloc, p, std::forward<Args>(args)...);
+    ++m_size;
     return p;
   }
 
@@ -323,39 +326,39 @@ public:
     if (count == 0)
       return const_cast<iterator>(pos);
 
-    usize off = nx::cast<usize>(pos - data_);
+    usize off = nx::cast<usize>(pos - m_data);
     ensure_space(count);
-    T *p = data_ + off;
+    T *p = m_data + off;
     shift_right(p, count);
     for (usize i = 0; i < count; ++i)
-      alloc_traits::construct(alloc_, p + i, v);
+      alloc_traits::construct(m_alloc, p + i, v);
 
-    size_ += count;
+    m_size += count;
     return p;
   }
 
   template <std::input_iterator It>
   iterator insert(const_iterator pos, It first, It last) {
-    usize off = nx::cast<usize>(pos - data_);
+    usize off = nx::cast<usize>(pos - m_data);
     if constexpr (std::random_access_iterator<It>) {
       const usize count = nx::cast<usize>(std::distance(first, last));
       if (count == 0)
-        return data_ + off;
+        return m_data + off;
 
       ensure_space(count);
-      T *p = data_ + off;
+      T *p = m_data + off;
       shift_right(p, count);
       for (usize i = 0; first != last; ++first, ++i)
-        alloc_traits::construct(alloc_, p + i, *first);
+        alloc_traits::construct(m_alloc, p + i, *first);
 
-      size_ += count;
+      m_size += count;
       return p;
     } else {
-      usize tail = size_;
+      usize tail = m_size;
       for (; first != last; ++first)
         emplace_back(*first);
-      std::rotate(data_ + off, data_ + tail, data_ + size_);
-      return data_ + off;
+      std::rotate(m_data + off, m_data + tail, m_data + m_size);
+      return m_data + off;
     }
   }
 
@@ -372,37 +375,37 @@ public:
     if (n == 0)
       return f;
 
-    T *new_end = std::move(l, data_ + size_, f);
-    for (T *p = new_end; p != data_ + size_; ++p)
-      alloc_traits::destroy(alloc_, p);
-    size_ -= n;
+    T *new_end = std::move(l, m_data + m_size, f);
+    for (T *p = new_end; p != m_data + m_size; ++p)
+      alloc_traits::destroy(m_alloc, p);
+    m_size -= n;
     return f;
   }
 
   void resize(const usize count) {
-    if (count < size_) {
-      for (usize i = count; i < size_; ++i)
-        alloc_traits::destroy(alloc_, data_ + i);
-    } else if (count > size_) {
-      if (count > capacity_)
+    if (count < m_size) {
+      for (usize i = count; i < m_size; ++i)
+        alloc_traits::destroy(m_alloc, m_data + i);
+    } else if (count > m_size) {
+      if (count > m_capacity)
         reallocate(count);
-      for (usize i = size_; i < count; ++i)
-        alloc_traits::construct(alloc_, data_ + i);
+      for (usize i = m_size; i < count; ++i)
+        alloc_traits::construct(m_alloc, m_data + i);
     }
-    size_ = count;
+    m_size = count;
   }
 
   void resize(const usize count, const T &value) {
-    if (count < size_) {
-      for (usize i = count; i < size_; ++i)
-        alloc_traits::destroy(alloc_, data_ + i);
-    } else if (count > size_) {
-      if (count > capacity_)
+    if (count < m_size) {
+      for (usize i = count; i < m_size; ++i)
+        alloc_traits::destroy(m_alloc, m_data + i);
+    } else if (count > m_size) {
+      if (count > m_capacity)
         reallocate(count);
-      for (usize i = size_; i < count; ++i)
-        alloc_traits::construct(alloc_, data_ + i, value);
+      for (usize i = m_size; i < count; ++i)
+        alloc_traits::construct(m_alloc, m_data + i, value);
     }
-    size_ = count;
+    m_size = count;
   }
 
   void swap(small_vector &other) noexcept {
@@ -412,14 +415,14 @@ public:
     if (!is_inline() && !other.is_inline()) {
       if constexpr (alloc_traits::propagate_on_container_swap::value) {
         using std::swap;
-        swap(alloc_, other.alloc_);
+        swap(m_alloc, other.m_alloc);
       } else {
-        assert(alloc_ == other.alloc_ &&
+        assert(m_alloc == other.m_alloc &&
                "small_vector::swap: non-propagating unequal allocators");
       }
-      std::swap(data_, other.data_);
-      std::swap(size_, other.size_);
-      std::swap(capacity_, other.capacity_);
+      std::swap(m_data, other.m_data);
+      std::swap(m_size, other.m_size);
+      std::swap(m_capacity, other.m_capacity);
     } else {
       small_vector tmp(std::move(*this));
       *this = std::move(other);
@@ -427,12 +430,12 @@ public:
     }
   }
 
-  operator std::span<const T>() const noexcept { return {data_, size_}; }
-  explicit operator std::span<T>() noexcept { return {data_, size_}; }
+  operator std::span<const T>() const noexcept { return {m_data, m_size}; }
+  explicit operator std::span<T>() noexcept { return {m_data, m_size}; }
 
   [[nodiscard]] friend bool operator==(const small_vector &a,
                                        const small_vector &b) {
-    return a.size_ == b.size_ && std::equal(a.begin(), a.end(), b.begin());
+    return a.m_size == b.m_size && std::equal(a.begin(), a.end(), b.begin());
   }
 
   [[nodiscard]] friend auto operator<=>(const small_vector &a,
@@ -443,93 +446,96 @@ public:
                                                   b.end());
   }
 
-  [[nodiscard]] allocator_type get_allocator() const noexcept { return alloc_; }
+  [[nodiscard]] allocator_type get_allocator() const noexcept {
+    return m_alloc;
+  }
 
 private:
   alignas(T) std::byte inline_storage_[N * sizeof(T)];
 
-  NX_NO_UNIQUE_ADDRESS Alloc alloc_;
+  NX_NO_UNIQUE_ADDRESS Alloc m_alloc;
 
-  T *data_ = reinterpret_cast<T *>(inline_storage_);
-  usize size_ = 0;
-  usize capacity_ = N;
+  T *m_data = reinterpret_cast<T *>(inline_storage_);
+  usize m_size = 0;
+  usize m_capacity = N;
 
   T *inline_ptr() noexcept { return reinterpret_cast<T *>(inline_storage_); }
   const T *inline_ptr() const noexcept {
     return reinterpret_cast<const T *>(inline_storage_);
   }
-  bool is_inline() const noexcept { return data_ == inline_ptr(); }
+  bool is_inline() const noexcept { return m_data == inline_ptr(); }
 
   void release() noexcept {
     clear();
     if (!is_inline()) {
-      alloc_traits::deallocate(alloc_, data_, capacity_);
-      data_ = inline_ptr();
-      capacity_ = N;
+      alloc_traits::deallocate(m_alloc, m_data, m_capacity);
+      m_data = inline_ptr();
+      m_capacity = N;
     }
   }
 
-  void grow() { reallocate(capacity_ * 2); }
+  void grow() { reallocate(m_capacity * 2); }
 
   void ensure_space(usize extra) {
-    if (size_ + extra <= capacity_)
+    if (m_size + extra <= m_capacity)
       return;
-    usize new_cap = capacity_;
-    while (new_cap < size_ + extra)
+    usize new_cap = m_capacity;
+    while (new_cap < m_size + extra)
       new_cap *= 2;
     reallocate(new_cap);
   }
 
   void reallocate(usize new_cap) {
-    T *new_data = alloc_traits::allocate(alloc_, new_cap);
-    for (usize i = 0; i < size_; ++i) {
-      alloc_traits::construct(alloc_, new_data + i, std::move(data_[i]));
-      alloc_traits::destroy(alloc_, data_ + i);
+    T *new_data = alloc_traits::allocate(m_alloc, new_cap);
+    for (usize i = 0; i < m_size; ++i) {
+      alloc_traits::construct(m_alloc, new_data + i, std::move(m_data[i]));
+      alloc_traits::destroy(m_alloc, m_data + i);
     }
     if (!is_inline())
-      alloc_traits::deallocate(alloc_, data_, capacity_);
-    data_ = new_data;
-    capacity_ = new_cap;
+      alloc_traits::deallocate(m_alloc, m_data, m_capacity);
+    m_data = new_data;
+    m_capacity = new_cap;
   }
 
   void steal_or_move(small_vector &other) noexcept(
       std::is_nothrow_move_constructible_v<T>) {
     if (other.is_inline()) {
-      for (usize i = 0; i < other.size_; ++i) {
-        alloc_traits::construct(alloc_, data_ + i, std::move(other.data_[i]));
-        alloc_traits::destroy(alloc_, other.data_ + i);
+      for (usize i = 0; i < other.m_size; ++i) {
+        alloc_traits::construct(m_alloc, m_data + i,
+                                std::move(other.m_data[i]));
+        alloc_traits::destroy(m_alloc, other.m_data + i);
       }
-      size_ = other.size_;
-      other.size_ = 0;
+      m_size = other.m_size;
+      other.m_size = 0;
     } else {
-      data_ = other.data_;
-      capacity_ = other.capacity_;
-      size_ = other.size_;
-      other.data_ = other.inline_ptr();
-      other.capacity_ = N;
-      other.size_ = 0;
+      m_data = other.m_data;
+      m_capacity = other.m_capacity;
+      m_size = other.m_size;
+      other.m_data = other.inline_ptr();
+      other.m_capacity = N;
+      other.m_size = 0;
     }
   }
 
   void shift_right(T *pos, usize count) {
-    T *old_end = data_ + size_;
+    T *old_end = m_data + m_size;
     const auto n = nx::cast<usize>(old_end - pos);
     if (n == 0)
       return;
 
     if (count >= n) {
       for (usize i = 0; i < n; ++i)
-        alloc_traits::construct(alloc_, pos + count + i, std::move(pos[i]));
+        alloc_traits::construct(m_alloc, pos + count + i, std::move(pos[i]));
       for (usize i = 0; i < n; ++i)
-        alloc_traits::destroy(alloc_, pos + i);
+        alloc_traits::destroy(m_alloc, pos + i);
     } else {
       T *tail = old_end - count;
       for (usize i = 0; i < count; ++i)
-        alloc_traits::construct(alloc_, old_end + i, std::move(tail[i]));
+        alloc_traits::construct(m_alloc, old_end + i, std::move(tail[i]));
       for (isize j = nx::cast<isize>(n - count) - 1; j >= 0; --j)
         pos[count + j] = std::move(pos[j]);
       for (usize i = 0; i < count; ++i)
-        alloc_traits::destroy(alloc_, pos + i);
+        alloc_traits::destroy(m_alloc, pos + i);
     }
   }
 };

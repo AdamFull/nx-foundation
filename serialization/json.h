@@ -25,9 +25,9 @@
  *
  * @section json_custom Custom types
  * Conversion for user types goes through nx::json::serializer<T>. Specialize it
- * (or provide to_json/from_json findable by ADL next to your type) and the whole
- * API - to_value, from_value, parse_as, write_as, and every container built on
- * them - works for that type. See "Custom type registration" below.
+ * (or provide to_json/from_json findable by ADL next to your type) and the
+ * whole API - to_value, from_value, parse_as, write_as, and every container
+ * built on them - works for that type. See "Custom type registration" below.
  *
  * @section json_threading Thread safety
  * A value is a plain object: concurrent reads are safe, concurrent mutation is
@@ -50,19 +50,19 @@ namespace nx::json {
 /// What went wrong while parsing, or while converting to a user type.
 enum class error_code : u32 {
   none = 0,
-  unexpected_end,     ///< Input ended in the middle of a value.
-  unexpected_token,   ///< A character that cannot start or continue a value.
-  invalid_number,     ///< Malformed numeric literal.
-  invalid_string,     ///< Unterminated string or a raw control character.
-  invalid_escape,     ///< Unknown \x escape, or a malformed \u sequence.
-  invalid_utf8,       ///< Input was not well-formed UTF-8.
-  invalid_surrogate,  ///< Unpaired or misordered UTF-16 surrogate.
-  depth_exceeded,     ///< Nesting deeper than parse_options::max_depth.
-  trailing_content,   ///< Non-whitespace bytes after the top-level value.
-  duplicate_key,      ///< Repeated object key (only when rejected by options).
-  number_out_of_range,///< Literal does not fit the requested arithmetic type.
-  type_mismatch,      ///< Value is not the type a conversion required.
-  missing_field,      ///< Required object member was absent.
+  unexpected_end,      ///< Input ended in the middle of a value.
+  unexpected_token,    ///< A character that cannot start or continue a value.
+  invalid_number,      ///< Malformed numeric literal.
+  invalid_string,      ///< Unterminated string or a raw control character.
+  invalid_escape,      ///< Unknown \x escape, or a malformed \u sequence.
+  invalid_utf8,        ///< Input was not well-formed UTF-8.
+  invalid_surrogate,   ///< Unpaired or misordered UTF-16 surrogate.
+  depth_exceeded,      ///< Nesting deeper than parse_options::max_depth.
+  trailing_content,    ///< Non-whitespace bytes after the top-level value.
+  duplicate_key,       ///< Repeated object key (only when rejected by options).
+  number_out_of_range, ///< Literal does not fit the requested arithmetic type.
+  type_mismatch,       ///< Value is not the type a conversion required.
+  missing_field,       ///< Required object member was absent.
   count,
 };
 
@@ -131,10 +131,10 @@ using object = vector<member>;
  */
 class value {
 public:
-  value() noexcept : type_(type::null), u_{} {}
+  value() noexcept : m_type(type::null), m_u{} {}
   value(std::nullptr_t) noexcept : value() {}
 
-  value(bool b) noexcept : type_(type::boolean) { u_.boolean = b; }
+  value(bool b) noexcept : m_type(type::boolean) { m_u.boolean = b; }
 
   // Every integral type funnels into the signed or unsigned representation,
   // and every floating-point type into the real one. Templates rather than
@@ -144,18 +144,18 @@ public:
     requires(std::is_integral_v<T> && !std::is_same_v<T, bool>)
   value(T v) noexcept {
     if constexpr (std::is_signed_v<T>) {
-      type_ = type::signed_integer;
-      u_.signed_integer = static_cast<i64>(v);
+      m_type = type::signed_integer;
+      m_u.signed_integer = static_cast<i64>(v);
     } else {
-      type_ = type::unsigned_integer;
-      u_.unsigned_integer = static_cast<u64>(v);
+      m_type = type::unsigned_integer;
+      m_u.unsigned_integer = static_cast<u64>(v);
     }
   }
 
   template <typename T>
     requires std::is_floating_point_v<T>
-  value(T v) noexcept : type_(type::real) {
-    u_.real = static_cast<f64>(v);
+  value(T v) noexcept : m_type(type::real) {
+    m_u.real = static_cast<f64>(v);
   }
 
   value(const char *s) : value(string_view(s)) {}
@@ -179,20 +179,28 @@ public:
 
   // Type inspection
 
-  [[nodiscard]] type kind() const noexcept { return type_; }
-  [[nodiscard]] bool is_null() const noexcept { return type_ == type::null; }
-  [[nodiscard]] bool is_bool() const noexcept { return type_ == type::boolean; }
-  [[nodiscard]] bool is_number() const noexcept { return json::is_number(type_); }
+  [[nodiscard]] type kind() const noexcept { return m_type; }
+  [[nodiscard]] bool is_null() const noexcept { return m_type == type::null; }
+  [[nodiscard]] bool is_bool() const noexcept {
+    return m_type == type::boolean;
+  }
+  [[nodiscard]] bool is_number() const noexcept {
+    return json::is_number(m_type);
+  }
   [[nodiscard]] bool is_i64() const noexcept {
-    return type_ == type::signed_integer;
+    return m_type == type::signed_integer;
   }
   [[nodiscard]] bool is_u64() const noexcept {
-    return type_ == type::unsigned_integer;
+    return m_type == type::unsigned_integer;
   }
-  [[nodiscard]] bool is_double() const noexcept { return type_ == type::real; }
-  [[nodiscard]] bool is_string() const noexcept { return type_ == type::string; }
-  [[nodiscard]] bool is_array() const noexcept { return type_ == type::array; }
-  [[nodiscard]] bool is_object() const noexcept { return type_ == type::object; }
+  [[nodiscard]] bool is_double() const noexcept { return m_type == type::real; }
+  [[nodiscard]] bool is_string() const noexcept {
+    return m_type == type::string;
+  }
+  [[nodiscard]] bool is_array() const noexcept { return m_type == type::array; }
+  [[nodiscard]] bool is_object() const noexcept {
+    return m_type == type::object;
+  }
 
   /// True when the value holds an integer exactly representable as T.
   template <typename T>
@@ -290,8 +298,8 @@ private:
     u64 unsigned_integer;
     f64 real;
     nx::string string;
-    array array_;
-    object object_;
+    array m_array;
+    object m_object;
 
     storage() noexcept {}
     ~storage() noexcept {}
@@ -301,8 +309,8 @@ private:
   void construct_from(const value &o);
   void construct_from(value &&o) noexcept;
 
-  type type_;
-  storage u_;
+  type m_type;
+  storage m_u;
 };
 
 struct member {
@@ -321,26 +329,25 @@ template <typename T>
   requires std::is_integral_v<T>
 bool value::fits() const noexcept {
   if constexpr (std::is_same_v<T, bool>) {
-    return type_ == type::boolean;
+    return m_type == type::boolean;
   } else if constexpr (std::is_signed_v<T>) {
-    if (type_ == type::signed_integer) {
-      const i64 v = u_.signed_integer;
+    if (m_type == type::signed_integer) {
+      const i64 v = m_u.signed_integer;
       return v >= static_cast<i64>(std::numeric_limits<T>::min()) &&
              v <= static_cast<i64>(std::numeric_limits<T>::max());
     }
-    if (type_ == type::unsigned_integer)
-      return u_.unsigned_integer <=
+    if (m_type == type::unsigned_integer)
+      return m_u.unsigned_integer <=
              static_cast<u64>(std::numeric_limits<T>::max());
     return false;
   } else {
-    if (type_ == type::unsigned_integer)
-      return u_.unsigned_integer <=
+    if (m_type == type::unsigned_integer)
+      return m_u.unsigned_integer <=
              static_cast<u64>(std::numeric_limits<T>::max());
-    if (type_ == type::signed_integer) {
-      const i64 v = u_.signed_integer;
-      return v >= 0 &&
-             static_cast<u64>(v) <=
-                 static_cast<u64>(std::numeric_limits<T>::max());
+    if (m_type == type::signed_integer) {
+      const i64 v = m_u.signed_integer;
+      return v >= 0 && static_cast<u64>(v) <=
+                           static_cast<u64>(std::numeric_limits<T>::max());
     }
     return false;
   }
@@ -435,9 +442,8 @@ template <typename T, typename Enable = void> struct serializer;
 namespace detail {
 
 template <typename T>
-concept has_trait_to = requires(value &v, const T &t) {
-  serializer<T>::to_json(v, t);
-};
+concept has_trait_to =
+    requires(value &v, const T &t) { serializer<T>::to_json(v, t); };
 template <typename T>
 concept has_trait_from = requires(const value &v, T &t) {
   { serializer<T>::from_json(v, t) } -> std::same_as<bool>;
@@ -453,9 +459,8 @@ concept has_adl_from = requires(const value &v, T &t) {
 
 /// True when T can be converted in both directions.
 template <typename T>
-concept convertible =
-    (detail::has_trait_to<T> || detail::has_adl_to<T>)&&(
-        detail::has_trait_from<T> || detail::has_adl_from<T>);
+concept convertible = (detail::has_trait_to<T> || detail::has_adl_to<T>) &&
+                      (detail::has_trait_from<T> || detail::has_adl_from<T>);
 
 /// Encodes @p in into @p out.
 template <typename T> void assign(value &out, const T &in) {
@@ -474,9 +479,10 @@ template <typename T> [[nodiscard]] bool extract(const value &in, T &out) {
   if constexpr (detail::has_trait_from<T>)
     return serializer<T>::from_json(in, out);
   else {
-    static_assert(detail::has_adl_from<T>,
-                  "nx::json: no serializer<T>::from_json and no from_json(const "
-                  "value&, T&) findable by ADL for this type");
+    static_assert(
+        detail::has_adl_from<T>,
+        "nx::json: no serializer<T>::from_json and no from_json(const "
+        "value&, T&) findable by ADL for this type");
     return from_json(in, out);
   }
 }
@@ -542,8 +548,8 @@ template <> struct serializer<bool> {
 /// negative literal never silently becomes a huge unsigned value and a 64-bit
 /// identifier never silently truncates to 32 bits.
 template <typename T>
-struct serializer<T, std::enable_if_t<std::is_integral_v<T> &&
-                                      !std::is_same_v<T, bool>>> {
+struct serializer<
+    T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>>> {
   static void to_json(value &out, T in) { out = in; }
   static bool from_json(const value &in, T &out) {
     if (!in.fits<T>())

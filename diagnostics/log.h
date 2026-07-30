@@ -26,8 +26,8 @@
  * the worker) and nx::log::shutdown() at exit (drains, flushes, joins).
  */
 
-#include "foundation/strings/format.h"
 #include "foundation/core/foundation.h"
+#include "foundation/strings/format.h"
 
 #include <atomic>
 
@@ -59,23 +59,23 @@ struct CategoryState {
 class Category {
 public:
   Category() = default;
-  explicit Category(CategoryState *state) noexcept : state_(state) {}
+  explicit Category(CategoryState *state) noexcept : m_state(state) {}
 
   [[nodiscard]] const char *name() const noexcept {
-    return state_ ? state_->name : "?";
+    return m_state ? m_state->name : "?";
   }
   [[nodiscard]] Level level() const noexcept {
-    return state_
-               ? nx::cast<Level>(state_->level.load(std::memory_order_relaxed))
+    return m_state
+               ? nx::cast<Level>(m_state->level.load(std::memory_order_relaxed))
                : Level::Trace;
   }
-  [[nodiscard]] CategoryState *raw() const noexcept { return state_; }
+  [[nodiscard]] CategoryState *raw() const noexcept { return m_state; }
   [[nodiscard]] explicit operator bool() const noexcept {
-    return state_ != nullptr;
+    return m_state != nullptr;
   }
 
 private:
-  CategoryState *state_ = nullptr;
+  CategoryState *m_state = nullptr;
 };
 
 /// A single log entry as delivered to sinks. POD so it rides the lock-free

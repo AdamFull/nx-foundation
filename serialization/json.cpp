@@ -98,51 +98,51 @@ NX_FORCE_INLINE i32 hex_value(u8 c) noexcept {
 class parser {
 public:
   parser(const string_view text, const parse_options &opts) noexcept
-      : begin_(text.data()), cur_(text.data()), end_(text.data() + text.size()),
-        opts_(opts) {}
+      : m_begin(text.data()), m_cur(text.data()),
+        m_end(text.data() + text.size()), m_opts(opts) {}
 
   result<value> run() {
-    if (opts_.validate_utf8 &&
-        !utf8::validate_utf8(begin_, nx::cast<usize>(end_ - begin_)))
-      return fail(error_code::invalid_utf8, begin_);
+    if (m_opts.validate_utf8 &&
+        !utf8::validate_utf8(m_begin, nx::cast<usize>(m_end - m_begin)))
+      return fail(error_code::invalid_utf8, m_begin);
 
     skip_space();
     value root;
     if (const error_code e = parse_value(root, 0); e != error_code::none)
-      return fail(e, error_pos_);
+      return fail(e, m_error_pos);
 
     skip_space();
-    if (cur_ != end_)
-      return fail(error_code::trailing_content, cur_);
+    if (m_cur != m_end)
+      return fail(error_code::trailing_content, m_cur);
     return root;
   }
 
 private:
-  const char *begin_;
-  const char *cur_;
-  const char *end_;
-  parse_options opts_;
-  const char *error_pos_ = nullptr;
+  const char *m_begin;
+  const char *m_cur;
+  const char *m_end;
+  parse_options m_opts;
+  const char *m_error_pos = nullptr;
 
   [[nodiscard]] NX_FORCE_INLINE bool at_end() const noexcept {
-    return cur_ >= end_;
+    return m_cur >= m_end;
   }
   [[nodiscard]] NX_FORCE_INLINE u8 peek() const noexcept {
-    return nx::cast<u8>(*cur_);
+    return nx::cast<u8>(*m_cur);
   }
 
   /// Records where an error happened and returns the code, so callers can
   /// `return set(code)` in one statement.
   NX_FORCE_INLINE error_code set(error_code e, const char *at) noexcept {
-    error_pos_ = at;
+    m_error_pos = at;
     return e;
   }
 
   result<value> fail(const error_code e, const char *at) const {
-    const auto offset = nx::cast<usize>((at ? at : cur_) - begin_);
+    const auto offset = nx::cast<usize>((at ? at : m_cur) - m_begin);
     u32 line = 1, column = 1;
     for (usize i = 0; i < offset; ++i) {
-      if (begin_[i] == '\n') {
+      if (m_begin[i] == '\n') {
         ++line;
         column = 1;
       } else {
@@ -154,36 +154,36 @@ private:
 
   void skip_space() noexcept {
     for (;;) {
-      while (cur_ < end_ && is_space(peek()))
-        ++cur_;
-      if (!opts_.allow_comments || cur_ + 1 >= end_ || *cur_ != '/')
+      while (m_cur < m_end && is_space(peek()))
+        ++m_cur;
+      if (!m_opts.allow_comments || m_cur + 1 >= m_end || *m_cur != '/')
         return;
-      if (cur_[1] == '/') {
-        cur_ += 2;
-        while (cur_ < end_ && *cur_ != '\n')
-          ++cur_;
-      } else if (cur_[1] == '*') {
-        cur_ += 2;
-        while (cur_ + 1 < end_ && !(cur_[0] == '*' && cur_[1] == '/'))
-          ++cur_;
-        cur_ = (cur_ + 1 < end_) ? cur_ + 2 : end_;
+      if (m_cur[1] == '/') {
+        m_cur += 2;
+        while (m_cur < m_end && *m_cur != '\n')
+          ++m_cur;
+      } else if (m_cur[1] == '*') {
+        m_cur += 2;
+        while (m_cur + 1 < m_end && !(m_cur[0] == '*' && m_cur[1] == '/'))
+          ++m_cur;
+        m_cur = (m_cur + 1 < m_end) ? m_cur + 2 : m_end;
       } else {
         return; // a lone '/' is not a comment; let the value parser reject it
       }
     }
   }
 
-  /// Matches a bare literal such as `true`; cur_ is left past it on success.
+  /// Matches a bare literal such as `true`; m_cur is left past it on success.
   NX_FORCE_INLINE bool match(const char *lit, usize n) noexcept {
-    if (nx::cast<usize>(end_ - cur_) < n || std::memcmp(cur_, lit, n) != 0)
+    if (nx::cast<usize>(m_end - m_cur) < n || std::memcmp(m_cur, lit, n) != 0)
       return false;
-    cur_ += n;
+    m_cur += n;
     return true;
   }
 
   error_code parse_value(value &out, u32 depth) {
     if (at_end())
-      return set(error_code::unexpected_end, cur_);
+      return set(error_code::unexpected_end, m_cur);
 
     switch (peek()) {
     case '{':
@@ -199,17 +199,17 @@ private:
     }
     case 't':
       if (!match("true", 4))
-        return set(error_code::unexpected_token, cur_);
+        return set(error_code::unexpected_token, m_cur);
       out = true;
       return error_code::none;
     case 'f':
       if (!match("false", 5))
-        return set(error_code::unexpected_token, cur_);
+        return set(error_code::unexpected_token, m_cur);
       out = false;
       return error_code::none;
     case 'n':
       if (!match("null", 4))
-        return set(error_code::unexpected_token, cur_);
+        return set(error_code::unexpected_token, m_cur);
       out = value{};
       return error_code::none;
     default:
@@ -218,16 +218,16 @@ private:
   }
 
   error_code parse_array(value &out, u32 depth) {
-    if (depth >= opts_.max_depth)
-      return set(error_code::depth_exceeded, cur_);
-    ++cur_; // '['
+    if (depth >= m_opts.max_depth)
+      return set(error_code::depth_exceeded, m_cur);
+    ++m_cur; // '['
     out = value::make_array();
 
     skip_space();
     if (at_end())
-      return set(error_code::unexpected_end, cur_);
+      return set(error_code::unexpected_end, m_cur);
     if (peek() == ']') {
-      ++cur_;
+      ++m_cur;
       return error_code::none;
     }
 
@@ -241,24 +241,24 @@ private:
 
       skip_space();
       if (at_end())
-        return set(error_code::unexpected_end, cur_);
+        return set(error_code::unexpected_end, m_cur);
       const u8 c = peek();
       if (c == ',') {
-        ++cur_;
+        ++m_cur;
         skip_space();
         if (!at_end() && peek() == ']') {
-          if (!opts_.allow_trailing_commas)
-            return set(error_code::unexpected_token, cur_);
-          ++cur_;
+          if (!m_opts.allow_trailing_commas)
+            return set(error_code::unexpected_token, m_cur);
+          ++m_cur;
           return error_code::none;
         }
         continue;
       }
       if (c == ']') {
-        ++cur_;
+        ++m_cur;
         return error_code::none;
       }
-      return set(error_code::unexpected_token, cur_);
+      return set(error_code::unexpected_token, m_cur);
     }
   }
 
@@ -313,16 +313,16 @@ private:
   }
 
   error_code parse_object(value &out, u32 depth) {
-    if (depth >= opts_.max_depth)
-      return set(error_code::depth_exceeded, cur_);
-    ++cur_; // '{'
+    if (depth >= m_opts.max_depth)
+      return set(error_code::depth_exceeded, m_cur);
+    ++m_cur; // '{'
     out = value::make_object();
 
     skip_space();
     if (at_end())
-      return set(error_code::unexpected_end, cur_);
+      return set(error_code::unexpected_end, m_cur);
     if (peek() == '}') {
-      ++cur_;
+      ++m_cur;
       return error_code::none;
     }
 
@@ -339,21 +339,21 @@ private:
     for (;;) {
       skip_space();
       if (at_end())
-        return set(error_code::unexpected_end, cur_);
+        return set(error_code::unexpected_end, m_cur);
       if (peek() != '"')
-        return set(error_code::unexpected_token, cur_);
+        return set(error_code::unexpected_token, m_cur);
 
-      const char *key_at = cur_;
+      const char *key_at = m_cur;
       nx::string key;
       if (const error_code e = parse_string(key); e != error_code::none)
         return e;
 
       skip_space();
       if (at_end())
-        return set(error_code::unexpected_end, cur_);
+        return set(error_code::unexpected_end, m_cur);
       if (peek() != ':')
-        return set(error_code::unexpected_token, cur_);
-      ++cur_;
+        return set(error_code::unexpected_token, m_cur);
+      ++m_cur;
 
       value element;
       skip_space();
@@ -364,7 +364,7 @@ private:
       object &members = out.as_object();
       value *existing = find_member(members, key.view(), index, indexed);
       if (existing != nullptr) {
-        if (opts_.reject_duplicate_keys)
+        if (m_opts.reject_duplicate_keys)
           return set(error_code::duplicate_key, key_at);
         *existing = std::move(element); // last occurrence wins
       } else {
@@ -374,24 +374,24 @@ private:
 
       skip_space();
       if (at_end())
-        return set(error_code::unexpected_end, cur_);
+        return set(error_code::unexpected_end, m_cur);
       const u8 c = peek();
       if (c == ',') {
-        ++cur_;
+        ++m_cur;
         skip_space();
         if (!at_end() && peek() == '}') {
-          if (!opts_.allow_trailing_commas)
-            return set(error_code::unexpected_token, cur_);
-          ++cur_;
+          if (!m_opts.allow_trailing_commas)
+            return set(error_code::unexpected_token, m_cur);
+          ++m_cur;
           return error_code::none;
         }
         continue;
       }
       if (c == '}') {
-        ++cur_;
+        ++m_cur;
         return error_code::none;
       }
-      return set(error_code::unexpected_token, cur_);
+      return set(error_code::unexpected_token, m_cur);
     }
   }
 
@@ -404,12 +404,12 @@ private:
   }
 
   error_code parse_escape(nx::string &out) {
-    // cur_ points at the character after the backslash.
+    // m_cur points at the character after the backslash.
     if (at_end())
-      return set(error_code::unexpected_end, cur_);
-    const char *esc_at = cur_ - 1;
+      return set(error_code::unexpected_end, m_cur);
+    const char *esc_at = m_cur - 1;
     const u8 c = peek();
-    ++cur_;
+    ++m_cur;
     switch (c) {
     case '"':
       out.push_back('"');
@@ -447,9 +447,9 @@ private:
 
     if (utf8::is_high_surrogate(nx::cast<char16_t>(unit))) {
       // Must be followed by \uDC00-\uDFFF to form a supplementary code point.
-      if (end_ - cur_ < 2 || cur_[0] != '\\' || cur_[1] != 'u')
+      if (m_end - m_cur < 2 || m_cur[0] != '\\' || m_cur[1] != 'u')
         return set(error_code::invalid_surrogate, esc_at);
-      cur_ += 2;
+      m_cur += 2;
       u32 low = 0;
       if (const error_code e = read_hex4(low, esc_at); e != error_code::none)
         return e;
@@ -473,116 +473,116 @@ private:
     // is present but not a hex digit is a malformed escape.
     u32 v = 0;
     for (int i = 0; i < 4; ++i) {
-      if (cur_ + i >= end_)
-        return set(error_code::unexpected_end, cur_);
-      const i32 d = hex_value(nx::cast<u8>(cur_[i]));
+      if (m_cur + i >= m_end)
+        return set(error_code::unexpected_end, m_cur);
+      const i32 d = hex_value(nx::cast<u8>(m_cur[i]));
       if (d < 0)
         return set(error_code::invalid_escape, esc_at);
       v = (v << 4) | nx::cast<u32>(d);
     }
-    cur_ += 4;
+    m_cur += 4;
     out = v;
     return error_code::none;
   }
 
   error_code parse_string(nx::string &out) {
-    ++cur_; // opening quote
+    ++m_cur; // opening quote
     out.clear();
 
     // Copy in runs: scan for the next byte that needs attention and append
     // everything before it in one go, so unescaped text costs one memcpy.
     for (;;) {
-      const char *run = cur_;
-      while (cur_ < end_) {
-        const u8 c = nx::cast<u8>(*cur_);
+      const char *run = m_cur;
+      while (m_cur < m_end) {
+        const u8 c = nx::cast<u8>(*m_cur);
         if (c == '"' || c == '\\' || c < 0x20)
           break;
-        ++cur_;
+        ++m_cur;
       }
-      if (cur_ > run)
-        out.append(run, nx::cast<usize>(cur_ - run));
+      if (m_cur > run)
+        out.append(run, nx::cast<usize>(m_cur - run));
 
       if (at_end())
-        return set(error_code::invalid_string, cur_);
+        return set(error_code::invalid_string, m_cur);
 
       const u8 c = peek();
       if (c == '"') {
-        ++cur_;
+        ++m_cur;
         return error_code::none;
       }
       if (c < 0x20) // raw control characters must be escaped
-        return set(error_code::invalid_string, cur_);
+        return set(error_code::invalid_string, m_cur);
 
-      ++cur_; // the backslash
+      ++m_cur; // the backslash
       if (const error_code e = parse_escape(out); e != error_code::none)
         return e;
     }
   }
 
   error_code parse_number(value &out) {
-    const char *start = cur_;
+    const char *start = m_cur;
 
-    if (cur_ < end_ && *cur_ == '-')
-      ++cur_;
+    if (m_cur < m_end && *m_cur == '-')
+      ++m_cur;
     if (at_end())
       return set(error_code::invalid_number, start);
 
     // Integer part: either a lone 0 or a digit sequence with no leading zero.
     if (peek() == '0') {
-      ++cur_;
+      ++m_cur;
     } else if (is_digit(peek())) {
-      while (cur_ < end_ && is_digit(peek()))
-        ++cur_;
+      while (m_cur < m_end && is_digit(peek()))
+        ++m_cur;
     } else {
       return set(error_code::unexpected_token, start);
     }
 
     bool integral = true;
-    if (cur_ < end_ && *cur_ == '.') {
-      ++cur_;
+    if (m_cur < m_end && *m_cur == '.') {
+      ++m_cur;
       if (at_end() || !is_digit(peek()))
         return set(error_code::invalid_number, start);
-      while (cur_ < end_ && is_digit(peek()))
-        ++cur_;
+      while (m_cur < m_end && is_digit(peek()))
+        ++m_cur;
       integral = false;
     }
-    if (cur_ < end_ && (*cur_ == 'e' || *cur_ == 'E')) {
-      ++cur_;
-      if (cur_ < end_ && (*cur_ == '+' || *cur_ == '-'))
-        ++cur_;
+    if (m_cur < m_end && (*m_cur == 'e' || *m_cur == 'E')) {
+      ++m_cur;
+      if (m_cur < m_end && (*m_cur == '+' || *m_cur == '-'))
+        ++m_cur;
       if (at_end() || !is_digit(peek()))
         return set(error_code::invalid_number, start);
-      while (cur_ < end_ && is_digit(peek()))
-        ++cur_;
+      while (m_cur < m_end && is_digit(peek()))
+        ++m_cur;
       integral = false;
     }
 
     // A number must be followed by a delimiter; `1x` and `01` are not numbers.
     // With comments enabled a '/' also ends one, as in `[1 /* note */]`.
-    if (cur_ < end_) {
+    if (m_cur < m_end) {
       const u8 c = peek();
       const bool delimits = is_space(c) || (kCharClass[c] & 2u) != 0 ||
-                            (opts_.allow_comments && c == '/');
+                            (m_opts.allow_comments && c == '/');
       if (!delimits)
         return set(error_code::invalid_number, start);
     }
 
-    const auto len = nx::cast<usize>(cur_ - start);
+    const auto len = nx::cast<usize>(m_cur - start);
     if (integral) {
       // Exact integer path. from_chars reports out_of_range rather than
       // silently wrapping, and we then fall back to a double so that huge
       // literals still parse instead of failing the whole document.
       if (*start == '-') {
         i64 v = 0;
-        const auto r = std::from_chars(start, cur_, v);
-        if (r.ec == std::errc{} && r.ptr == cur_) {
+        const auto r = std::from_chars(start, m_cur, v);
+        if (r.ec == std::errc{} && r.ptr == m_cur) {
           out = v;
           return error_code::none;
         }
       } else {
         u64 v = 0;
-        const auto r = std::from_chars(start, cur_, v);
-        if (r.ec == std::errc{} && r.ptr == cur_) {
+        const auto r = std::from_chars(start, m_cur, v);
+        if (r.ec == std::errc{} && r.ptr == m_cur) {
           // Prefer the signed representation when it fits, so that small
           // positive integers compare equal to their signed counterparts
           // without needing cross-representation logic everywhere.
@@ -596,9 +596,9 @@ private:
     }
 
     f64 d = 0.0;
-    const auto r = from_chars(start, cur_, d); // unqualified: see the top of
-                                               // this file for the fallback
-    if (r.ptr != cur_ ||
+    const auto r = from_chars(start, m_cur, d); // unqualified: see the top of
+                                                // this file for the fallback
+    if (r.ptr != m_cur ||
         (r.ec != std::errc{} && r.ec != std::errc::result_out_of_range))
       return set(error_code::invalid_number, start);
     // result_out_of_range means the literal overflowed to +/-inf or underflowed
@@ -614,18 +614,18 @@ private:
 class writer {
 public:
   writer(nx::string &out, const write_options &opts) noexcept
-      : out_(out), opts_(opts) {}
+      : m_out(out), m_opts(opts) {}
 
   void write_value(const value &v, u32 depth) {
     switch (v.kind()) {
     case type::null:
-      out_.append("null", nx::cast<usize>(4));
+      m_out.append("null", nx::cast<usize>(4));
       return;
     case type::boolean:
       if (v.as_bool())
-        out_.append("true", nx::cast<usize>(4));
+        m_out.append("true", nx::cast<usize>(4));
       else
-        out_.append("false", nx::cast<usize>(5));
+        m_out.append("false", nx::cast<usize>(5));
       return;
     case type::signed_integer:
       write_int(v.as_i64());
@@ -649,13 +649,13 @@ public:
   }
 
 private:
-  nx::string &out_;
-  write_options opts_;
+  nx::string &m_out;
+  write_options m_opts;
 
   template <typename T> void write_int(T v) {
     char buf[24];
     const auto r = std::to_chars(buf, buf + sizeof(buf), v);
-    out_.append(buf, nx::cast<usize>(r.ptr - buf));
+    m_out.append(buf, nx::cast<usize>(r.ptr - buf));
   }
 
   /// Largest fraction width honoured from write_options::real_precision. The
@@ -671,7 +671,7 @@ private:
     // and that form would quietly turn every zero into null. It is also the
     // form that survives a compiler being told it may assume finite math.
     if (!std::isfinite(v)) {
-      out_.append("null", nx::cast<usize>(4));
+      m_out.append("null", nx::cast<usize>(4));
       return;
     }
 
@@ -679,10 +679,10 @@ private:
     // kMaxPrecision fraction digits.
     char buf[400];
     std::to_chars_result r{};
-    if (opts_.real_precision > 0)
+    if (m_opts.real_precision > 0)
       r = std::to_chars(
           buf, buf + sizeof(buf), v, std::chars_format::fixed,
-          nx::cast<int>(nx::min(opts_.real_precision, kMaxPrecision)));
+          nx::cast<int>(nx::min(m_opts.real_precision, kMaxPrecision)));
     else
       r = std::to_chars(buf, buf + sizeof(buf), v);
 
@@ -692,24 +692,24 @@ private:
       // round-trip form rather than emitting null.
       r = std::to_chars(buf, buf + sizeof(buf), v);
       if (r.ec != std::errc{}) {
-        out_.append("null", nx::cast<usize>(4));
+        m_out.append("null", nx::cast<usize>(4));
         return;
       }
     }
     const auto n = nx::cast<usize>(r.ptr - buf);
-    out_.append(buf, n);
+    m_out.append(buf, n);
 
     // to_chars produces the shortest round-trip form, which for a whole number
     // is "1" - valid JSON, but it loses the fact that the value was a real. Add
     // a fractional part so a double stays a double across a round trip.
-    if (opts_.real_precision == 0 && std::memchr(buf, '.', n) == nullptr &&
+    if (m_opts.real_precision == 0 && std::memchr(buf, '.', n) == nullptr &&
         std::memchr(buf, 'e', n) == nullptr)
-      out_.append(".0", nx::cast<usize>(2));
+      m_out.append(".0", nx::cast<usize>(2));
   }
 
   void write_string(string_view s) {
-    out_.reserve(out_.size() + s.size() + 2);
-    out_.push_back('"');
+    m_out.reserve(m_out.size() + s.size() + 2);
+    m_out.push_back('"');
 
     const char *const begin = s.data();
     const char *const end = begin + s.size();
@@ -718,15 +718,15 @@ private:
     for (const char *p = begin; p < end;) {
       const u8 c = nx::cast<u8>(*p);
       const bool needs_escape = c < 0x20 || c == '"' || c == '\\' ||
-                                (opts_.escape_forward_slash && c == '/') ||
-                                (opts_.escape_non_ascii && c >= 0x80);
+                                (m_opts.escape_forward_slash && c == '/') ||
+                                (m_opts.escape_non_ascii && c >= 0x80);
       if (!needs_escape) {
         ++p;
         continue;
       }
 
       if (p > run)
-        out_.append(run, nx::cast<usize>(p - run));
+        m_out.append(run, nx::cast<usize>(p - run));
 
       if (c >= 0x80) {
         // Re-encode the whole code point as one or two \u escapes.
@@ -754,35 +754,35 @@ private:
       run = p;
     }
     if (end > run)
-      out_.append(run, nx::cast<usize>(end - run));
-    out_.push_back('"');
+      m_out.append(run, nx::cast<usize>(end - run));
+    m_out.push_back('"');
   }
 
   void append_short_escape(u8 c) {
     switch (c) {
     case '"':
-      out_.append("\\\"", nx::cast<usize>(2));
+      m_out.append("\\\"", nx::cast<usize>(2));
       return;
     case '\\':
-      out_.append("\\\\", nx::cast<usize>(2));
+      m_out.append("\\\\", nx::cast<usize>(2));
       return;
     case '/':
-      out_.append("\\/", nx::cast<usize>(2));
+      m_out.append("\\/", nx::cast<usize>(2));
       return;
     case '\b':
-      out_.append("\\b", nx::cast<usize>(2));
+      m_out.append("\\b", nx::cast<usize>(2));
       return;
     case '\f':
-      out_.append("\\f", nx::cast<usize>(2));
+      m_out.append("\\f", nx::cast<usize>(2));
       return;
     case '\n':
-      out_.append("\\n", nx::cast<usize>(2));
+      m_out.append("\\n", nx::cast<usize>(2));
       return;
     case '\r':
-      out_.append("\\r", nx::cast<usize>(2));
+      m_out.append("\\r", nx::cast<usize>(2));
       return;
     case '\t':
-      out_.append("\\t", nx::cast<usize>(2));
+      m_out.append("\\t", nx::cast<usize>(2));
       return;
     default:
       append_u_escape(c); // any other control character
@@ -797,52 +797,52 @@ private:
     buf[3] = kHex[(v >> 8) & 0xF];
     buf[4] = kHex[(v >> 4) & 0xF];
     buf[5] = kHex[v & 0xF];
-    out_.append(buf, nx::cast<usize>(6));
+    m_out.append(buf, nx::cast<usize>(6));
   }
 
   void newline_indent(u32 depth) const {
-    if (opts_.indent == 0)
+    if (m_opts.indent == 0)
       return;
-    out_.push_back('\n');
-    out_.append(nx::cast<usize>(depth) * opts_.indent, ' ');
+    m_out.push_back('\n');
+    m_out.append(nx::cast<usize>(depth) * m_opts.indent, ' ');
   }
 
   void write_array(const value &v, u32 depth) {
     const array &a = v.as_array();
     if (a.empty()) {
-      out_.append("[]", nx::cast<usize>(2));
+      m_out.append("[]", nx::cast<usize>(2));
       return;
     }
-    out_.push_back('[');
+    m_out.push_back('[');
     for (usize i = 0; i < a.size(); ++i) {
       if (i != 0)
-        out_.push_back(',');
+        m_out.push_back(',');
       newline_indent(depth + 1);
       write_value(a[i], depth + 1);
     }
     newline_indent(depth);
-    out_.push_back(']');
+    m_out.push_back(']');
   }
 
   void write_object(const value &v, u32 depth) {
     const object &o = v.as_object();
     if (o.empty()) {
-      out_.append("{}", nx::cast<usize>(2));
+      m_out.append("{}", nx::cast<usize>(2));
       return;
     }
-    out_.push_back('{');
+    m_out.push_back('{');
     for (usize i = 0; i < o.size(); ++i) {
       if (i != 0)
-        out_.push_back(',');
+        m_out.push_back(',');
       newline_indent(depth + 1);
       write_string(o[i].key.view());
-      out_.push_back(':');
-      if (opts_.indent != 0)
-        out_.push_back(' ');
+      m_out.push_back(':');
+      if (m_opts.indent != 0)
+        m_out.push_back(' ');
       write_value(o[i].val, depth + 1);
     }
     newline_indent(depth);
-    out_.push_back('}');
+    m_out.push_back('}');
   }
 };
 
@@ -900,45 +900,45 @@ nx::string error::message() const {
 
 // value
 
-value::value(string_view s) : type_(type::string) {
-  std::construct_at(&u_.string, s.data(), s.size());
+value::value(string_view s) : m_type(type::string) {
+  std::construct_at(&m_u.string, s.data(), s.size());
 }
-value::value(const nx::string &s) : type_(type::string) {
-  std::construct_at(&u_.string, s);
+value::value(const nx::string &s) : m_type(type::string) {
+  std::construct_at(&m_u.string, s);
 }
-value::value(nx::string &&s) noexcept : type_(type::string) {
-  std::construct_at(&u_.string, std::move(s));
+value::value(nx::string &&s) noexcept : m_type(type::string) {
+  std::construct_at(&m_u.string, std::move(s));
 }
 
 value value::make_array() {
   value v;
-  v.type_ = type::array;
-  std::construct_at(&v.u_.array_);
+  v.m_type = type::array;
+  std::construct_at(&v.m_u.m_array);
   return v;
 }
 value value::make_object() {
   value v;
-  v.type_ = type::object;
-  std::construct_at(&v.u_.object_);
+  v.m_type = type::object;
+  std::construct_at(&v.m_u.m_object);
   return v;
 }
 value value::make_array(array a) noexcept {
   value v;
-  v.type_ = type::array;
-  std::construct_at(&v.u_.array_, std::move(a));
+  v.m_type = type::array;
+  std::construct_at(&v.m_u.m_array, std::move(a));
   return v;
 }
 value value::make_object(object o) noexcept {
   value v;
-  v.type_ = type::object;
-  std::construct_at(&v.u_.object_, std::move(o));
+  v.m_type = type::object;
+  std::construct_at(&v.m_u.m_object, std::move(o));
   return v;
 }
 
 // Listed exhaustively rather than with a default label so that adding an
 // alternative to `type` is a compiler warning here instead of a silent leak.
 void value::destroy() noexcept {
-  switch (type_) {
+  switch (m_type) {
   case type::null:
   case type::boolean:
   case type::signed_integer:
@@ -946,16 +946,16 @@ void value::destroy() noexcept {
   case type::real:
     break; // trivially destructible
   case type::string:
-    std::destroy_at(&u_.string);
+    std::destroy_at(&m_u.string);
     break;
   case type::array:
-    std::destroy_at(&u_.array_);
+    std::destroy_at(&m_u.m_array);
     break;
   case type::object:
-    std::destroy_at(&u_.object_);
+    std::destroy_at(&m_u.m_object);
     break;
   }
-  type_ = type::null;
+  m_type = type::null;
 }
 
 // Every alternative is activated explicitly, including the scalar ones.
@@ -966,66 +966,66 @@ void value::destroy() noexcept {
 // member, leaving the union with no active alternative to read back.
 // construct_at both copies the value and makes that member active.
 void value::construct_from(const value &o) {
-  type_ = o.type_;
-  switch (o.type_) {
+  m_type = o.m_type;
+  switch (o.m_type) {
   case type::null:
     break; // no active member
   case type::boolean:
-    std::construct_at(&u_.boolean, o.u_.boolean);
+    std::construct_at(&m_u.boolean, o.m_u.boolean);
     break;
   case type::signed_integer:
-    std::construct_at(&u_.signed_integer, o.u_.signed_integer);
+    std::construct_at(&m_u.signed_integer, o.m_u.signed_integer);
     break;
   case type::unsigned_integer:
-    std::construct_at(&u_.unsigned_integer, o.u_.unsigned_integer);
+    std::construct_at(&m_u.unsigned_integer, o.m_u.unsigned_integer);
     break;
   case type::real:
-    std::construct_at(&u_.real, o.u_.real);
+    std::construct_at(&m_u.real, o.m_u.real);
     break;
   case type::string:
-    std::construct_at(&u_.string, o.u_.string);
+    std::construct_at(&m_u.string, o.m_u.string);
     break;
   case type::array:
-    std::construct_at(&u_.array_, o.u_.array_);
+    std::construct_at(&m_u.m_array, o.m_u.m_array);
     break;
   case type::object:
-    std::construct_at(&u_.object_, o.u_.object_);
+    std::construct_at(&m_u.m_object, o.m_u.m_object);
     break;
   }
 }
 
 void value::construct_from(value &&o) noexcept {
-  type_ = o.type_;
-  switch (o.type_) {
+  m_type = o.m_type;
+  switch (o.m_type) {
   case type::null:
     break;
   case type::boolean:
-    std::construct_at(&u_.boolean, o.u_.boolean);
+    std::construct_at(&m_u.boolean, o.m_u.boolean);
     break;
   case type::signed_integer:
-    std::construct_at(&u_.signed_integer, o.u_.signed_integer);
+    std::construct_at(&m_u.signed_integer, o.m_u.signed_integer);
     break;
   case type::unsigned_integer:
-    std::construct_at(&u_.unsigned_integer, o.u_.unsigned_integer);
+    std::construct_at(&m_u.unsigned_integer, o.m_u.unsigned_integer);
     break;
   case type::real:
-    std::construct_at(&u_.real, o.u_.real);
+    std::construct_at(&m_u.real, o.m_u.real);
     break;
   case type::string:
-    std::construct_at(&u_.string, std::move(o.u_.string));
+    std::construct_at(&m_u.string, std::move(o.m_u.string));
     break;
   case type::array:
-    std::construct_at(&u_.array_, std::move(o.u_.array_));
+    std::construct_at(&m_u.m_array, std::move(o.m_u.m_array));
     break;
   case type::object:
-    std::construct_at(&u_.object_, std::move(o.u_.object_));
+    std::construct_at(&m_u.m_object, std::move(o.m_u.m_object));
     break;
   }
   o.destroy();
 }
 
-value::value(const value &o) : type_(type::null) { construct_from(o); }
-value::value(value &&o) noexcept : type_(type::null) {
+value::value(const value &o) : m_type(type::null) { construct_from(o); }
+value::value(value &&o) noexcept : m_type(type::null) {
   construct_from(std::move(o));
 }
 
@@ -1061,59 +1061,59 @@ const value &value::null_value() noexcept {
 
 bool value::as_bool() const noexcept {
   assert(is_bool() && "json::value::as_bool on a non-boolean");
-  return u_.boolean;
+  return m_u.boolean;
 }
 i64 value::as_i64() const noexcept {
   assert(is_i64() && "json::value::as_i64 on a non-signed-integer");
-  return u_.signed_integer;
+  return m_u.signed_integer;
 }
 u64 value::as_u64() const noexcept {
   assert(is_u64() && "json::value::as_u64 on a non-unsigned-integer");
-  return u_.unsigned_integer;
+  return m_u.unsigned_integer;
 }
 f64 value::as_double() const noexcept {
   assert(is_double() && "json::value::as_double on a non-real");
-  return u_.real;
+  return m_u.real;
 }
 const nx::string &value::as_string() const noexcept {
   assert(is_string() && "json::value::as_string on a non-string");
-  return u_.string;
+  return m_u.string;
 }
 nx::string &value::as_string() noexcept {
   assert(is_string() && "json::value::as_string on a non-string");
-  return u_.string;
+  return m_u.string;
 }
 const array &value::as_array() const noexcept {
   assert(is_array() && "json::value::as_array on a non-array");
-  return u_.array_;
+  return m_u.m_array;
 }
 array &value::as_array() noexcept {
   assert(is_array() && "json::value::as_array on a non-array");
-  return u_.array_;
+  return m_u.m_array;
 }
 const object &value::as_object() const noexcept {
   assert(is_object() && "json::value::as_object on a non-object");
-  return u_.object_;
+  return m_u.m_object;
 }
 object &value::as_object() noexcept {
   assert(is_object() && "json::value::as_object on a non-object");
-  return u_.object_;
+  return m_u.m_object;
 }
 
 bool value::get_bool(bool fallback) const noexcept {
-  return is_bool() ? u_.boolean : fallback;
+  return is_bool() ? m_u.boolean : fallback;
 }
 
 i64 value::get_i64(i64 fallback) const noexcept {
-  switch (type_) {
+  switch (m_type) {
   case type::signed_integer:
-    return u_.signed_integer;
+    return m_u.signed_integer;
   case type::unsigned_integer:
-    return u_.unsigned_integer <= nx::cast<u64>(9223372036854775807LL)
-               ? nx::cast<i64>(u_.unsigned_integer)
+    return m_u.unsigned_integer <= nx::cast<u64>(9223372036854775807LL)
+               ? nx::cast<i64>(m_u.unsigned_integer)
                : fallback;
   case type::real: {
-    const f64 d = u_.real;
+    const f64 d = m_u.real;
     if (d >= -9223372036854775808.0 && d < 9223372036854775808.0 &&
         d == nx::cast<f64>(nx::cast<i64>(d)))
       return nx::cast<i64>(d);
@@ -1125,13 +1125,14 @@ i64 value::get_i64(i64 fallback) const noexcept {
 }
 
 u64 value::get_u64(u64 fallback) const noexcept {
-  switch (type_) {
+  switch (m_type) {
   case type::unsigned_integer:
-    return u_.unsigned_integer;
+    return m_u.unsigned_integer;
   case type::signed_integer:
-    return u_.signed_integer >= 0 ? nx::cast<u64>(u_.signed_integer) : fallback;
+    return m_u.signed_integer >= 0 ? nx::cast<u64>(m_u.signed_integer)
+                                   : fallback;
   case type::real: {
-    const f64 d = u_.real;
+    const f64 d = m_u.real;
     if (d >= 0.0 && d < 18446744073709551616.0 &&
         d == nx::cast<f64>(nx::cast<u64>(d)))
       return nx::cast<u64>(d);
@@ -1143,65 +1144,67 @@ u64 value::get_u64(u64 fallback) const noexcept {
 }
 
 f64 value::get_double(f64 fallback) const noexcept {
-  switch (type_) {
+  switch (m_type) {
   case type::real:
-    return u_.real;
+    return m_u.real;
   case type::signed_integer:
-    return nx::cast<f64>(u_.signed_integer);
+    return nx::cast<f64>(m_u.signed_integer);
   case type::unsigned_integer:
-    return nx::cast<f64>(u_.unsigned_integer);
+    return nx::cast<f64>(m_u.unsigned_integer);
   default:
     return fallback;
   }
 }
 
 string_view value::get_string(string_view fallback) const noexcept {
-  return is_string() ? u_.string.view() : fallback;
+  return is_string() ? m_u.string.view() : fallback;
 }
 
 const nx::string *value::try_string() const noexcept {
-  return is_string() ? &u_.string : nullptr;
+  return is_string() ? &m_u.string : nullptr;
 }
 const array *value::try_array() const noexcept {
-  return is_array() ? &u_.array_ : nullptr;
+  return is_array() ? &m_u.m_array : nullptr;
 }
 const object *value::try_object() const noexcept {
-  return is_object() ? &u_.object_ : nullptr;
+  return is_object() ? &m_u.m_object : nullptr;
 }
 nx::string *value::try_string() noexcept {
-  return is_string() ? &u_.string : nullptr;
+  return is_string() ? &m_u.string : nullptr;
 }
-array *value::try_array() noexcept { return is_array() ? &u_.array_ : nullptr; }
+array *value::try_array() noexcept {
+  return is_array() ? &m_u.m_array : nullptr;
+}
 object *value::try_object() noexcept {
-  return is_object() ? &u_.object_ : nullptr;
+  return is_object() ? &m_u.m_object : nullptr;
 }
 
 usize value::size() const noexcept {
-  switch (type_) {
+  switch (m_type) {
   case type::array:
-    return u_.array_.size();
+    return m_u.m_array.size();
   case type::object:
-    return u_.object_.size();
+    return m_u.m_object.size();
   default:
     return 0;
   }
 }
 
 const value &value::operator[](usize i) const noexcept {
-  assert(is_array() && i < u_.array_.size() &&
+  assert(is_array() && i < m_u.m_array.size() &&
          "json::value: index out of range");
-  return u_.array_[i];
+  return m_u.m_array[i];
 }
 value &value::operator[](usize i) noexcept {
-  assert(is_array() && i < u_.array_.size() &&
+  assert(is_array() && i < m_u.m_array.size() &&
          "json::value: index out of range");
-  return u_.array_[i];
+  return m_u.m_array[i];
 }
 
 const value *value::find(string_view key) const noexcept {
   if (!is_object())
     return nullptr;
-  for (const member &m : u_.object_)
+  for (const member &m : m_u.m_object)
     if (m.key.view() == key)
       return &m.val;
   return nullptr;
@@ -1210,7 +1213,7 @@ const value *value::find(string_view key) const noexcept {
 value *value::find(string_view key) noexcept {
   if (!is_object())
     return nullptr;
-  for (member &m : u_.object_)
+  for (member &m : m_u.m_object)
     if (m.key.view() == key)
       return &m.val;
   return nullptr;
@@ -1231,20 +1234,20 @@ value &value::operator[](string_view key) {
   assert(is_object() && "json::value: keyed access on a non-object");
   if (value *m = find(key))
     return *m;
-  u_.object_.push_back(member{nx::string(key), value{}});
-  return u_.object_.back().val;
+  m_u.m_object.push_back(member{nx::string(key), value{}});
+  return m_u.m_object.back().val;
 }
 
 void value::push_back(value v) {
   if (is_null())
     *this = make_array();
   assert(is_array() && "json::value::push_back on a non-array");
-  u_.array_.push_back(std::move(v));
+  m_u.m_array.push_back(std::move(v));
 }
 
 value &value::emplace_back(value v) {
   push_back(std::move(v));
-  return u_.array_.back();
+  return m_u.m_array.back();
 }
 
 value &value::insert(string_view key, value v) {
@@ -1255,14 +1258,14 @@ value &value::insert(string_view key, value v) {
     *m = std::move(v);
     return *m;
   }
-  u_.object_.push_back(member{nx::string(key), std::move(v)});
-  return u_.object_.back().val;
+  m_u.m_object.push_back(member{nx::string(key), std::move(v)});
+  return m_u.m_object.back().val;
 }
 
 bool value::erase(string_view key) {
   if (!is_object())
     return false;
-  object &o = u_.object_;
+  object &o = m_u.m_object;
   for (usize i = 0; i < o.size(); ++i) {
     if (o[i].key.view() == key) {
       o.erase(o.begin() + nx::cast<isize>(i));
@@ -1273,12 +1276,12 @@ bool value::erase(string_view key) {
 }
 
 void value::reserve(usize n) {
-  switch (type_) {
+  switch (m_type) {
   case type::array:
-    u_.array_.reserve(n);
+    m_u.m_array.reserve(n);
     break;
   case type::object:
-    u_.object_.reserve(n);
+    m_u.m_object.reserve(n);
     break;
   default:
     break;
@@ -1286,15 +1289,15 @@ void value::reserve(usize n) {
 }
 
 void value::clear() noexcept {
-  switch (type_) {
+  switch (m_type) {
   case type::array:
-    u_.array_.clear();
+    m_u.m_array.clear();
     break;
   case type::object:
-    u_.object_.clear();
+    m_u.m_object.clear();
     break;
   case type::string:
-    u_.string.clear();
+    m_u.string.clear();
     break;
   default:
     destroy();
