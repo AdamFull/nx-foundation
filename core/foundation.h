@@ -8,7 +8,6 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include <cassert>
 
 // Platform detection
 
