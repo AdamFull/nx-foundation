@@ -25,7 +25,19 @@
 namespace nx {
 
 /// Scheduling priority of a thread, mapped to the closest native level.
-enum class thread_priority { Low, BelowNormal, Normal, AboveNormal, High };
+///
+/// Realtime is for a thread with a hard deadline - an audio mixer feeding a
+/// device callback - and is the one level the OS may refuse: it needs
+/// CAP_SYS_NICE on Linux, and Apple's per-thread knob does not reach that far
+/// at all. Ask for it through set_priority and read what you were given.
+enum class thread_priority {
+  Low,
+  BelowNormal,
+  Normal,
+  AboveNormal,
+  High,
+  Realtime
+};
 
 /// Creation parameters for nx::thread. All fields are optional.
 struct thread_options {
@@ -129,7 +141,9 @@ void set_name(const char *name) noexcept;
 /// Pins the calling thread to the logical processors set in @p mask.
 bool set_affinity(u64 mask) noexcept;
 
-bool set_priority(thread_priority prio) noexcept;
+/// Returns the level actually granted, which is at most @p prio and is
+/// thread_priority::Normal if the OS refused outright.
+[[nodiscard]] thread_priority set_priority(thread_priority prio) noexcept;
 
 } // namespace this_thread
 

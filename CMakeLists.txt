@@ -21,6 +21,7 @@ set(NX_FOUNDATION_HEADERS
   containers/fixed_vector.h
   containers/flat_map.h
   containers/hash_map.h
+  containers/ring_buffer.h
   containers/slot_map.h
   containers/radix_sort.h
   containers/small_vector.h
@@ -56,6 +57,7 @@ set(NX_FOUNDATION_HEADERS
 # Platform selection happens inside these files (#if NX_PLATFORM_*), so the
 # source list is the same everywhere.
 set(NX_FOUNDATION_SOURCES
+  core/foundation.cpp
   core/random.cpp
   threading/sync.cpp
   threading/thread.cpp

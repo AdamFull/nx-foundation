@@ -354,8 +354,49 @@ template <typename To, typename From>
 #endif
 }
 
+// A thread with a deadline can declare that it must not allocate, and be held
+// to it in debug builds. The audio mixer's render callback is the case this
+// exists for: one allocation there is a dropout, and nothing about the symptom
+// points back at the line that caused it.
+#if !defined(NX_ALLOC_GUARD)
+#define NX_ALLOC_GUARD NX_DEBUG
+#endif
+
+#if NX_ALLOC_GUARD
+namespace detail {
+extern thread_local u32 t_no_alloc_depth;
+}
+
+[[nodiscard]] inline bool allocation_allowed() noexcept {
+  return detail::t_no_alloc_depth == 0;
+}
+
+/// Forbids allocation on this thread for the scope's lifetime. Nests.
+class scoped_no_alloc {
+public:
+  scoped_no_alloc() noexcept { ++detail::t_no_alloc_depth; }
+  ~scoped_no_alloc() noexcept { --detail::t_no_alloc_depth; }
+
+  scoped_no_alloc(const scoped_no_alloc &) = delete;
+  scoped_no_alloc &operator=(const scoped_no_alloc &) = delete;
+};
+#else
+[[nodiscard]] inline constexpr bool allocation_allowed() noexcept {
+  return true;
+}
+
+class scoped_no_alloc {
+public:
+  scoped_no_alloc() noexcept = default;
+
+  scoped_no_alloc(const scoped_no_alloc &) = delete;
+  scoped_no_alloc &operator=(const scoped_no_alloc &) = delete;
+};
+#endif
+
 [[nodiscard]] inline void *
 mem_alloc(usize size, usize align = alignof(max_align_t)) noexcept {
+  assert(allocation_allowed() && "allocation inside a scoped_no_alloc");
 #if NX_USE_MIMALLOC
   return mi_aligned_alloc(align, size);
 #elif defined(NX_PLATFORM_WINDOWS)
@@ -370,6 +411,7 @@ mem_alloc(usize size, usize align = alignof(max_align_t)) noexcept {
 [[nodiscard]] inline void *
 mem_realloc(void *ptr, usize newsize,
             usize align = alignof(max_align_t)) noexcept {
+  assert(allocation_allowed() && "reallocation inside a scoped_no_alloc");
 #if NX_USE_MIMALLOC
   return mi_realloc_aligned(ptr, newsize, align);
 #elif defined(NX_PLATFORM_WINDOWS)
@@ -397,7 +439,11 @@ mem_realloc(void *ptr, usize newsize,
 #endif
 }
 
+// Freeing is guarded too: the allocator's free path is no more real-time than
+// its allocate path, and a deadline thread that frees is a deadline thread
+// that was handed ownership of something it should only have borrowed.
 inline void mem_free(void *ptr) noexcept {
+  assert(allocation_allowed() && "free inside a scoped_no_alloc");
 #if NX_USE_MIMALLOC
   mi_free(ptr);
 #elif defined(NX_PLATFORM_WINDOWS)

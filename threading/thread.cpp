@@ -43,7 +43,7 @@ void apply_start_options(const thread_start &s) noexcept {
   if (s.affinity_mask)
     this_thread::set_affinity(s.affinity_mask);
   if (s.priority != thread_priority::Normal)
-    this_thread::set_priority(s.priority);
+    (void)this_thread::set_priority(s.priority);
 }
 
 #if NX_PLATFORM_POSIX
@@ -342,7 +342,7 @@ bool set_affinity(const u64 mask) noexcept {
 #endif
 }
 
-bool set_priority(const thread_priority prio) noexcept {
+thread_priority set_priority(const thread_priority prio) noexcept {
 #if NX_HAS_WINDOWS_API
   int native = THREAD_PRIORITY_NORMAL;
   switch (prio) {
@@ -361,8 +361,17 @@ bool set_priority(const thread_priority prio) noexcept {
   case thread_priority::High:
     native = THREAD_PRIORITY_HIGHEST;
     break;
+  case thread_priority::Realtime:
+    // Base priority 15 inside a NORMAL_PRIORITY_CLASS process, not the 31 that
+    // REALTIME_PRIORITY_CLASS would give. Raising the class is a whole-process
+    // decision that can starve the input and audio stacks of the machine, so
+    // this is the ceiling a game gets to ask for on its own.
+    native = THREAD_PRIORITY_TIME_CRITICAL;
+    break;
   }
-  return SetThreadPriority(GetCurrentThread(), native) != 0;
+  return SetThreadPriority(GetCurrentThread(), native) != 0
+             ? prio
+             : thread_priority::Normal;
 #elif NX_PLATFORM_APPLE
   // Nice is per-process on Darwin, so setpriority() would slow the whole game
   // down. QoS is the supported per-thread knob, and it is what the scheduler
@@ -381,12 +390,34 @@ bool set_priority(const thread_priority prio) noexcept {
   case thread_priority::AboveNormal:
     qos = QOS_CLASS_USER_INITIATED;
     break;
+  // QoS stops at USER_INTERACTIVE. Real time on Darwin is
+  // thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY), which needs the caller's
+  // period and worst-case compute time - facts a priority enum does not carry.
+  // Until something needs a deadline badly enough to pass them, Realtime lands
+  // on the same class as High and says so.
   case thread_priority::High:
+  case thread_priority::Realtime:
     qos = QOS_CLASS_USER_INTERACTIVE;
     break;
   }
-  return pthread_set_qos_class_self_np(qos, 0) == 0;
+  if (pthread_set_qos_class_self_np(qos, 0) != 0)
+    return thread_priority::Normal;
+  return prio == thread_priority::Realtime ? thread_priority::High : prio;
 #elif NX_PLATFORM_POSIX
+  if (prio == thread_priority::Realtime) {
+    const int lo = sched_get_priority_min(SCHED_FIFO);
+    const int hi = sched_get_priority_max(SCHED_FIFO);
+    sched_param param{};
+    // Low in the real-time band deliberately: above every ordinary thread on
+    // the machine, below the kernel threads that keep it answering interrupts.
+    param.sched_priority = nx::min(lo + 5, hi);
+    // Needs CAP_SYS_NICE, which a game launched from a desktop session does
+    // not have. Falling through to the nice path is the whole reason this
+    // function reports what it managed rather than returning a bool.
+    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) == 0)
+      return thread_priority::Realtime;
+  }
+
   // Nice values apply per-thread on Linux. Raising priority (negative nice)
   // requires CAP_SYS_NICE and may fail; treat that as best-effort.
   int nice_value = 0;
@@ -404,11 +435,14 @@ bool set_priority(const thread_priority prio) noexcept {
     nice_value = -5;
     break;
   case thread_priority::High:
+  case thread_priority::Realtime:
     nice_value = -10;
     break;
   }
-  return setpriority(PRIO_PROCESS, nx::cast<id_t>(syscall(SYS_gettid)),
-                     nice_value) == 0;
+  if (setpriority(PRIO_PROCESS, nx::cast<id_t>(syscall(SYS_gettid)),
+                  nice_value) != 0)
+    return thread_priority::Normal;
+  return prio == thread_priority::Realtime ? thread_priority::High : prio;
 #endif
 }
 
