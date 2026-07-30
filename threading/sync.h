@@ -91,21 +91,21 @@ public:
 
   void lock() noexcept {
     for (;;) {
-      if (!locked_.exchange(1, std::memory_order_acquire))
+      if (!m_locked.exchange(1, std::memory_order_acquire))
         return;
-      while (locked_.load(std::memory_order_relaxed))
+      while (m_locked.load(std::memory_order_relaxed))
         detail::cpu_relax();
     }
   }
 
   [[nodiscard]] bool try_lock() noexcept {
-    return !locked_.exchange(1, std::memory_order_acquire);
+    return !m_locked.exchange(1, std::memory_order_acquire);
   }
 
-  void unlock() noexcept { locked_.store(0, std::memory_order_release); }
+  void unlock() noexcept { m_locked.store(0, std::memory_order_release); }
 
 private:
-  std::atomic<u32> locked_{0};
+  std::atomic<u32> m_locked{0};
 };
 
 /**
@@ -247,20 +247,20 @@ public:
   cond_var &operator=(const cond_var &) = delete;
 
   void notify_one() noexcept {
-    seq_.fetch_add(1, std::memory_order_release);
-    futex::wake(&seq_, 1);
+    m_seq.fetch_add(1, std::memory_order_release);
+    futex::wake(&m_seq, 1);
   }
 
   void notify_all() noexcept {
-    seq_.fetch_add(1, std::memory_order_release);
-    futex::wake_all(&seq_);
+    m_seq.fetch_add(1, std::memory_order_release);
+    futex::wake_all(&m_seq);
   }
 
   /// Atomically releases @p m and sleeps; re-acquires @p m before returning.
   void wait(mutex &m) noexcept {
-    const u32 seq = seq_.load(std::memory_order_acquire);
+    const u32 seq = m_seq.load(std::memory_order_acquire);
     m.unlock();
-    futex::wait(&seq_, seq, detail::WAIT_FOREVER);
+    futex::wait(&m_seq, seq, detail::WAIT_FOREVER);
     m.lock();
   }
 
@@ -274,9 +274,9 @@ public:
   bool wait_for(mutex &m, std::chrono::duration<Rep, Period> timeout) noexcept {
     if (timeout <= timeout.zero())
       return false;
-    const u32 seq = seq_.load(std::memory_order_acquire);
+    const u32 seq = m_seq.load(std::memory_order_acquire);
     m.unlock();
-    const futex::Result r = futex::wait(&seq_, seq, detail::to_ns(timeout));
+    const futex::Result r = futex::wait(&m_seq, seq, detail::to_ns(timeout));
     m.lock();
     return r != futex::Result::TimedOut;
   }
@@ -287,19 +287,19 @@ public:
                 Pred pred) noexcept {
     const auto deadline = detail::sync_clock::now() + detail::to_ns(timeout);
     while (!pred()) {
-      const u32 seq = seq_.load(std::memory_order_acquire);
+      const u32 seq = m_seq.load(std::memory_order_acquire);
       const auto now = detail::sync_clock::now();
       if (now >= deadline)
         return pred();
       m.unlock();
-      futex::wait(&seq_, seq, detail::to_ns(deadline - now));
+      futex::wait(&m_seq, seq, detail::to_ns(deadline - now));
       m.lock();
     }
     return true;
   }
 
 private:
-  std::atomic<u32> seq_{0};
+  std::atomic<u32> m_seq{0};
 };
 
 /**
@@ -323,19 +323,19 @@ public:
         detail::cpu_relax();
         continue;
       }
-      const u32 gate = reader_gate_.load(std::memory_order_acquire);
+      const u32 gate = m_reader_gate.load(std::memory_order_acquire);
       // Re-check after reading the gate: a release between the check and
       // the wait bumps the gate, so the wait below returns immediately.
-      if (waiting_writers_.load(std::memory_order_relaxed) == 0 &&
+      if (m_waiting_writers.load(std::memory_order_relaxed) == 0 &&
           !(m_state.load(std::memory_order_relaxed) & WRITER))
         continue;
-      futex::wait(&reader_gate_, gate, detail::WAIT_FOREVER);
+      futex::wait(&m_reader_gate, gate, detail::WAIT_FOREVER);
       spin = 0;
     }
   }
 
   [[nodiscard]] bool try_lock_shared() noexcept {
-    if (waiting_writers_.load(std::memory_order_relaxed) != 0)
+    if (m_waiting_writers.load(std::memory_order_relaxed) != 0)
       return false;
     u32 s = m_state.load(std::memory_order_relaxed);
     while (!(s & WRITER)) {
@@ -347,18 +347,18 @@ public:
   }
 
   void unlock_shared() noexcept {
-    // seq_cst pairs with the seq_cst waiting_writers_ increment in lock():
+    // seq_cst pairs with the seq_cst m_waiting_writers increment in lock():
     // either we observe the waiting writer here, or it observes our
     // decrement before sleeping. Anything weaker can lose the wake.
     const u32 prev = m_state.fetch_sub(1, std::memory_order_seq_cst);
-    if (prev == 1 && waiting_writers_.load(std::memory_order_seq_cst) != 0) {
-      writer_gate_.fetch_add(1, std::memory_order_release);
-      futex::wake(&writer_gate_, 1);
+    if (prev == 1 && m_waiting_writers.load(std::memory_order_seq_cst) != 0) {
+      m_writer_gate.fetch_add(1, std::memory_order_release);
+      futex::wake(&m_writer_gate, 1);
     }
   }
 
   void lock() noexcept {
-    waiting_writers_.fetch_add(1, std::memory_order_seq_cst);
+    m_waiting_writers.fetch_add(1, std::memory_order_seq_cst);
     for (i32 spin = 0;;) {
       u32 expected = 0;
       if (m_state.compare_exchange_weak(expected, WRITER,
@@ -369,13 +369,13 @@ public:
         detail::cpu_relax();
         continue;
       }
-      const u32 gate = writer_gate_.load(std::memory_order_acquire);
+      const u32 gate = m_writer_gate.load(std::memory_order_acquire);
       if (m_state.load(std::memory_order_seq_cst) == 0)
         continue;
-      futex::wait(&writer_gate_, gate, detail::WAIT_FOREVER);
+      futex::wait(&m_writer_gate, gate, detail::WAIT_FOREVER);
       spin = 0;
     }
-    waiting_writers_.fetch_sub(1, std::memory_order_relaxed);
+    m_waiting_writers.fetch_sub(1, std::memory_order_relaxed);
   }
 
   [[nodiscard]] bool try_lock() noexcept {
@@ -386,12 +386,12 @@ public:
 
   void unlock() noexcept {
     m_state.store(0, std::memory_order_seq_cst);
-    if (waiting_writers_.load(std::memory_order_seq_cst) != 0) {
-      writer_gate_.fetch_add(1, std::memory_order_release);
-      futex::wake(&writer_gate_, 1);
+    if (m_waiting_writers.load(std::memory_order_seq_cst) != 0) {
+      m_writer_gate.fetch_add(1, std::memory_order_release);
+      futex::wake(&m_writer_gate, 1);
     } else {
-      reader_gate_.fetch_add(1, std::memory_order_release);
-      futex::wake_all(&reader_gate_);
+      m_reader_gate.fetch_add(1, std::memory_order_release);
+      futex::wake_all(&m_reader_gate);
     }
   }
 
@@ -399,9 +399,9 @@ private:
   static constexpr u32 WRITER = 1u << 31;
 
   std::atomic<u32> m_state{0}; // WRITER bit | reader count
-  std::atomic<u32> reader_gate_{0};
-  std::atomic<u32> writer_gate_{0};
-  std::atomic<u32> waiting_writers_{0};
+  std::atomic<u32> m_reader_gate{0};
+  std::atomic<u32> m_writer_gate{0};
+  std::atomic<u32> m_waiting_writers{0};
 };
 
 /**
@@ -560,21 +560,21 @@ public:
   barrier &operator=(const barrier &) = delete;
 
   void arrive_and_wait() noexcept {
-    const u32 gen = generation_.load(std::memory_order_acquire);
-    if (arrived_.fetch_add(1, std::memory_order_acq_rel) + 1 == m_threshold) {
-      arrived_.store(0, std::memory_order_relaxed);
-      generation_.fetch_add(1, std::memory_order_release);
-      futex::wake_all(&generation_);
+    const u32 gen = m_generation.load(std::memory_order_acquire);
+    if (m_arrived.fetch_add(1, std::memory_order_acq_rel) + 1 == m_threshold) {
+      m_arrived.store(0, std::memory_order_relaxed);
+      m_generation.fetch_add(1, std::memory_order_release);
+      futex::wake_all(&m_generation);
       return;
     }
-    while (generation_.load(std::memory_order_acquire) == gen)
-      futex::wait(&generation_, gen, detail::WAIT_FOREVER);
+    while (m_generation.load(std::memory_order_acquire) == gen)
+      futex::wait(&m_generation, gen, detail::WAIT_FOREVER);
   }
 
 private:
   const u32 m_threshold;
-  std::atomic<u32> arrived_{0};
-  std::atomic<u32> generation_{0};
+  std::atomic<u32> m_arrived{0};
+  std::atomic<u32> m_generation{0};
 };
 
 /**
@@ -616,13 +616,13 @@ void call_once(once_flag &flag, F &&fn, Args &&...args) {
  */
 template <typename Mutex> class scoped_lock {
 public:
-  explicit scoped_lock(Mutex &m) noexcept : m_(m) { m_.lock(); }
-  ~scoped_lock() { m_.unlock(); }
+  explicit scoped_lock(Mutex &m) noexcept : m_mutex(m) { m_mutex.lock(); }
+  ~scoped_lock() { m_mutex.unlock(); }
   scoped_lock(const scoped_lock &) = delete;
   scoped_lock &operator=(const scoped_lock &) = delete;
 
 private:
-  Mutex &m_;
+  Mutex &m_mutex;
 };
 
 /**
@@ -630,13 +630,15 @@ private:
  */
 template <typename Mutex> class scoped_shared_lock {
 public:
-  explicit scoped_shared_lock(Mutex &m) noexcept : m_(m) { m_.lock_shared(); }
-  ~scoped_shared_lock() { m_.unlock_shared(); }
+  explicit scoped_shared_lock(Mutex &m) noexcept : m_mutex(m) {
+    m_mutex.lock_shared();
+  }
+  ~scoped_shared_lock() { m_mutex.unlock_shared(); }
   scoped_shared_lock(const scoped_shared_lock &) = delete;
   scoped_shared_lock &operator=(const scoped_shared_lock &) = delete;
 
 private:
-  Mutex &m_;
+  Mutex &m_mutex;
 };
 
 } // namespace nx

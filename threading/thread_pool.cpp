@@ -63,9 +63,9 @@ thread_pool::thread_pool(const config &cfg) {
 thread_pool::~thread_pool() {
   wait_idle();
 
-  stop_.store(true, std::memory_order_release);
-  signal_.fetch_add(1, std::memory_order_seq_cst);
-  futex::wake_all(&signal_);
+  m_stop.store(true, std::memory_order_release);
+  m_signal.fetch_add(1, std::memory_order_seq_cst);
+  futex::wake_all(&m_signal);
 
   for (worker *w : m_workers)
     if (w->th.joinable())
@@ -87,7 +87,7 @@ void thread_pool::submit(task_group &group, function<void()> fn) {
 }
 
 void thread_pool::enqueue(detail::pool_task &&t) {
-  unfinished_.fetch_add(1, std::memory_order_relaxed);
+  m_unfinished.fetch_add(1, std::memory_order_relaxed);
   if (t.group)
     t.group->m_pending.fetch_add(1, std::memory_order_relaxed);
 
@@ -98,15 +98,15 @@ void thread_pool::enqueue(detail::pool_task &&t) {
       !m_shared_queue.try_push(std::move(t))) {
     scoped_lock lock(m_overflow_mutex);
     m_overflow.push_back(std::move(t));
-    overflow_count_.fetch_add(1, std::memory_order_release);
+    m_overflow_count.fetch_add(1, std::memory_order_release);
   }
 
-  // The bump is unconditional; a worker that read signal_ before it will
+  // The bump is unconditional; a worker that read m_signal before it will
   // see the mismatch when it tries to sleep. seq_cst pairs with the
   // sleeper registration in worker_loop.
-  signal_.fetch_add(1, std::memory_order_seq_cst);
-  if (sleepers_.load(std::memory_order_seq_cst) > 0)
-    futex::wake(&signal_, 1);
+  m_signal.fetch_add(1, std::memory_order_seq_cst);
+  if (m_sleepers.load(std::memory_order_seq_cst) > 0)
+    futex::wake(&m_signal, 1);
 }
 
 bool thread_pool::try_get_task(detail::pool_task &out,
@@ -119,7 +119,7 @@ bool thread_pool::try_get_task(detail::pool_task &out,
 
   const u32 n = nx::cast<u32>(m_workers.size());
   if (n != 0) {
-    const u32 start = steal_seed_.fetch_add(1, std::memory_order_relaxed);
+    const u32 start = m_steal_seed.fetch_add(1, std::memory_order_relaxed);
     for (u32 i = 0; i < n; ++i) {
       const u32 victim = (start + i) % n;
       if (victim == self_index)
@@ -129,11 +129,11 @@ bool thread_pool::try_get_task(detail::pool_task &out,
     }
   }
 
-  if (overflow_count_.load(std::memory_order_acquire) > 0) {
+  if (m_overflow_count.load(std::memory_order_acquire) > 0) {
     scoped_lock lock(m_overflow_mutex);
     if (m_overflow_head < m_overflow.size()) {
       out = std::move(m_overflow[m_overflow_head++]);
-      overflow_count_.fetch_sub(1, std::memory_order_relaxed);
+      m_overflow_count.fetch_sub(1, std::memory_order_relaxed);
       if (m_overflow_head == m_overflow.size()) {
         m_overflow.clear();
         m_overflow_head = 0;
@@ -158,8 +158,8 @@ void thread_pool::run_task(detail::pool_task &t) noexcept {
     if (group->m_pending.fetch_sub(1, std::memory_order_acq_rel) == 1)
       futex::wake_all(&group->m_pending);
   }
-  if (unfinished_.fetch_sub(1, std::memory_order_acq_rel) == 1)
-    futex::wake_all(&unfinished_);
+  if (m_unfinished.fetch_sub(1, std::memory_order_acq_rel) == 1)
+    futex::wake_all(&m_unfinished);
 }
 
 bool thread_pool::help_execute_one() noexcept {
@@ -178,20 +178,20 @@ void thread_pool::worker_loop(worker &w) noexcept {
 
   detail::pool_task t;
   for (;;) {
-    const u32 signal = signal_.load(std::memory_order_acquire);
+    const u32 signal = m_signal.load(std::memory_order_acquire);
     if (try_get_task(t, w.index)) {
       run_task(t);
       continue;
     }
-    if (stop_.load(std::memory_order_acquire))
+    if (m_stop.load(std::memory_order_acquire))
       break;
 
-    // signal_ was read before the queue check: any task pushed after the
-    // check also bumped signal_ afterwards, so the wait below returns
+    // m_signal was read before the queue check: any task pushed after the
+    // check also bumped m_signal afterwards, so the wait below returns
     // immediately instead of missing it.
-    sleepers_.fetch_add(1, std::memory_order_seq_cst);
-    futex::wait(&signal_, signal, detail::WAIT_FOREVER);
-    sleepers_.fetch_sub(1, std::memory_order_relaxed);
+    m_sleepers.fetch_add(1, std::memory_order_seq_cst);
+    futex::wait(&m_signal, signal, detail::WAIT_FOREVER);
+    m_sleepers.fetch_sub(1, std::memory_order_relaxed);
   }
 
   t_worker.pool = nullptr;
@@ -203,12 +203,12 @@ void thread_pool::wait_idle() noexcept {
          "wait_idle from inside a pool task can never finish; wait on a "
          "task_group instead");
   for (;;) {
-    const u32 unfinished = unfinished_.load(std::memory_order_acquire);
+    const u32 unfinished = m_unfinished.load(std::memory_order_acquire);
     if (unfinished == 0)
       return;
     if (help_execute_one())
       continue;
-    futex::wait(&unfinished_, unfinished, detail::WAIT_FOREVER);
+    futex::wait(&m_unfinished, unfinished, detail::WAIT_FOREVER);
   }
 }
 

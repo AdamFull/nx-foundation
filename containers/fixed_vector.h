@@ -350,12 +350,12 @@ public:
   }
 
 private:
-  alignas(T) std::byte storage_[N * sizeof(T)];
+  alignas(T) std::byte m_storage[N * sizeof(T)];
   usize m_size = 0;
 
-  T *ptr() noexcept { return reinterpret_cast<T *>(storage_); }
+  T *ptr() noexcept { return reinterpret_cast<T *>(m_storage); }
   const T *ptr() const noexcept {
-    return reinterpret_cast<const T *>(storage_);
+    return reinterpret_cast<const T *>(m_storage);
   }
 
   static void shift_right(T *pos, T *old_end, usize count) {

@@ -371,7 +371,7 @@ public:
 
   flat_hash_map(const flat_hash_map &o)
       : m_alloc(alloc_traits::select_on_container_copy_construction(o.m_alloc)),
-        hash_fn_(o.hash_fn_), eq_(o.eq_) {
+        m_hash_fn(o.m_hash_fn), m_eq(o.m_eq) {
     if (o.m_size == 0)
       return;
     reserve(o.m_size);
@@ -383,7 +383,7 @@ public:
   }
 
   flat_hash_map(const flat_hash_map &o, const Alloc &alloc)
-      : m_alloc(alloc), hash_fn_(o.hash_fn_), eq_(o.eq_) {
+      : m_alloc(alloc), m_hash_fn(o.m_hash_fn), m_eq(o.m_eq) {
     if (o.m_size == 0)
       return;
     reserve(o.m_size);
@@ -397,8 +397,8 @@ public:
   flat_hash_map(flat_hash_map &&o) noexcept
       : m_ctrl(o.m_ctrl), m_slots(o.m_slots), m_size(o.m_size),
         m_capacity(o.m_capacity), m_growth_left(o.m_growth_left),
-        m_alloc(std::move(o.m_alloc)), hash_fn_(std::move(o.hash_fn_)),
-        eq_(std::move(o.eq_)) {
+        m_alloc(std::move(o.m_alloc)), m_hash_fn(std::move(o.m_hash_fn)),
+        m_eq(std::move(o.m_eq)) {
     o.m_ctrl = empty_group();
     o.m_slots = nullptr;
     o.m_size = 0;
@@ -407,7 +407,8 @@ public:
   }
 
   flat_hash_map(flat_hash_map &&o, const Alloc &alloc)
-      : m_alloc(alloc), hash_fn_(std::move(o.hash_fn_)), eq_(std::move(o.eq_)) {
+      : m_alloc(alloc), m_hash_fn(std::move(o.m_hash_fn)),
+        m_eq(std::move(o.m_eq)) {
     if (m_alloc == o.m_alloc)
       steal_storage_from(o);
     else
@@ -438,17 +439,17 @@ public:
       destroy_and_free();
       m_alloc = std::move(o.m_alloc);
       steal_storage_from(o);
-      hash_fn_ = std::move(o.hash_fn_);
-      eq_ = std::move(o.eq_);
+      m_hash_fn = std::move(o.m_hash_fn);
+      m_eq = std::move(o.m_eq);
     } else if (m_alloc == o.m_alloc) {
       destroy_and_free();
       steal_storage_from(o);
-      hash_fn_ = std::move(o.hash_fn_);
-      eq_ = std::move(o.eq_);
+      m_hash_fn = std::move(o.m_hash_fn);
+      m_eq = std::move(o.m_eq);
     } else {
       destroy_and_free();
-      hash_fn_ = std::move(o.hash_fn_);
-      eq_ = std::move(o.eq_);
+      m_hash_fn = std::move(o.m_hash_fn);
+      m_eq = std::move(o.m_eq);
       move_elements_from(o);
     }
     return *this;
@@ -484,8 +485,8 @@ public:
                       : 0.0f;
   }
   [[nodiscard]] static f32 max_load_factor() noexcept { return 0.875f; }
-  hasher hash_function() const { return hash_fn_; }
-  key_equal key_eq() const { return eq_; }
+  hasher hash_function() const { return m_hash_fn; }
+  key_equal key_eq() const { return m_eq; }
   [[nodiscard]] allocator_type get_allocator() const noexcept {
     return m_alloc;
   }
@@ -682,8 +683,8 @@ public:
     swap(m_size, o.m_size);
     swap(m_capacity, o.m_capacity);
     swap(m_growth_left, o.m_growth_left);
-    swap(hash_fn_, o.hash_fn_);
-    swap(eq_, o.eq_);
+    swap(m_hash_fn, o.m_hash_fn);
+    swap(m_eq, o.m_eq);
   }
 
   friend bool operator==(const flat_hash_map &a, const flat_hash_map &b) {
@@ -739,7 +740,7 @@ private:
   };
 
   template <typename K> usize hash_key(const K &key) const {
-    const auto h = static_cast<usize>(hash_fn_(key));
+    const auto h = static_cast<usize>(m_hash_fn(key));
     if constexpr (sizeof(usize) == 8)
       return hash_u64(h);
     else
@@ -824,7 +825,7 @@ private:
       group g(m_ctrl + seq.offset());
       for (u32 i : g.match(tag)) {
         const usize idx = seq.offset(i);
-        if (NX_LIKELY(eq_(m_slots[idx].value.first, key)))
+        if (NX_LIKELY(m_eq(m_slots[idx].value.first, key)))
           return idx;
       }
       if (NX_LIKELY(static_cast<bool>(g.match_empty())))
@@ -871,7 +872,7 @@ private:
       group g(m_ctrl + seq.offset());
       for (u32 i : g.match(tag)) {
         const usize idx = seq.offset(i);
-        if (NX_LIKELY(eq_(m_slots[idx].value.first, key)))
+        if (NX_LIKELY(m_eq(m_slots[idx].value.first, key)))
           return {idx, false};
       }
       if (NX_LIKELY(static_cast<bool>(g.match_empty())))
@@ -1014,8 +1015,8 @@ private:
   usize m_capacity = 0;
   usize m_growth_left = 0;
   NX_NO_UNIQUE_ADDRESS Alloc m_alloc{};
-  NX_NO_UNIQUE_ADDRESS Hash hash_fn_{};
-  NX_NO_UNIQUE_ADDRESS KeyEqual eq_{};
+  NX_NO_UNIQUE_ADDRESS Hash m_hash_fn{};
+  NX_NO_UNIQUE_ADDRESS KeyEqual m_eq{};
 };
 
 /// Default open-addressing hash map alias; see nx::flat_hash_map.

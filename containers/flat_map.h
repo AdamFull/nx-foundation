@@ -118,10 +118,10 @@ public:
         std::conditional_t<Const, typename MappedContainer::const_iterator,
                            typename MappedContainer::iterator>;
 
-    key_it ki_{};
-    mapped_it mi_{};
+    key_it m_ki{};
+    mapped_it m_mi{};
 
-    iter_t(key_it k, mapped_it m) noexcept : ki_(k), mi_(m) {}
+    iter_t(key_it k, mapped_it m) noexcept : m_ki(k), m_mi(m) {}
 
   public:
     using iterator_category = std::random_access_iterator_tag;
@@ -135,19 +135,21 @@ public:
     iter_t() = default;
 
     template <bool C = Const, std::enable_if_t<C, i32> = 0>
-    iter_t(const iter_t<false> &o) noexcept : ki_(o.ki_), mi_(o.mi_) {}
+    iter_t(const iter_t<false> &o) noexcept : m_ki(o.m_ki), m_mi(o.m_mi) {}
 
-    [[nodiscard]] reference operator*() const { return reference{*ki_, *mi_}; }
+    [[nodiscard]] reference operator*() const {
+      return reference{*m_ki, *m_mi};
+    }
     [[nodiscard]] pointer operator->() const {
-      return pointer{reference{*ki_, *mi_}};
+      return pointer{reference{*m_ki, *m_mi}};
     }
     [[nodiscard]] reference operator[](difference_type n) const {
-      return reference{ki_[n], mi_[n]};
+      return reference{m_ki[n], m_mi[n]};
     }
 
     iter_t &operator++() noexcept {
-      ++ki_;
-      ++mi_;
+      ++m_ki;
+      ++m_mi;
       return *this;
     }
     iter_t operator++(i32) noexcept {
@@ -156,8 +158,8 @@ public:
       return tmp;
     }
     iter_t &operator--() noexcept {
-      --ki_;
-      --mi_;
+      --m_ki;
+      --m_mi;
       return *this;
     }
     iter_t operator--(i32) noexcept {
@@ -166,13 +168,13 @@ public:
       return tmp;
     }
     iter_t &operator+=(difference_type n) noexcept {
-      ki_ += n;
-      mi_ += n;
+      m_ki += n;
+      m_mi += n;
       return *this;
     }
     iter_t &operator-=(difference_type n) noexcept {
-      ki_ -= n;
-      mi_ -= n;
+      m_ki -= n;
+      m_mi -= n;
       return *this;
     }
 
@@ -193,16 +195,16 @@ public:
     }
     [[nodiscard]] friend difference_type operator-(const iter_t &a,
                                                    const iter_t &b) noexcept {
-      return a.ki_ - b.ki_;
+      return a.m_ki - b.m_ki;
     }
 
     [[nodiscard]] friend bool operator==(const iter_t &a,
                                          const iter_t &b) noexcept {
-      return a.ki_ == b.ki_;
+      return a.m_ki == b.m_ki;
     }
     [[nodiscard]] friend std::strong_ordering
     operator<=>(const iter_t &a, const iter_t &b) noexcept {
-      return (a.ki_ - b.ki_) <=> difference_type{0};
+      return (a.m_ki - b.m_ki) <=> difference_type{0};
     }
   };
 
@@ -217,16 +219,16 @@ public:
 
   flat_map(key_container_type keys, mapped_container_type values,
            const key_compare &comp = key_compare())
-      : c_{std::move(keys), std::move(values)}, m_comp(comp) {
-    assert(c_.keys.size() == c_.values.size());
+      : m_c{std::move(keys), std::move(values)}, m_comp(comp) {
+    assert(m_c.keys.size() == m_c.values.size());
     sort_and_unique();
   }
 
   flat_map(sorted_unique_t, key_container_type keys,
            mapped_container_type values,
            const key_compare &comp = key_compare())
-      : c_{std::move(keys), std::move(values)}, m_comp(comp) {
-    assert(c_.keys.size() == c_.values.size());
+      : m_c{std::move(keys), std::move(values)}, m_comp(comp) {
+    assert(m_c.keys.size() == m_c.values.size());
     assert(is_sorted_unique());
   }
 
@@ -257,28 +259,28 @@ public:
 
   template <typename Alloc2, std::enable_if_t<uses_alloc_v<Alloc2>, i32> = 0>
   explicit flat_map(const Alloc2 &a)
-      : c_{std::make_obj_using_allocator<key_container_type>(a),
-           std::make_obj_using_allocator<mapped_container_type>(a)} {}
+      : m_c{std::make_obj_using_allocator<key_container_type>(a),
+            std::make_obj_using_allocator<mapped_container_type>(a)} {}
 
   template <typename Alloc2, std::enable_if_t<uses_alloc_v<Alloc2>, i32> = 0>
   flat_map(const key_compare &comp, const Alloc2 &a)
-      : c_{std::make_obj_using_allocator<key_container_type>(a),
-           std::make_obj_using_allocator<mapped_container_type>(a)},
+      : m_c{std::make_obj_using_allocator<key_container_type>(a),
+            std::make_obj_using_allocator<mapped_container_type>(a)},
         m_comp(comp) {}
 
   template <typename Alloc2, std::enable_if_t<uses_alloc_v<Alloc2>, i32> = 0>
   flat_map(const flat_map &o, const Alloc2 &a)
-      : c_{std::make_obj_using_allocator<key_container_type>(a, o.c_.keys),
-           std::make_obj_using_allocator<mapped_container_type>(a,
-                                                                o.c_.values)},
+      : m_c{std::make_obj_using_allocator<key_container_type>(a, o.m_c.keys),
+            std::make_obj_using_allocator<mapped_container_type>(a,
+                                                                 o.m_c.values)},
         m_comp(o.m_comp) {}
 
   template <typename Alloc2, std::enable_if_t<uses_alloc_v<Alloc2>, i32> = 0>
   flat_map(flat_map &&o, const Alloc2 &a)
-      : c_{std::make_obj_using_allocator<key_container_type>(
-               a, std::move(o.c_.keys)),
-           std::make_obj_using_allocator<mapped_container_type>(
-               a, std::move(o.c_.values))},
+      : m_c{std::make_obj_using_allocator<key_container_type>(
+                a, std::move(o.m_c.keys)),
+            std::make_obj_using_allocator<mapped_container_type>(
+                a, std::move(o.m_c.values))},
         m_comp(std::move(o.m_comp)) {}
 
   flat_map(const flat_map &) = default;
@@ -293,17 +295,17 @@ public:
   }
 
   [[nodiscard]] iterator begin() noexcept {
-    return iterator{c_.keys.begin(), c_.values.begin()};
+    return iterator{m_c.keys.begin(), m_c.values.begin()};
   }
   [[nodiscard]] const_iterator begin() const noexcept {
-    return const_iterator{c_.keys.begin(), c_.values.begin()};
+    return const_iterator{m_c.keys.begin(), m_c.values.begin()};
   }
   [[nodiscard]] const_iterator cbegin() const noexcept { return begin(); }
   [[nodiscard]] iterator end() noexcept {
-    return iterator{c_.keys.end(), c_.values.end()};
+    return iterator{m_c.keys.end(), m_c.values.end()};
   }
   [[nodiscard]] const_iterator end() const noexcept {
-    return const_iterator{c_.keys.end(), c_.values.end()};
+    return const_iterator{m_c.keys.end(), m_c.values.end()};
   }
   [[nodiscard]] const_iterator cend() const noexcept { return end(); }
   [[nodiscard]] reverse_iterator rbegin() noexcept {
@@ -325,27 +327,27 @@ public:
     return const_reverse_iterator{cbegin()};
   }
 
-  [[nodiscard]] bool empty() const noexcept { return c_.keys.empty(); }
-  [[nodiscard]] size_type size() const noexcept { return c_.keys.size(); }
+  [[nodiscard]] bool empty() const noexcept { return m_c.keys.empty(); }
+  [[nodiscard]] size_type size() const noexcept { return m_c.keys.size(); }
   [[nodiscard]] size_type max_size() const noexcept {
-    return min<size_type>(c_.keys.max_size(), c_.values.max_size());
+    return min<size_type>(m_c.keys.max_size(), m_c.values.max_size());
   }
   [[nodiscard]] size_type capacity() const noexcept {
-    return min<size_type>(c_.keys.capacity(), c_.values.capacity());
+    return min<size_type>(m_c.keys.capacity(), m_c.values.capacity());
   }
 
   void reserve(size_type n) {
-    c_.keys.reserve(n);
-    c_.values.reserve(n);
+    m_c.keys.reserve(n);
+    m_c.values.reserve(n);
   }
   void shrink_to_fit() {
-    c_.keys.shrink_to_fit();
-    c_.values.shrink_to_fit();
+    m_c.keys.shrink_to_fit();
+    m_c.values.shrink_to_fit();
   }
 
   void clear() noexcept {
-    c_.keys.clear();
-    c_.values.clear();
+    m_c.keys.clear();
+    m_c.values.clear();
   }
 
   [[nodiscard]] T &operator[](const Key &k) {
@@ -359,26 +361,26 @@ public:
     const size_type i = find_index(k);
     if (i == size())
       throw std::out_of_range("flat_map::at");
-    return c_.values[i];
+    return m_c.values[i];
   }
   [[nodiscard]] const T &at(const Key &k) const {
     const size_type i = find_index(k);
     if (i == size())
       throw std::out_of_range("flat_map::at");
-    return c_.values[i];
+    return m_c.values[i];
   }
 
   template <typename... Args>
   std::pair<iterator, bool> try_emplace(const Key &k, Args &&...args) {
     const size_type i = lower_bound_index(k);
-    if (i < size() && key_equiv(k, c_.keys[i]))
+    if (i < size() && key_equiv(k, m_c.keys[i]))
       return {iterator_at(i), false};
     return {insert_at(i, k, std::forward<Args>(args)...), true};
   }
   template <typename... Args>
   std::pair<iterator, bool> try_emplace(Key &&k, Args &&...args) {
     const size_type i = lower_bound_index(k);
-    if (i < size() && key_equiv(k, c_.keys[i]))
+    if (i < size() && key_equiv(k, m_c.keys[i]))
       return {iterator_at(i), false};
     return {insert_at(i, std::move(k), std::forward<Args>(args)...), true};
   }
@@ -394,8 +396,8 @@ public:
   template <typename M>
   std::pair<iterator, bool> insert_or_assign(const Key &k, M &&obj) {
     const size_type i = lower_bound_index(k);
-    if (i < size() && key_equiv(k, c_.keys[i])) {
-      c_.values[i] = std::forward<M>(obj);
+    if (i < size() && key_equiv(k, m_c.keys[i])) {
+      m_c.values[i] = std::forward<M>(obj);
       return {iterator_at(i), false};
     }
     return {insert_at(i, k, std::forward<M>(obj)), true};
@@ -403,8 +405,8 @@ public:
   template <typename M>
   std::pair<iterator, bool> insert_or_assign(Key &&k, M &&obj) {
     const size_type i = lower_bound_index(k);
-    if (i < size() && key_equiv(k, c_.keys[i])) {
-      c_.values[i] = std::forward<M>(obj);
+    if (i < size() && key_equiv(k, m_c.keys[i])) {
+      m_c.values[i] = std::forward<M>(obj);
       return {iterator_at(i), false};
     }
     return {insert_at(i, std::move(k), std::forward<M>(obj)), true};
@@ -555,8 +557,8 @@ public:
 
   iterator erase(const_iterator pos) {
     const size_type i = index_of(pos);
-    c_.keys.erase(c_.keys.begin() + i);
-    c_.values.erase(c_.values.begin() + i);
+    m_c.keys.erase(m_c.keys.begin() + i);
+    m_c.values.erase(m_c.values.begin() + i);
     return iterator_at(i);
   }
   iterator erase(iterator pos) { return erase(const_iterator(pos)); }
@@ -564,8 +566,8 @@ public:
   iterator erase(const_iterator first, const_iterator last) {
     const size_type i = index_of(first);
     const size_type j = index_of(last);
-    c_.keys.erase(c_.keys.begin() + i, c_.keys.begin() + j);
-    c_.values.erase(c_.values.begin() + i, c_.values.begin() + j);
+    m_c.keys.erase(m_c.keys.begin() + i, m_c.keys.begin() + j);
+    m_c.values.erase(m_c.values.begin() + i, m_c.values.begin() + j);
     return iterator_at(i);
   }
 
@@ -573,8 +575,8 @@ public:
     const size_type i = find_index(k);
     if (i == size())
       return 0;
-    c_.keys.erase(c_.keys.begin() + i);
-    c_.values.erase(c_.values.begin() + i);
+    m_c.keys.erase(m_c.keys.begin() + i);
+    m_c.values.erase(m_c.values.begin() + i);
     return 1;
   }
   template <typename K, bool E = kTransparent,
@@ -585,30 +587,30 @@ public:
     const size_type i = find_index(k);
     if (i == size())
       return 0;
-    c_.keys.erase(c_.keys.begin() + i);
-    c_.values.erase(c_.values.begin() + i);
+    m_c.keys.erase(m_c.keys.begin() + i);
+    m_c.values.erase(m_c.values.begin() + i);
     return 1;
   }
 
   [[nodiscard]] containers extract() && {
-    containers out = std::move(c_);
-    c_.keys.clear();
-    c_.values.clear();
+    containers out = std::move(m_c);
+    m_c.keys.clear();
+    m_c.values.clear();
     return out;
   }
 
   void replace(key_container_type &&keys, mapped_container_type &&values) {
     assert(keys.size() == values.size());
-    c_.keys = std::move(keys);
-    c_.values = std::move(values);
+    m_c.keys = std::move(keys);
+    m_c.values = std::move(values);
     assert(is_sorted_unique());
   }
 
   [[nodiscard]] const key_container_type &keys() const noexcept {
-    return c_.keys;
+    return m_c.keys;
   }
   [[nodiscard]] const mapped_container_type &values() const noexcept {
-    return c_.values;
+    return m_c.values;
   }
 
   [[nodiscard]] key_compare key_comp() const { return m_comp; }
@@ -621,8 +623,8 @@ public:
       std::is_nothrow_swappable_v<mapped_container_type> &&
       std::is_nothrow_swappable_v<key_compare>) {
     using std::swap;
-    swap(c_.keys, o.c_.keys);
-    swap(c_.values, o.c_.values);
+    swap(m_c.keys, o.m_c.keys);
+    swap(m_c.values, o.m_c.values);
     swap(m_comp, o.m_comp);
   }
 
@@ -631,10 +633,11 @@ public:
   }
 
   [[nodiscard]] friend bool operator==(const flat_map &a, const flat_map &b) {
-    return a.c_.keys.size() == b.c_.keys.size() &&
-           std::equal(a.c_.keys.begin(), a.c_.keys.end(), b.c_.keys.begin()) &&
-           std::equal(a.c_.values.begin(), a.c_.values.end(),
-                      b.c_.values.begin());
+    return a.m_c.keys.size() == b.m_c.keys.size() &&
+           std::equal(a.m_c.keys.begin(), a.m_c.keys.end(),
+                      b.m_c.keys.begin()) &&
+           std::equal(a.m_c.values.begin(), a.m_c.values.end(),
+                      b.m_c.values.begin());
   }
 
   [[nodiscard]] friend auto operator<=>(const flat_map &a, const flat_map &b)
@@ -642,9 +645,9 @@ public:
   {
     const size_type n = min(a.size(), b.size());
     for (size_type i = 0; i < n; ++i) {
-      if (auto c = a.c_.keys[i] <=> b.c_.keys[i]; c != 0)
+      if (auto c = a.m_c.keys[i] <=> b.m_c.keys[i]; c != 0)
         return c;
-      if (auto c = a.c_.values[i] <=> b.c_.values[i]; c != 0)
+      if (auto c = a.m_c.values[i] <=> b.m_c.values[i]; c != 0)
         return c;
     }
     return a.size() <=> b.size();
@@ -662,27 +665,27 @@ private:
   };
 
   [[nodiscard]] iterator iterator_at(size_type i) noexcept {
-    return iterator{c_.keys.begin() + i, c_.values.begin() + i};
+    return iterator{m_c.keys.begin() + i, m_c.values.begin() + i};
   }
   [[nodiscard]] const_iterator iterator_at(size_type i) const noexcept {
-    return const_iterator{c_.keys.begin() + i, c_.values.begin() + i};
+    return const_iterator{m_c.keys.begin() + i, m_c.values.begin() + i};
   }
 
   [[nodiscard]] size_type index_of(const_iterator it) const noexcept {
-    return static_cast<size_type>(it.ki_ - c_.keys.cbegin());
+    return static_cast<size_type>(it.m_ki - m_c.keys.cbegin());
   }
 
   template <typename K>
   [[nodiscard]] size_type lower_bound_index(const K &k) const {
     return static_cast<size_type>(
-        std::lower_bound(c_.keys.begin(), c_.keys.end(), k, m_comp) -
-        c_.keys.begin());
+        std::lower_bound(m_c.keys.begin(), m_c.keys.end(), k, m_comp) -
+        m_c.keys.begin());
   }
   template <typename K>
   [[nodiscard]] size_type upper_bound_index(const K &k) const {
     return static_cast<size_type>(
-        std::upper_bound(c_.keys.begin(), c_.keys.end(), k, m_comp) -
-        c_.keys.begin());
+        std::upper_bound(m_c.keys.begin(), m_c.keys.end(), k, m_comp) -
+        m_c.keys.begin());
   }
 
   template <typename K1, typename K2>
@@ -692,7 +695,7 @@ private:
 
   template <typename K> [[nodiscard]] size_type find_index(const K &k) const {
     const size_type i = lower_bound_index(k);
-    if (i < size() && !m_comp(k, c_.keys[i]))
+    if (i < size() && !m_comp(k, m_c.keys[i]))
       return i;
     return size();
   }
@@ -701,35 +704,35 @@ private:
   static auto equal_range_impl(Self &self, const K &k) {
     const size_type lo = self.lower_bound_index(k);
     const size_type hi =
-        (lo < self.size() && !self.m_comp(k, self.c_.keys[lo])) ? lo + 1 : lo;
+        (lo < self.size() && !self.m_comp(k, self.m_c.keys[lo])) ? lo + 1 : lo;
     return std::pair{self.iterator_at(lo), self.iterator_at(hi)};
   }
 
   template <typename KArg, typename... MArgs>
   iterator insert_at(size_type i, KArg &&key, MArgs &&...margs) {
-    c_.keys.insert(c_.keys.begin() + i, std::forward<KArg>(key));
+    m_c.keys.insert(m_c.keys.begin() + i, std::forward<KArg>(key));
     try {
-      c_.values.emplace(c_.values.begin() + i, std::forward<MArgs>(margs)...);
+      m_c.values.emplace(m_c.values.begin() + i, std::forward<MArgs>(margs)...);
     } catch (...) {
-      c_.keys.erase(c_.keys.begin() + i);
+      m_c.keys.erase(m_c.keys.begin() + i);
       throw;
     }
     return iterator_at(i);
   }
 
   template <typename KK, typename VV> void push_back_pair(KK &&k, VV &&v) {
-    c_.keys.push_back(std::forward<KK>(k));
+    m_c.keys.push_back(std::forward<KK>(k));
     try {
-      c_.values.push_back(std::forward<VV>(v));
+      m_c.values.push_back(std::forward<VV>(v));
     } catch (...) {
-      c_.keys.pop_back();
+      m_c.keys.pop_back();
       throw;
     }
   }
 
   [[nodiscard]] bool is_sorted_unique() const {
     for (size_type i = 1; i < size(); ++i)
-      if (!m_comp(c_.keys[i - 1], c_.keys[i]))
+      if (!m_comp(m_c.keys[i - 1], m_c.keys[i]))
         return false;
     return true;
   }
@@ -751,13 +754,13 @@ private:
       order[i] = i;
     std::stable_sort(order.begin(), order.end(),
                      [this](size_type a, size_type b) {
-                       return m_comp(c_.keys[a], c_.keys[b]);
+                       return m_comp(m_c.keys[a], m_c.keys[b]);
                      });
 
     vector<size_type> kept;
     kept.reserve(n);
     for (size_type p = 0; p < n; ++p) {
-      if (p == 0 || m_comp(c_.keys[order[p - 1]], c_.keys[order[p]]))
+      if (p == 0 || m_comp(m_c.keys[order[p - 1]], m_c.keys[order[p]]))
         kept.push_back(order[p]);
     }
 
@@ -766,14 +769,14 @@ private:
     new_keys.reserve(kept.size());
     new_values.reserve(kept.size());
     for (size_type idx : kept) {
-      new_keys.push_back(std::move(c_.keys[idx]));
-      new_values.push_back(std::move(c_.values[idx]));
+      new_keys.push_back(std::move(m_c.keys[idx]));
+      new_values.push_back(std::move(m_c.values[idx]));
     }
-    c_.keys = std::move(new_keys);
-    c_.values = std::move(new_values);
+    m_c.keys = std::move(new_keys);
+    m_c.values = std::move(new_values);
   }
 
-  NX_NO_UNIQUE_ADDRESS containers c_{};
+  NX_NO_UNIQUE_ADDRESS containers m_c{};
   NX_NO_UNIQUE_ADDRESS key_compare m_comp{};
 };
 

@@ -71,16 +71,16 @@ public:
 
     ::new (raw()) FType(std::forward<F>(f));
 
-    invoke_ = [](void *d, Args... args) -> R {
+    m_invoke = [](void *d, Args... args) -> R {
       return (*nx::cast<FType *>(d))(std::forward<Args>(args)...);
     };
-    destroy_ = [](void *d) noexcept { nx::cast<FType *>(d)->~FType(); };
+    m_destroy = [](void *d) noexcept { nx::cast<FType *>(d)->~FType(); };
 
     if constexpr (!std::is_trivially_copyable_v<FType>) {
-      move_ = [](void *dst, void *src) noexcept {
+      m_move = [](void *dst, void *src) noexcept {
         ::new (dst) FType(std::move(*nx::cast<FType *>(src)));
       };
-      copy_ = [](void *dst, const void *src) {
+      m_copy = [](void *dst, const void *src) {
         ::new (dst) FType(*nx::cast<const FType *>(src));
       };
     }
@@ -111,70 +111,70 @@ public:
   }
 
   NX_FORCE_INLINE R operator()(Args... args) const {
-    return invoke_(raw(), std::forward<Args>(args)...);
+    return m_invoke(raw(), std::forward<Args>(args)...);
   }
 
   [[nodiscard]] NX_FORCE_INLINE bool valid() const noexcept {
-    return invoke_ != nullptr;
+    return m_invoke != nullptr;
   }
   NX_FORCE_INLINE explicit operator bool() const noexcept { return valid(); }
 
 private:
-  alignas(std::max_align_t) mutable std::byte storage_[Size]{};
+  alignas(std::max_align_t) mutable std::byte m_storage[Size]{};
 
-  R (*invoke_)(void *, Args...) noexcept(false) = nullptr;
-  void (*destroy_)(void *) noexcept = nullptr;
-  void (*move_)(void *dst, void *src) noexcept = nullptr;
-  void (*copy_)(void *dst, const void *src) noexcept(false) = nullptr;
+  R (*m_invoke)(void *, Args...) noexcept(false) = nullptr;
+  void (*m_destroy)(void *) noexcept = nullptr;
+  void (*m_move)(void *dst, void *src) noexcept = nullptr;
+  void (*m_copy)(void *dst, const void *src) noexcept(false) = nullptr;
 
   NX_FORCE_INLINE void *raw() const noexcept {
-    return nx::cast<void *>(storage_);
+    return nx::cast<void *>(m_storage);
   }
 
   NX_FORCE_INLINE void reset() noexcept {
-    if (NX_LIKELY(invoke_ != nullptr)) {
-      destroy_(raw());
-      invoke_ = nullptr;
-      destroy_ = nullptr;
-      move_ = nullptr;
-      copy_ = nullptr;
+    if (NX_LIKELY(m_invoke != nullptr)) {
+      m_destroy(raw());
+      m_invoke = nullptr;
+      m_destroy = nullptr;
+      m_move = nullptr;
+      m_copy = nullptr;
     }
   }
 
   NX_FORCE_INLINE void move_from(inplace_function &&o) noexcept {
-    if (NX_UNLIKELY(!o.invoke_))
+    if (NX_UNLIKELY(!o.m_invoke))
       return;
 
-    if (o.move_) {
-      o.move_(raw(), o.raw());
-      o.destroy_(o.raw());
+    if (o.m_move) {
+      o.m_move(raw(), o.raw());
+      o.m_destroy(o.raw());
     } else
-      std::memcpy(storage_, o.storage_, Size);
+      std::memcpy(m_storage, o.m_storage, Size);
 
-    invoke_ = o.invoke_;
-    destroy_ = o.destroy_;
-    move_ = o.move_;
-    copy_ = o.copy_;
+    m_invoke = o.m_invoke;
+    m_destroy = o.m_destroy;
+    m_move = o.m_move;
+    m_copy = o.m_copy;
 
-    o.invoke_ = nullptr;
-    o.destroy_ = nullptr;
-    o.move_ = nullptr;
-    o.copy_ = nullptr;
+    o.m_invoke = nullptr;
+    o.m_destroy = nullptr;
+    o.m_move = nullptr;
+    o.m_copy = nullptr;
   }
 
   NX_FORCE_INLINE void copy_from(const inplace_function &o) {
-    if (NX_UNLIKELY(!o.invoke_))
+    if (NX_UNLIKELY(!o.m_invoke))
       return;
 
-    if (o.copy_)
-      o.copy_(raw(), o.raw());
+    if (o.m_copy)
+      o.m_copy(raw(), o.raw());
     else
-      std::memcpy(storage_, o.storage_, Size);
+      std::memcpy(m_storage, o.m_storage, Size);
 
-    invoke_ = o.invoke_;
-    destroy_ = o.destroy_;
-    move_ = o.move_;
-    copy_ = o.copy_;
+    m_invoke = o.m_invoke;
+    m_destroy = o.m_destroy;
+    m_move = o.m_move;
+    m_copy = o.m_copy;
   }
 };
 
@@ -225,11 +225,11 @@ public:
     requires(!std::is_same_v<std::decay_t<F>, function>)
   NX_FORCE_INLINE explicit function(F &&f) {
     using FType = std::decay_t<F>;
-    invoke_ = [](void *d, Args... args) -> R {
+    m_invoke = [](void *d, Args... args) -> R {
       return (*nx::cast<FType *>(d))(std::forward<Args>(args)...);
     };
-    destroy_ = [](void *d) noexcept { release(nx::cast<FType *>(d)); };
-    copy_ = [](void *d) -> void * {
+    m_destroy = [](void *d) noexcept { release(nx::cast<FType *>(d)); };
+    m_copy = [](void *d) -> void * {
       return allocate<FType>(*nx::cast<const FType *>(d));
     };
     m_data = allocate<FType>(std::forward<F>(f));
@@ -237,34 +237,34 @@ public:
 
   ~function() {
     if (NX_LIKELY(m_data != nullptr)) {
-      destroy_(m_data);
+      m_destroy(m_data);
       m_data = nullptr;
-      invoke_ = nullptr;
-      destroy_ = nullptr;
-      copy_ = nullptr;
+      m_invoke = nullptr;
+      m_destroy = nullptr;
+      m_copy = nullptr;
     }
   }
 
   NX_FORCE_INLINE function(function &&o) noexcept
-      : invoke_(o.invoke_), destroy_(o.destroy_), copy_(o.copy_),
+      : m_invoke(o.m_invoke), m_destroy(o.m_destroy), m_copy(o.m_copy),
         m_data(o.m_data) {
-    o.invoke_ = nullptr;
-    o.destroy_ = nullptr;
-    o.copy_ = nullptr;
+    o.m_invoke = nullptr;
+    o.m_destroy = nullptr;
+    o.m_copy = nullptr;
     o.m_data = nullptr;
   }
 
   NX_FORCE_INLINE function &operator=(function &&o) noexcept {
     if (NX_LIKELY(this != &o)) {
       if (NX_LIKELY(m_data != nullptr))
-        destroy_(m_data);
-      invoke_ = o.invoke_;
-      destroy_ = o.destroy_;
-      copy_ = o.copy_;
+        m_destroy(m_data);
+      m_invoke = o.m_invoke;
+      m_destroy = o.m_destroy;
+      m_copy = o.m_copy;
       m_data = o.m_data;
-      o.invoke_ = nullptr;
-      o.destroy_ = nullptr;
-      o.copy_ = nullptr;
+      o.m_invoke = nullptr;
+      o.m_destroy = nullptr;
+      o.m_copy = nullptr;
       o.m_data = nullptr;
     }
     return *this;
@@ -272,44 +272,44 @@ public:
 
   NX_FORCE_INLINE function(const function &o) {
     if (NX_LIKELY(o.m_data != nullptr)) {
-      invoke_ = o.invoke_;
-      destroy_ = o.destroy_;
-      copy_ = o.copy_;
-      m_data = copy_(o.m_data);
+      m_invoke = o.m_invoke;
+      m_destroy = o.m_destroy;
+      m_copy = o.m_copy;
+      m_data = m_copy(o.m_data);
     }
   }
 
   NX_FORCE_INLINE function &operator=(const function &o) {
     if (NX_LIKELY(this != &o)) {
       if (NX_LIKELY(m_data != nullptr))
-        destroy_(m_data);
-      invoke_ = nullptr;
-      destroy_ = nullptr;
-      copy_ = nullptr;
+        m_destroy(m_data);
+      m_invoke = nullptr;
+      m_destroy = nullptr;
+      m_copy = nullptr;
       m_data = nullptr;
       if (NX_LIKELY(o.m_data != nullptr)) {
-        invoke_ = o.invoke_;
-        destroy_ = o.destroy_;
-        copy_ = o.copy_;
-        m_data = copy_(o.m_data);
+        m_invoke = o.m_invoke;
+        m_destroy = o.m_destroy;
+        m_copy = o.m_copy;
+        m_data = m_copy(o.m_data);
       }
     }
     return *this;
   }
 
   NX_FORCE_INLINE R operator()(Args... args) const {
-    return invoke_(m_data, std::forward<Args>(args)...);
+    return m_invoke(m_data, std::forward<Args>(args)...);
   }
 
   [[nodiscard]] NX_FORCE_INLINE bool valid() const noexcept {
-    return invoke_ != nullptr;
+    return m_invoke != nullptr;
   }
   NX_FORCE_INLINE explicit operator bool() const noexcept { return valid(); }
 
 private:
-  R (*invoke_)(void *, Args...) noexcept(false) = nullptr;
-  void (*destroy_)(void *) noexcept = nullptr;
-  void *(*copy_)(void *) noexcept(false) = nullptr;
+  R (*m_invoke)(void *, Args...) noexcept(false) = nullptr;
+  void (*m_destroy)(void *) noexcept = nullptr;
+  void *(*m_copy)(void *) noexcept(false) = nullptr;
   void *m_data = nullptr;
 };
 
@@ -332,7 +332,7 @@ public:
   function_ref(F &&f NX_LIFETIMEBOUND) noexcept {
     m_data.obj =
         const_cast<void *>(static_cast<const void *>(std::addressof(f)));
-    call_ = [](const storage s, Args... args) -> R {
+    m_call = [](const storage s, Args... args) -> R {
       return (*static_cast<std::decay_t<F> *>(s.obj))(
           std::forward<Args>(args)...);
     };
@@ -344,23 +344,23 @@ public:
     requires std::is_invocable_r_v<R, FR (*)(FArgs...), Args...>
   function_ref(FR (*fn)(FArgs...)) noexcept {
     m_data.fun = reinterpret_cast<void (*)()>(fn);
-    call_ = [](const storage s, Args... args) -> R {
+    m_call = [](const storage s, Args... args) -> R {
       return reinterpret_cast<FR (*)(FArgs...)>(s.fun)(
           std::forward<Args>(args)...);
     };
   }
 
   R operator()(Args... args) const {
-    return call_(m_data, std::forward<Args>(args)...);
+    return m_call(m_data, std::forward<Args>(args)...);
   }
 
   [[nodiscard]] constexpr explicit operator bool() const noexcept {
-    return call_ != nullptr;
+    return m_call != nullptr;
   }
 
 private:
   storage m_data{nullptr};
-  R (*call_)(storage, Args...) = nullptr;
+  R (*m_call)(storage, Args...) = nullptr;
 };
 
 /// Builds an nx::function, deducing the call signature from @p f.

@@ -451,17 +451,17 @@ public:
   }
 
 private:
-  alignas(T) std::byte inline_storage_[N * sizeof(T)];
+  alignas(T) std::byte m_inline_storage[N * sizeof(T)];
 
   NX_NO_UNIQUE_ADDRESS Alloc m_alloc;
 
-  T *m_data = reinterpret_cast<T *>(inline_storage_);
+  T *m_data = reinterpret_cast<T *>(m_inline_storage);
   usize m_size = 0;
   usize m_capacity = N;
 
-  T *inline_ptr() noexcept { return reinterpret_cast<T *>(inline_storage_); }
+  T *inline_ptr() noexcept { return reinterpret_cast<T *>(m_inline_storage); }
   const T *inline_ptr() const noexcept {
-    return reinterpret_cast<const T *>(inline_storage_);
+    return reinterpret_cast<const T *>(m_inline_storage);
   }
   bool is_inline() const noexcept { return m_data == inline_ptr(); }
 

@@ -315,13 +315,13 @@ private:
   mutex m_overflow_mutex;
   vector<detail::pool_task> m_overflow;
   usize m_overflow_head = 0;
-  std::atomic<u32> overflow_count_{0};
+  std::atomic<u32> m_overflow_count{0};
 
-  std::atomic<u32> unfinished_{0}; // queued + running tasks
-  std::atomic<u32> signal_{0};     // futex word idle workers sleep on
-  std::atomic<u32> sleepers_{0};
-  std::atomic<u32> steal_seed_{0};
-  std::atomic<bool> stop_{false};
+  std::atomic<u32> m_unfinished{0}; // queued + running tasks
+  std::atomic<u32> m_signal{0};     // futex word idle workers sleep on
+  std::atomic<u32> m_sleepers{0};
+  std::atomic<u32> m_steal_seed{0};
+  std::atomic<bool> m_stop{false};
 };
 
 template <typename T> void future<T>::wait() noexcept {

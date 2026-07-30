@@ -100,16 +100,16 @@ public:
 
   /// Initializes the low bits from @p value; higher bits start clear.
   constexpr explicit bit_array(const u64 value) noexcept {
-    words_[0] = value;
+    m_words[0] = value;
     if constexpr (WORD_COUNT == 1)
-      words_[0] &= TAIL_MASK;
+      m_words[0] &= TAIL_MASK;
   }
 
   [[nodiscard]] static constexpr usize size() noexcept { return N; }
 
   [[nodiscard]] constexpr bool test(const usize pos) const noexcept {
     assert(pos < N && "bit_array: index out of range");
-    return (words_[pos / BITS_PER_WORD] &
+    return (m_words[pos / BITS_PER_WORD] &
             (word_type{1} << (pos % BITS_PER_WORD))) != 0;
   }
 
@@ -124,7 +124,7 @@ public:
 
   constexpr bit_array &set() noexcept {
     for (usize i = 0; i < WORD_COUNT; ++i)
-      words_[i] = ~word_type{0};
+      m_words[i] = ~word_type{0};
     trim();
     return *this;
   }
@@ -132,7 +132,7 @@ public:
   constexpr bit_array &set(const usize pos, const bool value = true) noexcept {
     assert(pos < N && "bit_array: index out of range");
     const word_type bit = word_type{1} << (pos % BITS_PER_WORD);
-    word_type &word = words_[pos / BITS_PER_WORD];
+    word_type &word = m_words[pos / BITS_PER_WORD];
     // Branchless: the compiler emits a cmov/bts pair rather than a jump.
     word = value ? (word | bit) : (word & ~bit);
     return *this;
@@ -140,7 +140,7 @@ public:
 
   constexpr bit_array &reset() noexcept {
     for (usize i = 0; i < WORD_COUNT; ++i)
-      words_[i] = 0;
+      m_words[i] = 0;
     return *this;
   }
 
@@ -150,14 +150,14 @@ public:
 
   constexpr bit_array &flip() noexcept {
     for (usize i = 0; i < WORD_COUNT; ++i)
-      words_[i] = ~words_[i];
+      m_words[i] = ~m_words[i];
     trim();
     return *this;
   }
 
   constexpr bit_array &flip(const usize pos) noexcept {
     assert(pos < N && "bit_array: index out of range");
-    words_[pos / BITS_PER_WORD] ^= word_type{1} << (pos % BITS_PER_WORD);
+    m_words[pos / BITS_PER_WORD] ^= word_type{1} << (pos % BITS_PER_WORD);
     return *this;
   }
 
@@ -165,20 +165,20 @@ public:
   [[nodiscard]] constexpr usize count() const noexcept {
     usize total = 0;
     for (usize i = 0; i < WORD_COUNT; ++i)
-      total += nx::cast<usize>(std::popcount(words_[i]));
+      total += nx::cast<usize>(std::popcount(m_words[i]));
     return total;
   }
 
   [[nodiscard]] constexpr bool all() const noexcept {
     for (usize i = 0; i + 1 < WORD_COUNT; ++i)
-      if (words_[i] != ~word_type{0})
+      if (m_words[i] != ~word_type{0})
         return false;
-    return words_[WORD_COUNT - 1] == TAIL_MASK;
+    return m_words[WORD_COUNT - 1] == TAIL_MASK;
   }
 
   [[nodiscard]] constexpr bool any() const noexcept {
     for (usize i = 0; i < WORD_COUNT; ++i)
-      if (words_[i] != 0)
+      if (m_words[i] != 0)
         return true;
     return false;
   }
@@ -199,19 +199,19 @@ public:
 
   constexpr bit_array &operator&=(const bit_array &other) noexcept {
     for (usize i = 0; i < WORD_COUNT; ++i)
-      words_[i] &= other.words_[i];
+      m_words[i] &= other.m_words[i];
     return *this;
   }
 
   constexpr bit_array &operator|=(const bit_array &other) noexcept {
     for (usize i = 0; i < WORD_COUNT; ++i)
-      words_[i] |= other.words_[i];
+      m_words[i] |= other.m_words[i];
     return *this;
   }
 
   constexpr bit_array &operator^=(const bit_array &other) noexcept {
     for (usize i = 0; i < WORD_COUNT; ++i)
-      words_[i] ^= other.words_[i];
+      m_words[i] ^= other.m_words[i];
     return *this;
   }
 
@@ -232,19 +232,19 @@ public:
 
     if (bit_shift == 0) {
       for (usize i = WORD_COUNT; i-- > word_shift;)
-        words_[i] = words_[i - word_shift];
+        m_words[i] = m_words[i - word_shift];
     } else {
       for (usize i = WORD_COUNT; i-- > word_shift;) {
-        const word_type high = words_[i - word_shift] << bit_shift;
+        const word_type high = m_words[i - word_shift] << bit_shift;
         const word_type low =
             i - word_shift == 0
                 ? word_type{0}
-                : words_[i - word_shift - 1] >> (BITS_PER_WORD - bit_shift);
-        words_[i] = high | low;
+                : m_words[i - word_shift - 1] >> (BITS_PER_WORD - bit_shift);
+        m_words[i] = high | low;
       }
     }
     for (usize i = 0; i < word_shift; ++i)
-      words_[i] = 0;
+      m_words[i] = 0;
 
     trim();
     return *this;
@@ -261,19 +261,19 @@ public:
 
     if (bit_shift == 0) {
       for (usize i = 0; i < WORD_COUNT - word_shift; ++i)
-        words_[i] = words_[i + word_shift];
+        m_words[i] = m_words[i + word_shift];
     } else {
       for (usize i = 0; i < WORD_COUNT - word_shift; ++i) {
-        const word_type low = words_[i + word_shift] >> bit_shift;
+        const word_type low = m_words[i + word_shift] >> bit_shift;
         const word_type high = i + word_shift + 1 >= WORD_COUNT
                                    ? word_type{0}
-                                   : words_[i + word_shift + 1]
+                                   : m_words[i + word_shift + 1]
                                          << (BITS_PER_WORD - bit_shift);
-        words_[i] = low | high;
+        m_words[i] = low | high;
       }
     }
     for (usize i = WORD_COUNT - word_shift; i < WORD_COUNT; ++i)
-      words_[i] = 0;
+      m_words[i] = 0;
 
     return *this;
   }
@@ -302,20 +302,20 @@ public:
   [[nodiscard]] constexpr bool
   operator==(const bit_array &other) const noexcept {
     for (usize i = 0; i < WORD_COUNT; ++i)
-      if (words_[i] != other.words_[i])
+      if (m_words[i] != other.m_words[i])
         return false;
     return true;
   }
 
   /// Raw word access, for backends that need to blit the storage.
-  [[nodiscard]] constexpr const u64 *data() const noexcept { return words_; }
+  [[nodiscard]] constexpr const u64 *data() const noexcept { return m_words; }
   [[nodiscard]] static constexpr usize word_count() noexcept {
     return WORD_COUNT;
   }
 
 private:
   /// Clears the padding bits above N in the final word.
-  constexpr void trim() noexcept { words_[WORD_COUNT - 1] &= TAIL_MASK; }
+  constexpr void trim() noexcept { m_words[WORD_COUNT - 1] &= TAIL_MASK; }
 
   /// Lowest set bit at or above @p pos, scanning a word at a time.
   [[nodiscard]] constexpr usize scan_from(const usize pos) const noexcept {
@@ -325,7 +325,7 @@ private:
     usize word_index = pos / BITS_PER_WORD;
     // Mask off the bits below pos in the first word we look at.
     word_type word =
-        words_[word_index] & (~word_type{0} << (pos % BITS_PER_WORD));
+        m_words[word_index] & (~word_type{0} << (pos % BITS_PER_WORD));
 
     for (;;) {
       if (word != 0)
@@ -333,11 +333,11 @@ private:
                nx::cast<usize>(std::countr_zero(word));
       if (++word_index >= WORD_COUNT)
         return npos;
-      word = words_[word_index];
+      word = m_words[word_index];
     }
   }
 
-  word_type words_[WORD_COUNT] = {};
+  word_type m_words[WORD_COUNT] = {};
 };
 
 } // namespace nx

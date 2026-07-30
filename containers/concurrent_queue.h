@@ -40,8 +40,8 @@ public:
 
   ~Queue() noexcept {
     if constexpr (!std::is_trivially_destructible_v<T>) {
-      const usize eq = enqueue_pos_.load(std::memory_order_relaxed);
-      const usize dq = dequeue_pos_.load(std::memory_order_relaxed);
+      const usize eq = m_enqueue_pos.load(std::memory_order_relaxed);
+      const usize dq = m_dequeue_pos.load(std::memory_order_relaxed);
       for (usize pos = dq; pos != eq; ++pos)
         m_slots[pos & MASK].ptr()->~T();
     }
@@ -55,15 +55,15 @@ public:
   template <typename... Args>
   NX_FORCE_INLINE bool try_emplace(Args &&...args) noexcept {
     static_assert(std::is_nothrow_constructible_v<T, Args...>);
-    usize pos = enqueue_pos_.load(std::memory_order_relaxed);
+    usize pos = m_enqueue_pos.load(std::memory_order_relaxed);
     for (;;) {
       Slot *slot = &m_slots[pos & MASK];
       const usize seq = slot->sequence.load(std::memory_order_acquire);
       const isize diff = nx::cast<isize>(seq) - nx::cast<isize>(pos);
       if (NX_LIKELY(diff == 0)) {
-        if (enqueue_pos_.compare_exchange_weak(pos, pos + 1,
-                                               std::memory_order_relaxed,
-                                               std::memory_order_relaxed)) {
+        if (m_enqueue_pos.compare_exchange_weak(pos, pos + 1,
+                                                std::memory_order_relaxed,
+                                                std::memory_order_relaxed)) {
           ::new (slot->storage) T(std::forward<Args>(args)...);
           slot->sequence.store(pos + 1, std::memory_order_release);
           return true;
@@ -71,7 +71,7 @@ public:
       } else if (diff < 0) {
         return false; // full
       } else {
-        pos = enqueue_pos_.load(std::memory_order_relaxed);
+        pos = m_enqueue_pos.load(std::memory_order_relaxed);
       }
     }
   }
@@ -88,15 +88,15 @@ public:
 
   NX_FORCE_INLINE bool try_pop(T &out) noexcept {
     static_assert(std::is_nothrow_move_assignable_v<T>);
-    usize pos = dequeue_pos_.load(std::memory_order_relaxed);
+    usize pos = m_dequeue_pos.load(std::memory_order_relaxed);
     for (;;) {
       Slot *slot = &m_slots[pos & MASK];
       const usize seq = slot->sequence.load(std::memory_order_acquire);
       const isize diff = nx::cast<isize>(seq) - nx::cast<isize>(pos + 1);
       if (NX_LIKELY(diff == 0)) {
-        if (dequeue_pos_.compare_exchange_weak(pos, pos + 1,
-                                               std::memory_order_relaxed,
-                                               std::memory_order_relaxed)) {
+        if (m_dequeue_pos.compare_exchange_weak(pos, pos + 1,
+                                                std::memory_order_relaxed,
+                                                std::memory_order_relaxed)) {
           out = std::move(*slot->ptr());
           slot->ptr()->~T();
           slot->sequence.store(pos + CAPACITY, std::memory_order_release);
@@ -105,7 +105,7 @@ public:
       } else if (diff < 0) {
         return false; // empty
       } else {
-        pos = dequeue_pos_.load(std::memory_order_relaxed);
+        pos = m_dequeue_pos.load(std::memory_order_relaxed);
       }
     }
   }
@@ -113,7 +113,7 @@ public:
   template <typename... Args>
   NX_FORCE_INLINE void emplace(Args &&...args) noexcept {
     static_assert(std::is_nothrow_constructible_v<T, Args...>);
-    const usize pos = enqueue_pos_.fetch_add(1, std::memory_order_relaxed);
+    const usize pos = m_enqueue_pos.fetch_add(1, std::memory_order_relaxed);
     Slot *slot = &m_slots[pos & MASK];
     while (NX_UNLIKELY(slot->sequence.load(std::memory_order_acquire) != pos))
       detail::cpu_relax();
@@ -133,7 +133,7 @@ public:
 
   NX_FORCE_INLINE void pop(T &out) noexcept {
     static_assert(std::is_nothrow_move_assignable_v<T>);
-    const usize pos = dequeue_pos_.fetch_add(1, std::memory_order_relaxed);
+    const usize pos = m_dequeue_pos.fetch_add(1, std::memory_order_relaxed);
     Slot *slot = &m_slots[pos & MASK];
     while (
         NX_UNLIKELY(slot->sequence.load(std::memory_order_acquire) != pos + 1))
@@ -143,11 +143,11 @@ public:
     slot->sequence.store(pos + CAPACITY, std::memory_order_release);
   }
 
-  // May be negative in blocking mode: consumers can advance dequeue_pos_
-  // ahead of enqueue_pos_ while spinning.
+  // May be negative in blocking mode: consumers can advance m_dequeue_pos
+  // ahead of m_enqueue_pos while spinning.
   [[nodiscard]] isize size_approx() const noexcept {
-    return nx::cast<isize>(enqueue_pos_.load(std::memory_order_relaxed)) -
-           nx::cast<isize>(dequeue_pos_.load(std::memory_order_relaxed));
+    return nx::cast<isize>(m_enqueue_pos.load(std::memory_order_relaxed)) -
+           nx::cast<isize>(m_dequeue_pos.load(std::memory_order_relaxed));
   }
 
   [[nodiscard]] bool empty_approx() const noexcept {
@@ -170,8 +170,8 @@ private:
     }
   };
 
-  alignas(64) std::atomic<usize> enqueue_pos_{0};
-  alignas(64) std::atomic<usize> dequeue_pos_{0};
+  alignas(64) std::atomic<usize> m_enqueue_pos{0};
+  alignas(64) std::atomic<usize> m_dequeue_pos{0};
   Slot m_slots[CAPACITY];
 };
 } // namespace mpmc
@@ -203,8 +203,8 @@ public:
 
   ~Queue() noexcept {
     if constexpr (!std::is_trivially_destructible_v<T>) {
-      const usize eq = enqueue_pos_.load(std::memory_order_relaxed);
-      const usize dq = dequeue_pos_.load(std::memory_order_relaxed);
+      const usize eq = m_enqueue_pos.load(std::memory_order_relaxed);
+      const usize dq = m_dequeue_pos.load(std::memory_order_relaxed);
       for (usize pos = dq; pos != eq; ++pos)
         m_slots[pos & MASK].ptr()->~T();
     }
@@ -218,15 +218,15 @@ public:
   template <typename... Args>
   NX_FORCE_INLINE bool try_emplace(Args &&...args) noexcept {
     static_assert(std::is_nothrow_constructible_v<T, Args...>);
-    usize pos = enqueue_pos_.load(std::memory_order_relaxed);
+    usize pos = m_enqueue_pos.load(std::memory_order_relaxed);
     for (;;) {
       Slot *slot = &m_slots[pos & MASK];
       const usize seq = slot->sequence.load(std::memory_order_acquire);
       const isize diff = nx::cast<isize>(seq) - nx::cast<isize>(pos);
       if (NX_LIKELY(diff == 0)) {
-        if (enqueue_pos_.compare_exchange_weak(pos, pos + 1,
-                                               std::memory_order_relaxed,
-                                               std::memory_order_relaxed)) {
+        if (m_enqueue_pos.compare_exchange_weak(pos, pos + 1,
+                                                std::memory_order_relaxed,
+                                                std::memory_order_relaxed)) {
           ::new (slot->storage) T(std::forward<Args>(args)...);
           slot->sequence.store(pos + 1, std::memory_order_release);
           return true;
@@ -234,7 +234,7 @@ public:
       } else if (diff < 0) {
         return false; // full
       } else {
-        pos = enqueue_pos_.load(std::memory_order_relaxed);
+        pos = m_enqueue_pos.load(std::memory_order_relaxed);
       }
     }
   }
@@ -252,7 +252,7 @@ public:
   template <typename... Args>
   NX_FORCE_INLINE void emplace(Args &&...args) noexcept {
     static_assert(std::is_nothrow_constructible_v<T, Args...>);
-    const usize pos = enqueue_pos_.fetch_add(1, std::memory_order_relaxed);
+    const usize pos = m_enqueue_pos.fetch_add(1, std::memory_order_relaxed);
     Slot *slot = &m_slots[pos & MASK];
     while (NX_UNLIKELY(slot->sequence.load(std::memory_order_acquire) != pos))
       detail::cpu_relax();
@@ -272,7 +272,7 @@ public:
 
   NX_FORCE_INLINE bool try_pop(T &out) noexcept {
     static_assert(std::is_nothrow_move_assignable_v<T>);
-    const usize pos = dequeue_pos_.load(std::memory_order_relaxed);
+    const usize pos = m_dequeue_pos.load(std::memory_order_relaxed);
     Slot *slot = &m_slots[pos & MASK];
     const usize seq = slot->sequence.load(std::memory_order_acquire);
     const isize diff = nx::cast<isize>(seq) - nx::cast<isize>(pos + 1);
@@ -280,7 +280,7 @@ public:
       out = std::move(*slot->ptr());
       slot->ptr()->~T();
       slot->sequence.store(pos + CAPACITY, std::memory_order_release);
-      dequeue_pos_.store(pos + 1, std::memory_order_relaxed);
+      m_dequeue_pos.store(pos + 1, std::memory_order_relaxed);
       return true;
     }
     return false;
@@ -288,7 +288,7 @@ public:
 
   NX_FORCE_INLINE void pop(T &out) noexcept {
     static_assert(std::is_nothrow_move_assignable_v<T>);
-    const usize pos = dequeue_pos_.load(std::memory_order_relaxed);
+    const usize pos = m_dequeue_pos.load(std::memory_order_relaxed);
     Slot *slot = &m_slots[pos & MASK];
     while (
         NX_UNLIKELY(slot->sequence.load(std::memory_order_acquire) != pos + 1))
@@ -296,7 +296,7 @@ public:
     out = std::move(*slot->ptr());
     slot->ptr()->~T();
     slot->sequence.store(pos + CAPACITY, std::memory_order_release);
-    dequeue_pos_.store(pos + 1, std::memory_order_relaxed);
+    m_dequeue_pos.store(pos + 1, std::memory_order_relaxed);
   }
 
   template <typename Func>
@@ -323,9 +323,9 @@ public:
 
   [[nodiscard]] isize size_approx() const noexcept {
     const isize eq =
-        nx::cast<isize>(enqueue_pos_.load(std::memory_order_relaxed));
+        nx::cast<isize>(m_enqueue_pos.load(std::memory_order_relaxed));
     const isize dq =
-        nx::cast<isize>(dequeue_pos_.load(std::memory_order_relaxed));
+        nx::cast<isize>(m_dequeue_pos.load(std::memory_order_relaxed));
     return eq - dq;
   }
 
@@ -349,8 +349,8 @@ private:
     }
   };
 
-  alignas(64) std::atomic<usize> enqueue_pos_{0};
-  alignas(64) std::atomic<usize> dequeue_pos_{0};
+  alignas(64) std::atomic<usize> m_enqueue_pos{0};
+  alignas(64) std::atomic<usize> m_dequeue_pos{0};
   Slot m_slots[CAPACITY];
 };
 } // namespace mpsc
