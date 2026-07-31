@@ -45,24 +45,41 @@ namespace nx::json {
   return cast<i32>(owner[key].get_i64(fallback));
 }
 
+[[nodiscard]] inline string_view string_or(const value &owner,
+                                           const string_view key,
+                                           const string_view fallback) {
+  return owner[key].get_string(fallback);
+}
+
 /// A two-component vector written as `[x, y]`. Each component falls back on its
 /// own, so `[3]` reads as x = 3 with y left at the default.
+///
+/// The array itself, for a vector that is an element rather than a field - a
+/// point in a polygon, say, where there is no key to name it by.
 template <class V>
-[[nodiscard]] V read_vec2(const value &owner, const string_view key,
-                          const V &fallback) noexcept {
-  const value &v = owner[key];
+[[nodiscard]] V read_vec2(const value &v, const V &fallback) noexcept {
   return V{cast<f32>(at_or(v, 0, cast<f64>(fallback.x))),
            cast<f32>(at_or(v, 1, cast<f64>(fallback.y)))};
 }
 
 template <class V>
-[[nodiscard]] V read_vec4(const value &owner, const string_view key,
+[[nodiscard]] V read_vec2(const value &owner, const string_view key,
                           const V &fallback) noexcept {
-  const value &v = owner[key];
+  return read_vec2(owner[key], fallback);
+}
+
+template <class V>
+[[nodiscard]] V read_vec4(const value &v, const V &fallback) noexcept {
   return V{cast<f32>(at_or(v, 0, cast<f64>(fallback.x))),
            cast<f32>(at_or(v, 1, cast<f64>(fallback.y))),
            cast<f32>(at_or(v, 2, cast<f64>(fallback.z))),
            cast<f32>(at_or(v, 3, cast<f64>(fallback.w)))};
+}
+
+template <class V>
+[[nodiscard]] V read_vec4(const value &owner, const string_view key,
+                          const V &fallback) noexcept {
+  return read_vec4(owner[key], fallback);
 }
 
 template <class V> [[nodiscard]] value write_vec2(const V &v) {
@@ -79,6 +96,18 @@ template <class V> [[nodiscard]] value write_vec4(const V &v) {
   a.push_back(value(cast<f64>(v.z)));
   a.push_back(value(cast<f64>(v.w)));
   return a;
+}
+
+/// True when @p root declares no version, or one at or below @p current.
+///
+/// Absent is accepted on purpose: a hand-authored document should not need
+/// boilerplate to load, and every writer stamps a version anyway. A *newer* one
+/// is refused, which is the only thing the field is for - a reader that ignores
+/// it loads half a document it does not understand and says nothing.
+[[nodiscard]] inline bool version_ok(const value &root,
+                                     const u64 current) noexcept {
+  const value &v = root["version"];
+  return !v.is_number() || v.get_u64(current) <= current;
 }
 
 /// One enum value and a spelling that names it in a document.
