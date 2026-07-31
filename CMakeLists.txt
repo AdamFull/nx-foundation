@@ -15,6 +15,9 @@ set(NX_FOUNDATION_HEADERS
   core/result.h
   core/scope_guard.h
   core/time.h
+  core/type_index.h
+
+  reflection/aggregate.h
 
   containers/blob.h
   containers/concurrent_queue.h
