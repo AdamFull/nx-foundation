@@ -3,6 +3,7 @@
 #include "foundation/core/foundation.h"
 
 #include <span>
+#include <string_view>
 
 namespace nx {
 
@@ -83,6 +84,16 @@ hash_fnv1a32(const std::span<const std::byte> data) noexcept {
 [[nodiscard]] inline u64
 hash_fnv1a64(const std::span<const std::byte> data) noexcept {
   return hash_fnv1a64(reinterpret_cast<const char *>(data.data()), data.size());
+}
+
+/// Hashing a name is common enough that every module that did it grew its own
+/// one-line wrapper for this.
+[[nodiscard]] constexpr u32 hash_fnv1a32(const std::string_view s) noexcept {
+  return hash_fnv1a32(s.data(), s.size());
+}
+
+[[nodiscard]] constexpr u64 hash_fnv1a64(const std::string_view s) noexcept {
+  return hash_fnv1a64(s.data(), s.size());
 }
 
 // https://gist.github.com/badboy/6267743
