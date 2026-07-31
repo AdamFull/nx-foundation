@@ -796,6 +796,50 @@ template <class T, usize I> consteval auto field_pointer() {
 
 } // namespace detail
 
+namespace detail {
+
+/// Cuts the type name out of a signature, again read off the compilers:
+///   MSVC   ...nx::reflect::detail::type_signature<struct Camera2D>(void)
+///   clang  std::string_view nx::reflect::detail::type_signature() [T =
+///   Camera2D]
+[[nodiscard]] consteval string_view type_name_from(const string_view sig) {
+#if defined(_MSC_VER) && !defined(__clang__)
+  constexpr string_view marker = "type_signature<";
+  const usize first = sig.find(marker);
+  const usize last = sig.rfind(">(");
+  if (first == string_view::npos || last == string_view::npos)
+    return {};
+  string_view name =
+      sig.substr(first + marker.size(), last - first - marker.size());
+  // MSVC spells the elaborated form; nobody wants "struct" in a type's name.
+  for (const string_view prefix : {"struct ", "class ", "enum ", "union "})
+    if (name.starts_with(prefix))
+      name.remove_prefix(prefix.size());
+  return name;
+#else
+  const usize first = sig.find("[T = ");
+  const usize last = sig.rfind(']');
+  if (first == string_view::npos || last == string_view::npos)
+    return {};
+  return sig.substr(first + 5, last - first - 5);
+#endif
+}
+
+template <class T> consteval string_view type_signature() {
+#if defined(_MSC_VER) && !defined(__clang__)
+  return __FUNCSIG__;
+#else
+  return __PRETTY_FUNCTION__;
+#endif
+}
+
+} // namespace detail
+
+/// The name of @p T as its own compiler spells it, without RTTI.
+template <class T> [[nodiscard]] consteval string_view type_name() {
+  return detail::type_name_from(detail::type_signature<T>());
+}
+
 /// The name of field @p I, exactly as it is spelled in the type.
 template <plain_aggregate T, usize I>
 [[nodiscard]] consteval string_view field_name() {

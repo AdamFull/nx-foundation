@@ -18,6 +18,7 @@ set(NX_FOUNDATION_HEADERS
   core/type_index.h
 
   reflection/aggregate.h
+  reflection/type.h
 
   containers/blob.h
   containers/concurrent_queue.h
