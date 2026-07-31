@@ -32,7 +32,8 @@
 
 /// Times the enclosing scope under a literal name.
 #define NX_PROFILE_ZONE(name) ZoneScopedN(name)
-/// Times the enclosing scope under a literal name and an explicit 0xRRGGBB color.
+/// Times the enclosing scope under a literal name and an explicit 0xRRGGBB
+/// color.
 #define NX_PROFILE_ZONE_COLOR(name, color) ZoneScopedNC(name, color)
 /// Times the enclosing scope, named after the enclosing function.
 #define NX_PROFILE_FUNCTION() ZoneScoped
@@ -42,6 +43,16 @@
 #define NX_PROFILE_FRAME_MARK_NAMED(name) FrameMarkNamed(name)
 /// Names the calling thread in the profiler's thread list.
 #define NX_PROFILE_SET_THREAD_NAME(name) ::tracy::SetThreadName(name)
+/// Names the calling thread on first reach, for a thread whose creation we do
+/// not own - a device callback, where the callback body is the only hook.
+#define NX_PROFILE_SET_THREAD_NAME_ONCE(name)                                  \
+  do {                                                                         \
+    static thread_local bool nx_thread_named = false;                          \
+    if (!nx_thread_named) {                                                    \
+      nx_thread_named = true;                                                  \
+      ::tracy::SetThreadName(name);                                            \
+    }                                                                          \
+  } while (0)
 /// Records a value on a named plot.
 #define NX_PROFILE_PLOT(name, value) TracyPlot(name, value)
 /// Emits a one-off message (literal C string) into the profiler timeline.
@@ -54,7 +65,8 @@
 
 /// Times the enclosing scope under a literal name.
 #define NX_PROFILE_ZONE(name) ((void)(name))
-/// Times the enclosing scope under a literal name and an explicit 0xRRGGBB color.
+/// Times the enclosing scope under a literal name and an explicit 0xRRGGBB
+/// color.
 #define NX_PROFILE_ZONE_COLOR(name, color) ((void)(name), (void)(color))
 /// Times the enclosing scope, named after the enclosing function.
 #define NX_PROFILE_FUNCTION() ((void)0)
@@ -64,6 +76,9 @@
 #define NX_PROFILE_FRAME_MARK_NAMED(name) ((void)(name))
 /// Names the calling thread in the profiler's thread list.
 #define NX_PROFILE_SET_THREAD_NAME(name) ((void)(name))
+/// Names the calling thread on first reach, for a thread whose creation we do
+/// not own - a device callback, where the callback body is the only hook.
+#define NX_PROFILE_SET_THREAD_NAME_ONCE(name) ((void)(name))
 /// Records a value on a named plot.
 #define NX_PROFILE_PLOT(name, value) ((void)(name), (void)(value))
 /// Emits a one-off message (literal C string) into the profiler timeline.
