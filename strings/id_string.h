@@ -31,12 +31,12 @@
  * lexicographic; use id_string::lexical_less to sort by text.
  */
 
-#include "foundation/containers/hash_map.h"
-#include "foundation/core/foundation.h"
-#include "foundation/core/hash.h"
-#include "foundation/strings/utf8_string.h"
-#include "foundation/strings/utf8_string_view.h"
-#include "foundation/threading/sync.h"
+#include "core/foundation/containers/hash_map.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/core/hash.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/strings/utf8_string_view.h"
+#include "core/foundation/threading/sync.h"
 
 #include <cassert>
 #include <compare>

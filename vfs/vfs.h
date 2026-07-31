@@ -18,14 +18,14 @@
  * Reads are safe from any thread.
  */
 
-#include "foundation/containers/blob.h"
-#include "foundation/containers/hash_map.h"
-#include "foundation/core/callable.h"
-#include "foundation/core/foundation.h"
-#include "foundation/core/handle.h"
-#include "foundation/platform/filesystem.h"
-#include "foundation/strings/utf8_string.h"
-#include "foundation/threading/sync.h"
+#include "core/foundation/containers/blob.h"
+#include "core/foundation/containers/hash_map.h"
+#include "core/foundation/core/callable.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/core/handle.h"
+#include "core/foundation/platform/filesystem.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/threading/sync.h"
 
 #include <span>
 

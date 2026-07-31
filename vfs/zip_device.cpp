@@ -1,9 +1,9 @@
-#include "foundation/vfs/vfs_internal.h"
+#include "core/foundation/vfs/vfs_internal.h"
 
-#include "foundation/containers/concurrent_queue.h"
-#include "foundation/core/scope_guard.h"
-#include "foundation/diagnostics/log.h"
-#include "foundation/diagnostics/profiler.h"
+#include "core/foundation/containers/concurrent_queue.h"
+#include "core/foundation/core/scope_guard.h"
+#include "core/foundation/diagnostics/log.h"
+#include "core/foundation/diagnostics/profiler.h"
 
 #include <mz.h>
 #include <mz_strm.h>

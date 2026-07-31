@@ -5,8 +5,8 @@
  * @brief Bits shared by the device implementations. Not a public header.
  */
 
-#include "foundation/containers/hash_map.h"
-#include "foundation/vfs/vfs.h"
+#include "core/foundation/containers/hash_map.h"
+#include "core/foundation/vfs/vfs.h"
 
 #include <cstring>
 

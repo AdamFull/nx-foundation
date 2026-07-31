@@ -1,6 +1,6 @@
 #pragma once
 
-#include "foundation/core/enum.h"
+#include "core/foundation/core/enum.h"
 
 namespace nx::vmem {
 enum class MemProtFlag : u32 {

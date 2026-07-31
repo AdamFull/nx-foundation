@@ -1,9 +1,9 @@
-#include "foundation/vfs/vfs_internal.h"
+#include "core/foundation/vfs/vfs_internal.h"
 
-#include "foundation/containers/slot_map.h"
-#include "foundation/containers/small_vector.h"
-#include "foundation/diagnostics/log.h"
-#include "foundation/diagnostics/profiler.h"
+#include "core/foundation/containers/slot_map.h"
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/diagnostics/log.h"
+#include "core/foundation/diagnostics/profiler.h"
 
 #include <algorithm>
 

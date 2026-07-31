@@ -6,8 +6,8 @@
  * (namespace nx::reflect).
  */
 
-#include "foundation/core/foundation.h"
-#include "foundation/strings/utf8_string_view.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string_view.h"
 
 #include <tuple>
 #include <type_traits>

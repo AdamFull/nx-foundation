@@ -3,8 +3,8 @@
 #include <compare>
 #include <type_traits>
 
-#include "foundation/core/foundation.h"
-#include "foundation/core/hash.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/core/hash.h"
 
 namespace nx {
 

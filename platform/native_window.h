@@ -10,7 +10,7 @@
  * able to return one.
  */
 
-#include "foundation/core/foundation.h"
+#include "core/foundation/core/foundation.h"
 
 namespace nx {
 

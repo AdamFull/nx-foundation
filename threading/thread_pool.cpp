@@ -1,6 +1,6 @@
-#include "foundation/threading/thread_pool.h"
+#include "core/foundation/threading/thread_pool.h"
 
-#include "foundation/diagnostics/profiler.h"
+#include "core/foundation/diagnostics/profiler.h"
 
 #include <cstdio>
 

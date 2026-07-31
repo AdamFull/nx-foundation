@@ -1,4 +1,4 @@
-#include "foundation/threading/sync.h"
+#include "core/foundation/threading/sync.h"
 
 #if NX_HAS_WINDOWS_API
 #include <windows.h>

@@ -5,7 +5,7 @@
  * @brief Process-wide sequential ids for types (nx::type_index).
  */
 
-#include "foundation/core/foundation.h"
+#include "core/foundation/core/foundation.h"
 
 #include <atomic>
 

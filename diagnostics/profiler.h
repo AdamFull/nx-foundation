@@ -20,7 +20,7 @@
  *     }
  */
 
-#include "foundation/core/foundation.h"
+#include "core/foundation/core/foundation.h"
 
 #if !defined(NX_PROFILE_ENABLED)
 #define NX_PROFILE_ENABLED 0

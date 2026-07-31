@@ -1,7 +1,7 @@
-#include "foundation/serialization/json.h"
+#include "core/foundation/serialization/json.h"
 
-#include "foundation/containers/hash_map.h"
-#include "foundation/core/hash.h"
+#include "core/foundation/containers/hash_map.h"
+#include "core/foundation/core/hash.h"
 
 #include <charconv>
 #include <cmath>

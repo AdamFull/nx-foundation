@@ -16,7 +16,7 @@
  * nx::scoped_shared_lock guards.
  */
 
-#include "foundation/core/foundation.h"
+#include "core/foundation/core/foundation.h"
 
 #include <atomic>
 #include <chrono>

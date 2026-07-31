@@ -5,9 +5,9 @@
  * @brief UTF-8 string with small-string optimization (nx::string).
  */
 
-#include "foundation/core/foundation.h"
-#include "foundation/core/hash.h"
-#include "foundation/strings/utf8_string_view.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/core/hash.h"
+#include "core/foundation/strings/utf8_string_view.h"
 
 #include <cassert>
 #include <format>

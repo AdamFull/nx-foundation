@@ -26,8 +26,8 @@
  * the worker) and nx::log::shutdown() at exit (drains, flushes, joins).
  */
 
-#include "foundation/core/foundation.h"
-#include "foundation/strings/format.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/format.h"
 
 #include <atomic>
 

@@ -20,11 +20,11 @@
  * therefore must be copy-constructible.
  */
 
-#include "foundation/containers/concurrent_queue.h"
-#include "foundation/containers/small_vector.h"
-#include "foundation/core/callable.h"
-#include "foundation/threading/sync.h"
-#include "foundation/threading/thread.h"
+#include "core/foundation/containers/concurrent_queue.h"
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/core/callable.h"
+#include "core/foundation/threading/sync.h"
+#include "core/foundation/threading/thread.h"
 
 #include <atomic>
 

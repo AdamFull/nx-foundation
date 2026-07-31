@@ -6,8 +6,8 @@
  * (nx::string_map).
  */
 
-#include "foundation/containers/hash_map.h"
-#include "foundation/strings/utf8_string.h"
+#include "core/foundation/containers/hash_map.h"
+#include "core/foundation/strings/utf8_string.h"
 
 namespace nx {
 

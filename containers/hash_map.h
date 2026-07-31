@@ -5,8 +5,8 @@
  * @brief Open-addressing hash map (nx::hash_map / nx::flat_hash_map).
  */
 
-#include "foundation/core/foundation.h"
-#include "foundation/core/hash.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/core/hash.h"
 
 #include <bit>
 #include <cassert>

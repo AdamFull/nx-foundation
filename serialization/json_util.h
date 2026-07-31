@@ -13,9 +13,9 @@
  * usable from any layer without foundation having to know a maths library.
  */
 
-#include "foundation/core/foundation.h"
-#include "foundation/reflection/type.h"
-#include "foundation/serialization/json.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/reflection/type.h"
+#include "core/foundation/serialization/json.h"
 
 namespace nx::json {
 

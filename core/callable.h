@@ -5,7 +5,7 @@
  * @brief Type-erased callables: nx::function and nx::inplace_function.
  */
 
-#include "foundation/core/foundation.h"
+#include "core/foundation/core/foundation.h"
 
 #include <cstring>
 #include <type_traits>

@@ -9,10 +9,10 @@
  * appears here only when it has something to say.
  */
 
-#include "foundation/core/enum.h"
-#include "foundation/core/foundation.h"
-#include "foundation/reflection/aggregate.h"
-#include "foundation/strings/utf8_string_view.h"
+#include "core/foundation/core/enum.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/reflection/aggregate.h"
+#include "core/foundation/strings/utf8_string_view.h"
 
 #include <array>
 #include <span>

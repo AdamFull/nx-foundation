@@ -15,9 +15,9 @@
  * supplies scratch the size of the input.
  */
 
-#include "foundation/core/foundation.h"
-#include "foundation/core/time.h"
-#include "foundation/threading/thread_pool.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/core/time.h"
+#include "core/foundation/threading/thread_pool.h"
 
 #include <chrono>
 #include <concepts>

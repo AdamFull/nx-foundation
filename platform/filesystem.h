@@ -5,10 +5,10 @@
  * @brief Path inspection (nx::fs::path_view) and filesystem I/O helpers.
  */
 
-#include "foundation/containers/blob.h"
-#include "foundation/containers/small_vector.h"
-#include "foundation/core/result.h"
-#include "foundation/strings/utf8_string.h"
+#include "core/foundation/containers/blob.h"
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/core/result.h"
+#include "core/foundation/strings/utf8_string.h"
 
 #include <span>
 

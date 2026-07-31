@@ -1,5 +1,5 @@
-#include "foundation/platform/filesystem.h"
-#include "foundation/core/scope_guard.h"
+#include "core/foundation/platform/filesystem.h"
+#include "core/foundation/core/scope_guard.h"
 
 #include <optional>
 

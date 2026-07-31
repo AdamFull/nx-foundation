@@ -34,12 +34,12 @@
  * not. The parser and writer hold no shared state.
  */
 
-#include "foundation/containers/flat_map.h"
-#include "foundation/containers/hash_map.h"
-#include "foundation/containers/small_vector.h"
-#include "foundation/core/foundation.h"
-#include "foundation/core/result.h"
-#include "foundation/strings/utf8_string.h"
+#include "core/foundation/containers/flat_map.h"
+#include "core/foundation/containers/hash_map.h"
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/core/result.h"
+#include "core/foundation/strings/utf8_string.h"
 
 #include <limits>
 #include <optional>

@@ -85,8 +85,8 @@ add_library(nx_foundation STATIC ${NX_FOUNDATION_SOURCES} ${NX_FOUNDATION_HEADER
 add_library(nx::foundation ALIAS nx_foundation)
 
 # Includes are rooted at engine/, so every include reads
-# #include "foundation/<scope>/<file>.h" - unambiguous from anywhere.
-target_include_directories(nx_foundation PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# #include "core/foundation/<scope>/<file>.h" - unambiguous from anywhere.
+target_include_directories(nx_foundation PUBLIC "${CMAKE_SOURCE_DIR}/engine")
 
 # PUBLIC because these are used from public headers: foundation/core/foundation.h
 # includes <mimalloc.h>, and diagnostics/profiler.h includes <tracy/Tracy.hpp>

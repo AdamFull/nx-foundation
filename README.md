@@ -12,7 +12,7 @@ Most of it is header-only; the platform backends (`threading`, `platform`,
 `engine/`, so headers are pulled in by scope:
 
 ```cpp
-#include "foundation/core/foundation.h"
+#include "core/foundation/core/foundation.h"
 #include "foundation/containers/small_vector.h"
 #include "foundation/strings/utf8_string.h"
 ```

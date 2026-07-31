@@ -5,7 +5,7 @@
  * @brief Lock-free bounded queues: nx::mpmc::Queue and nx::mpsc::Queue.
  */
 
-#include "foundation/core/foundation.h"
+#include "core/foundation/core/foundation.h"
 
 #include <atomic>
 #include <new>

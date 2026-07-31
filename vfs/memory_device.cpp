@@ -1,4 +1,4 @@
-#include "foundation/vfs/vfs_internal.h"
+#include "core/foundation/vfs/vfs_internal.h"
 
 namespace nx::vfs {
 

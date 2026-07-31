@@ -4,7 +4,7 @@
  * @file result.h
  * @brief Error-or-value type nx::result and its error wrapper nx::err.
  */
-#include "foundation/core/foundation.h"
+#include "core/foundation/core/foundation.h"
 
 namespace nx {
 

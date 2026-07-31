@@ -1,6 +1,6 @@
 #pragma once
 
-#include "foundation/strings/utf8_string.h"
+#include "core/foundation/strings/utf8_string.h"
 
 #include <array>
 #include <optional>

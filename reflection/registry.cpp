@@ -1,8 +1,8 @@
-#include "foundation/reflection/registry.h"
+#include "core/foundation/reflection/registry.h"
 
-#include "foundation/containers/hash_map.h"
-#include "foundation/diagnostics/log.h"
-#include "foundation/threading/sync.h"
+#include "core/foundation/containers/hash_map.h"
+#include "core/foundation/diagnostics/log.h"
+#include "core/foundation/threading/sync.h"
 
 namespace nx::reflect {
 namespace {

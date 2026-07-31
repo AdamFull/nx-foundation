@@ -1,7 +1,7 @@
-#include "foundation/platform/os.h"
+#include "core/foundation/platform/os.h"
 
-#include "foundation/core/time.h"
-#include "foundation/core/scope_guard.h"
+#include "core/foundation/core/time.h"
+#include "core/foundation/core/scope_guard.h"
 
 #include <chrono>
 

@@ -5,7 +5,7 @@
  * @brief Fixed-size, heap-allocated, owning array (nx::blob).
  */
 
-#include "foundation/core/foundation.h"
+#include "core/foundation/core/foundation.h"
 
 #include <cassert>
 #include <span>

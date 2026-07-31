@@ -1,6 +1,6 @@
-#include "foundation/vfs/vfs.h"
+#include "core/foundation/vfs/vfs.h"
 
-#include "foundation/strings/format.h"
+#include "core/foundation/strings/format.h"
 
 #include <atomic>
 

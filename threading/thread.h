@@ -15,10 +15,10 @@
  * classes, cache hierarchy and NUMA node count.
  */
 
-#include "foundation/containers/fixed_vector.h"
-#include "foundation/containers/small_vector.h"
-#include "foundation/core/callable.h"
-#include "foundation/core/foundation.h"
+#include "core/foundation/containers/fixed_vector.h"
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/core/callable.h"
+#include "core/foundation/core/foundation.h"
 
 #include <chrono>
 

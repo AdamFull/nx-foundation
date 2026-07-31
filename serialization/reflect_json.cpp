@@ -1,7 +1,7 @@
-#include "foundation/serialization/reflect_json.h"
+#include "core/foundation/serialization/reflect_json.h"
 
-#include "foundation/serialization/json_util.h"
-#include "foundation/strings/utf8_string.h"
+#include "core/foundation/serialization/json_util.h"
+#include "core/foundation/strings/utf8_string.h"
 
 #include <cstring>
 

@@ -5,7 +5,7 @@
  * @brief Finding a type by the name a document gave it (nx::reflect).
  */
 
-#include "foundation/reflection/type.h"
+#include "core/foundation/reflection/type.h"
 
 namespace nx::reflect {
 

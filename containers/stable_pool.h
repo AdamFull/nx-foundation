@@ -10,8 +10,8 @@
 #include <stdexcept>
 #include <type_traits>
 
-#include "foundation/core/foundation.h"
-#include "foundation/core/handle.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/core/handle.h"
 
 #include <cassert>
 

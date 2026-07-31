@@ -1,5 +1,5 @@
-#include "foundation/threading/thread.h"
-#include "foundation/threading/sync.h"
+#include "core/foundation/threading/thread.h"
+#include "core/foundation/threading/sync.h"
 
 #include <bit>
 #include <cstdio>

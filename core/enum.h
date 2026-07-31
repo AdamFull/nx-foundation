@@ -5,8 +5,8 @@
  * @brief Enum utilities: nx::enums::flags, nx::enums::map, ranges and names.
  */
 
-#include "foundation/core/foundation.h"
-#include "foundation/strings/utf8_string_view.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string_view.h"
 
 #include <array>
 #include <optional>

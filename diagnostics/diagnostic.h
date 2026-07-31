@@ -1,7 +1,7 @@
 #pragma once
 
-#include "foundation/core/foundation.h"
-#include "foundation/diagnostics/log.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/diagnostics/log.h"
 
 #include <cstdio>
 #include <cstdlib>

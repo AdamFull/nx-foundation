@@ -5,12 +5,12 @@
  * @brief What a type is, described so a walker can act on it (nx::reflect).
  */
 
-#include "foundation/core/foundation.h"
-#include "foundation/core/hash.h"
-#include "foundation/reflection/aggregate.h"
-#include "foundation/reflection/attributes.h"
-#include "foundation/strings/id_string.h"
-#include "foundation/strings/utf8_string_view.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/core/hash.h"
+#include "core/foundation/reflection/aggregate.h"
+#include "core/foundation/reflection/attributes.h"
+#include "core/foundation/strings/id_string.h"
+#include "core/foundation/strings/utf8_string_view.h"
 
 #include <array>
 #include <memory>

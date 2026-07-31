@@ -5,8 +5,8 @@
  * @brief Walking a described type into a document and back (nx::json).
  */
 
-#include "foundation/reflection/type.h"
-#include "foundation/serialization/json.h"
+#include "core/foundation/reflection/type.h"
+#include "core/foundation/serialization/json.h"
 
 namespace nx::json {
 
