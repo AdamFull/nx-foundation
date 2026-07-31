@@ -111,7 +111,11 @@ template <class V> [[nodiscard]] value write_vec4(const V &v) {
   return !v.is_number() || v.get_u64(current) <= current;
 }
 
-template <class E> bool parse_enum(const string_view text, E &out) noexcept {
+template <class E>
+concept spelled_enum = !reflect::enum_spellings<E>::entries.empty();
+
+template <spelled_enum E>
+bool parse_enum(const string_view text, E &out) noexcept {
   const auto &spellings = *reflect::type_of<E>().enumeration;
   i64 value = 0;
   if (!spellings.value(text, value))
@@ -120,39 +124,9 @@ template <class E> bool parse_enum(const string_view text, E &out) noexcept {
   return true;
 }
 
-/// One enum value and a spelling that names it in a document.
-///
-/// A table may name one value more than once; the first entry is the canonical
-/// spelling, so aliases are something a format adds without changing what it
-/// writes back out.
-template <class E> struct enum_entry {
-  E value;
-  string_view name;
-};
-
-/// Looks @p text up in @p table. Leaves @p out alone and returns false when it
-/// is not there, so the caller keeps its default and warns in its own words.
-template <class E, usize N>
-[[nodiscard]] bool parse_enum(const enum_entry<E> (&table)[N],
-                              const string_view text, E &out) noexcept {
-  for (const enum_entry<E> &entry : table) {
-    if (entry.name == text) {
-      out = entry.value;
-      return true;
-    }
-  }
-  return false;
-}
-
-/// The spelling @p value is written as: the first entry naming it, or empty for
-/// a value the table does not cover.
-template <class E, usize N>
-[[nodiscard]] string_view enum_text(const enum_entry<E> (&table)[N],
-                                    const E value) noexcept {
-  for (const enum_entry<E> &entry : table)
-    if (entry.value == value)
-      return entry.name;
-  return {};
+template <spelled_enum E>
+[[nodiscard]] string_view enum_text(const E value) noexcept {
+  return reflect::type_of<E>().enumeration->text(static_cast<i64>(value));
 }
 
 } // namespace nx::json
