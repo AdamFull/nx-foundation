@@ -18,6 +18,8 @@ set(NX_FOUNDATION_HEADERS
   core/type_index.h
 
   reflection/aggregate.h
+  reflection/attributes.h
+  reflection/registry.h
   reflection/type.h
 
   containers/blob.h
@@ -73,7 +75,8 @@ set(NX_FOUNDATION_SOURCES
   vfs/memory_device.cpp
   vfs/zip_device.cpp
   diagnostics/log.cpp
-  serialization/json.cpp)
+  serialization/json.cpp
+  reflection/registry.cpp)
 
 add_library(nx_foundation STATIC ${NX_FOUNDATION_SOURCES} ${NX_FOUNDATION_HEADERS})
 add_library(nx::foundation ALIAS nx_foundation)

@@ -8,6 +8,7 @@
 #include "foundation/core/foundation.h"
 #include "foundation/core/hash.h"
 #include "foundation/reflection/aggregate.h"
+#include "foundation/reflection/attributes.h"
 #include "foundation/strings/id_string.h"
 #include "foundation/strings/utf8_string_view.h"
 
@@ -46,6 +47,14 @@ struct field_info {
   u32 name_hash = 0;
   u32 offset = 0;
   const type_info *type = nullptr;
+  field_attributes attributes{};
+
+  [[nodiscard]] constexpr bool has(const field_flag f) const noexcept {
+    return attributes.flags.has(f);
+  }
+  [[nodiscard]] constexpr bool serialised() const noexcept {
+    return !has(field_flag::transient);
+  }
 };
 
 struct enum_entry {
@@ -259,7 +268,8 @@ template <plain_aggregate T> const auto &fields_of() {
       [&]<usize... I>(std::index_sequence<I...>) {
         ((out[I].name = field_name<T, I>(),
           out[I].name_hash =
-              hash_fnv1a32(out[I].name.data(), out[I].name.size())),
+              hash_fnv1a32(out[I].name.data(), out[I].name.size()),
+          out[I].attributes = attributes_for<T>(out[I].name)),
          ...);
       }(std::make_index_sequence<n>{});
     }

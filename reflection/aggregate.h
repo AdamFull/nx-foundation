@@ -43,7 +43,7 @@ template <class T, class... Probe> consteval usize count_fields() {
 /// puts a field's name into a compiler signature.
 template <class T> extern const T fake;
 
-template <auto P> consteval string_view signature() {
+template <class T, usize I, auto P> consteval string_view signature() {
 #if defined(_MSC_VER) && !defined(__clang__)
   return __FUNCSIG__;
 #else
@@ -844,8 +844,9 @@ template <class T> [[nodiscard]] consteval string_view type_name() {
 template <plain_aggregate T, usize I>
 [[nodiscard]] consteval string_view field_name() {
   static_assert(I < field_count<T>, "nx::reflect: no such field");
+  using U = std::remove_cvref_t<T>;
   return detail::name_from(
-      detail::signature<detail::field_pointer<std::remove_cvref_t<T>, I>()>());
+      detail::signature<U, I, detail::field_pointer<U, I>()>());
 }
 
 } // namespace nx::reflect
