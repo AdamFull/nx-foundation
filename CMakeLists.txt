@@ -42,6 +42,8 @@ set(NX_FOUNDATION_HEADERS
   strings/utf8_string_view.h
 
   serialization/json.h
+  serialization/json_util.h
+  serialization/reflect_json.h
 
   threading/sync.h
   threading/thread.h
@@ -76,7 +78,8 @@ set(NX_FOUNDATION_SOURCES
   vfs/zip_device.cpp
   diagnostics/log.cpp
   serialization/json.cpp
-  reflection/registry.cpp)
+  reflection/registry.cpp
+  serialization/reflect_json.cpp)
 
 add_library(nx_foundation STATIC ${NX_FOUNDATION_SOURCES} ${NX_FOUNDATION_HEADERS})
 add_library(nx::foundation ALIAS nx_foundation)

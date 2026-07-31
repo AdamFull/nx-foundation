@@ -49,6 +49,12 @@ struct field_info {
   const type_info *type = nullptr;
   field_attributes attributes{};
 
+  /// The name this field has in a document, which is its own unless something
+  /// said otherwise.
+  [[nodiscard]] constexpr string_view key() const noexcept {
+    return attributes.key.empty() ? name : attributes.key;
+  }
+
   [[nodiscard]] constexpr bool has(const field_flag f) const noexcept {
     return attributes.flags.has(f);
   }
@@ -57,20 +63,13 @@ struct field_info {
   }
 };
 
-struct enum_entry {
-  i64 value;
-  string_view name;
-};
-
-/// A table may name one value twice. The first entry naming it is canonical, so
-/// accepting an alias never changes what gets written back out.
 struct enum_data {
   bool is_signed = false;
-  std::span<const enum_entry> entries;
+  std::span<const enum_spelling> entries;
 
   [[nodiscard]] constexpr string_view
   text(const i64 value, const string_view fallback = {}) const noexcept {
-    for (const enum_entry &e : entries)
+    for (const enum_spelling &e : entries)
       if (e.value == value)
         return e.name;
     return fallback;
@@ -78,7 +77,7 @@ struct enum_data {
 
   [[nodiscard]] constexpr bool value(const string_view name,
                                      i64 &out) const noexcept {
-    for (const enum_entry &e : entries)
+    for (const enum_spelling &e : entries)
       if (e.name == name) {
         out = e.value;
         return true;
@@ -319,12 +318,6 @@ template <class T> const sequence_data &sequence_of() {
 template <class E> const enum_data &enum_of();
 
 } // namespace detail
-
-/// Specialised by NX_REFLECT_ENUM. The primary leaves an enum described by
-/// width and signedness alone.
-template <class E> struct enum_spellings {
-  static constexpr std::span<const enum_entry> entries{};
-};
 
 namespace detail {
 

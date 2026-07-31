@@ -43,11 +43,29 @@ NX_ENUM_FLAGS_DEFINE(field_flag, field_flags)
 
 struct field_attributes {
   field_flags flags{};
+  /// The name this field has in a document, when that differs from the name it
+  /// has in the type. `SamplerSettings::max_anisotropy` is written
+  /// "anisotropy"; renaming the field must not rename the key.
+  string_view key{};
   f64 min = 0.0;
   f64 max = 0.0;
 #if NX_REFLECT_EDITOR
   string_view label{};
 #endif
+};
+
+/// One value of an enum and a spelling that names it in a document. A table may
+/// name one value twice; the first entry naming it is canonical, so accepting
+/// an alias never changes what gets written back out.
+struct enum_spelling {
+  i64 value;
+  string_view name;
+};
+
+/// Specialised by NX_REFLECT_ENUM. The primary leaves an enum described by its
+/// width and signedness alone, which is still enough to read one.
+template <class E> struct enum_spellings {
+  static constexpr std::span<const enum_spelling> entries{};
 };
 
 struct field_attribute_entry {
@@ -165,3 +183,24 @@ attributes_for(const string_view name) {
   static_assert(::nx::reflect::detail::attributes_match<Type>(),               \
                 "nx::reflect: an attribute names a field this type does not "  \
                 "have - was it renamed?");
+
+#define NX_ENUM_ONE(item) NX_ENUM_ONE_(NX_RF_UNWRAP item)
+#define NX_ENUM_ONE_(...) NX_ENUM_MAKE(__VA_ARGS__)
+#define NX_ENUM_MAKE(enumerator, text)                                         \
+  ::nx::reflect::enum_spelling { static_cast<i64>(Enum_::enumerator), text }
+
+/// Spells @p Enum out for a document and an inspector. The enumerators are
+/// unqualified, so each is written once.
+///
+/// @code
+/// NX_REFLECT_ENUM(nxe::scene::TextureFilter, (Linear, "linear"),
+///                 (Nearest, "nearest"), (Nearest, "point"))
+/// @endcode
+#define NX_REFLECT_ENUM(Enum, ...)                                             \
+  template <> struct nx::reflect::enum_spellings<Enum> {                       \
+    using Enum_ = Enum;                                                        \
+    static constexpr ::std::array table = {                                    \
+        NX_RF_LIST(NX_ENUM_ONE, __VA_ARGS__)};                                 \
+    static constexpr ::std::span<const ::nx::reflect::enum_spelling> entries{  \
+        table};                                                                \
+  };

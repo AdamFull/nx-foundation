@@ -14,6 +14,7 @@
  */
 
 #include "foundation/core/foundation.h"
+#include "foundation/reflection/type.h"
 #include "foundation/serialization/json.h"
 
 namespace nx::json {
@@ -108,6 +109,15 @@ template <class V> [[nodiscard]] value write_vec4(const V &v) {
                                      const u64 current) noexcept {
   const value &v = root["version"];
   return !v.is_number() || v.get_u64(current) <= current;
+}
+
+template <class E> bool parse_enum(const string_view text, E &out) noexcept {
+  const auto &spellings = *reflect::type_of<E>().enumeration;
+  i64 value = 0;
+  if (!spellings.value(text, value))
+    return false;
+  out = static_cast<E>(value);
+  return true;
 }
 
 /// One enum value and a spelling that names it in a document.
