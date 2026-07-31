@@ -32,6 +32,7 @@ void type_registry::add(const type_info &type) {
   const auto it = t.by_id.find(type.id);
   if (it != t.by_id.end()) {
     // Two names hashing alike would make a document load the wrong component,
+    // which is worth a word rather than a silent replacement.
     if (it->second != &type)
       nx::loge(log_reflect, "'{}' and '{}' share an id; the second is ignored",
                it->second->name, type.name);
