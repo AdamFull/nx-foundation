@@ -32,15 +32,69 @@ struct any_ref {
   template <class T> constexpr operator T &() const noexcept;
 };
 
-template <class T, class... Probe> consteval usize count_fields() {
+/// One initialiser slot. Only exists so a pack of indices can expand into a
+/// pack of `any_ref`s.
+template <usize> using slot = any_ref;
+
+/// The most initialisers `T{...}` accepts.
+///
+/// This is an upper bound on the field count, not the count itself. An array
+/// cannot be initialised from a reference, so the compiler elides its braces
+/// and `i32 slots[4]` reads as four slots - under clang and gcc, at least;
+/// MSVC hands the whole array one. count_fields below turns the bound into the
+/// real count.
+template <class T, class... Probe> consteval usize count_slots() {
   if constexpr (requires { T{Probe{}..., any_ref{}}; })
-    return count_fields<T, Probe..., any_ref>();
+    return count_slots<T, Probe..., any_ref>();
   else
     return sizeof...(Probe);
 }
 
+/// Whether `T{any_ref x Head, {}, any_ref x Tail}` initialises.
+///
+/// The explicit `{}` is the point of the exercise: a member handed a
+/// brace-enclosed initialiser keeps its braces, so nothing is elided into it
+/// and `Tail` counts only the slots the members *after* it take.
+template <class T, usize... Head, usize... Tail>
+consteval bool fits_around(std::index_sequence<Head...>,
+                           std::index_sequence<Tail...>) {
+  return requires { T{slot<Head>{}..., {}, slot<Tail>{}...}; };
+}
+
+/// How many of @p Total slots the member sitting at slot @p Head takes.
+///
+/// The tail counts down from the largest it could be, so the search costs one
+/// step per slot the member takes and the walk below stays linear in Total.
+template <class T, usize Total, usize Head, usize Tail>
+consteval usize slots_at() {
+  if constexpr (fits_around<T>(std::make_index_sequence<Head>{},
+                               std::make_index_sequence<Tail>{}))
+    return Total - Head - Tail;
+  else if constexpr (Tail == 0)
+    // `{}` does not initialise this member at all - it has no default
+    // constructor, say. An array or a subaggregate would have taken it, so
+    // nothing was elided into this one and it took its single slot.
+    return 1;
+  else
+    return slots_at<T, Total, Head, Tail - 1>();
+}
+
+/// Walks the slots one member at a time.
+template <class T, usize Total, usize Head> consteval usize count_fields() {
+  if constexpr (Head >= Total)
+    return 0;
+  else
+    return 1 +
+           count_fields<T, Total,
+                        Head + slots_at<T, Total, Head, Total - Head - 1>()>();
+}
+
 /// Never defined. Its address is only ever a template argument, which is what
 /// puts a field's name into a compiler signature.
+///
+/// This is what makes a described type need linkage: clang rejects the use
+/// outright for a type declared in an anonymous namespace, because it can see
+/// the object could not be defined in any translation unit either.
 template <class T> extern const T fake;
 
 template <class T, usize I, auto P> consteval string_view signature() {
@@ -763,16 +817,17 @@ template <> struct tie_n<64> {
 
 } // namespace detail
 
-/// How many fields @p T has.
+/// How many fields @p T has, counted the way a structured binding counts: an
+/// array member is one field, whatever its length.
 ///
-/// A raw array member can read as several fields, because an array cannot be
-/// initialised from a reference and the compiler falls back to brace elision.
-/// That never goes unnoticed: a structured binding takes the exact number of
-/// members, so a wrong count is a compile error at the tie below rather than a
-/// wrong answer. None of this engine's components hit it.
+/// That is not the same as the number of initialisers the type accepts, which
+/// is why this takes two steps rather than one. Probing with references alone
+/// reads `i32 slots[4]` as four fields on clang and gcc, and a wrong count is a
+/// compile error at the tie below rather than a wrong answer.
 template <plain_aggregate T>
 inline constexpr usize field_count =
-    detail::count_fields<std::remove_cvref_t<T>>();
+    detail::count_fields<std::remove_cvref_t<T>,
+                         detail::count_slots<std::remove_cvref_t<T>>(), 0>();
 
 /// Calls `fn(field0, field1, ...)` with a reference to each field of @p object.
 /// Everything else in the reflection layer is built on this one call.
