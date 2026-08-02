@@ -534,6 +534,10 @@ private:
   struct hierarchy_node {
     Entity parent{};
     Entity first_child{};
+    /// So set_parent can append in O(1). Children keep the order they were
+    /// added, which for a transform hierarchy is merely tidy and for a UI is
+    /// the layout - a Row reversed is a visible bug.
+    Entity last_child{};
     Entity prev_sibling{};
     Entity next_sibling{};
     u32 child_count = 0;
@@ -969,11 +973,13 @@ public:
     hierarchy_node &cn = m_hierarchy.at(child);
     hierarchy_node &pn = m_hierarchy.at(parent);
     cn.parent = parent;
-    cn.prev_sibling = Entity{};
-    cn.next_sibling = pn.first_child;
-    if (pn.first_child.valid())
-      m_hierarchy.at(pn.first_child).prev_sibling = child;
-    pn.first_child = child;
+    cn.next_sibling = Entity{};
+    cn.prev_sibling = pn.last_child;
+    if (pn.last_child.valid())
+      m_hierarchy.at(pn.last_child).next_sibling = child;
+    else
+      pn.first_child = child;
+    pn.last_child = child;
     ++pn.child_count;
     ++m_relation_count;
     ++m_hierarchy_version;
@@ -1213,6 +1219,8 @@ private:
       pn.first_child = next;
     if (next.valid())
       m_hierarchy.at(next).prev_sibling = prev;
+    else
+      pn.last_child = prev;
 
     cn->parent = Entity{};
     cn->prev_sibling = Entity{};
