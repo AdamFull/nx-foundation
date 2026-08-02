@@ -50,7 +50,9 @@
 #define NX_HAS_ANDROID_NDK 1
 #endif
 
+#ifndef NX_USE_MIMALLOC
 #define NX_USE_MIMALLOC 1
+#endif
 #if NX_USE_MIMALLOC
 #include <mimalloc.h>
 #else
