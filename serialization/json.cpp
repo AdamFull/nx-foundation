@@ -393,14 +393,6 @@ private:
     }
   }
 
-  /// Appends the UTF-8 encoding of @p cp to @p out. @p cp is already validated.
-  static void append_codepoint(nx::string &out, char32_t cp) {
-    char buf[4];
-    usize len = 0;
-    utf8::encode_char(cp, buf, len);
-    out.append(buf, len);
-  }
-
   error_code parse_escape(nx::string &out) {
     // m_cur points at the character after the backslash.
     if (at_end())
@@ -455,13 +447,13 @@ private:
         return set(error_code::invalid_surrogate, esc_at);
       const auto cp = nx::cast<char32_t>(0x10000u + ((unit - 0xD800u) << 10) +
                                          (low - 0xDC00u));
-      append_codepoint(out, cp);
+      utf8::append_char(out, cp);
       return error_code::none;
     }
     if (utf8::is_low_surrogate(nx::cast<char16_t>(unit)))
       return set(error_code::invalid_surrogate, esc_at); // unpaired low half
 
-    append_codepoint(out, nx::cast<char32_t>(unit));
+    utf8::append_char(out, nx::cast<char32_t>(unit));
     return error_code::none;
   }
 

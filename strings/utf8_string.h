@@ -205,6 +205,53 @@ void for_each_codepoint(const char *data, const usize length, Fn &&fn) {
     remaining -= r;
   }
 }
+
+// Byte offset of the character after the one @p at is in. A caret steps by
+// these: one byte at a time would land inside a character and cut it in half.
+[[nodiscard]] constexpr usize next_char(const string_view text,
+                                        usize at) noexcept {
+  if (at >= text.size())
+    return text.size();
+  ++at;
+  while (at < text.size() && is_continuation_byte(text[at]))
+    ++at;
+  return at;
+}
+
+[[nodiscard]] constexpr usize prev_char(const string_view text,
+                                        usize at) noexcept {
+  if (at > text.size())
+    at = text.size();
+  if (at == 0)
+    return 0;
+  --at;
+  while (at > 0 && is_continuation_byte(text[at]))
+    --at;
+  return at;
+}
+
+// Places a caret can stand, which is what next_char steps through.
+// basic_string::code_point_count answers the decoder's question instead, and
+// the two differ on a stray continuation byte: this one gives it to the
+// character before it, that one calls it a code point of its own.
+[[nodiscard]] constexpr usize count_chars(const string_view text) noexcept {
+  usize n = 0;
+  for (usize at = 0; at < text.size(); at = next_char(text, at))
+    ++n;
+  return n;
+}
+
+// The code point starting at @p at, or 0 for bytes that do not decode. No
+// caller can confuse that with a real answer: U+0000 does not appear in text.
+[[nodiscard]] inline char32_t char_at(const string_view text,
+                                      const usize at) noexcept {
+  char32_t cp = 0;
+  usize read = 0;
+  if (at >= text.size() ||
+      !decode_char(text.data() + at, text.size() - at, cp, read))
+    return 0;
+  return cp;
+}
 } // namespace utf8
 
 namespace detail {
@@ -883,6 +930,21 @@ private:
 using string = basic_string<>;
 
 static_assert(sizeof(string) == 3 * sizeof(void *));
+
+namespace utf8 {
+
+/// Appends the UTF-8 encoding of @p cp. False, and @p out untouched, when the
+/// code point cannot be encoded.
+template <class A> bool append_char(basic_string<A> &out, const char32_t cp) {
+  char buf[4];
+  usize len = 0;
+  if (!encode_char(cp, buf, len))
+    return false;
+  out.append(buf, len);
+  return true;
+}
+
+} // namespace utf8
 
 template <class A>
 basic_string<A> operator+(const basic_string<A> &a, string_view b) {
