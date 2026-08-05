@@ -19,6 +19,7 @@ set(NX_FOUNDATION_HEADERS
 
   reflection/aggregate.h
   reflection/attributes.h
+  reflection/layout.h
   reflection/registry.h
   reflection/type.h
 
@@ -78,6 +79,7 @@ set(NX_FOUNDATION_SOURCES
   vfs/zip_device.cpp
   diagnostics/log.cpp
   serialization/json.cpp
+  reflection/layout.cpp
   reflection/registry.cpp
   serialization/reflect_json.cpp)
 
