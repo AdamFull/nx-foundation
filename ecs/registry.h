@@ -328,8 +328,13 @@ public:
 
   /// Number of entities in the leading (smallest) storage. Upper bound only.
   [[nodiscard]] usize size_hint() const noexcept {
-    base_ptr lead = leading();
-    return lead ? lead->size() : 0;
+    usize best = NO_LEAD;
+    std::apply(
+        [&](auto... p) {
+          ((best = p != nullptr ? nx::min(best, p->set().size()) : best), ...);
+        },
+        m_storages);
+    return best == NO_LEAD ? 0 : best;
   }
 
   [[nodiscard]] bool empty() const noexcept { return size_hint() == 0; }
@@ -339,36 +344,32 @@ public:
   template <typename Fn> void each(Fn &&fn) const {
     if (!all_present())
       return;
-    base_ptr lead = leading();
-    if (!lead)
-      return;
-    for (entity_type e : lead->entities()) {
-      if (!matches(e))
-        continue;
-      invoke(std::forward<Fn>(fn), e, std::index_sequence_for<T...>{});
-    }
+    walk_from(leading_index(), fn, std::index_sequence_for<T...>{});
   }
 
 private:
   using exclude_alloc = typename std::allocator_traits<
       allocator_type>::template rebind_alloc<base_ptr>;
 
+  static constexpr usize NO_LEAD = ~usize(0);
+
   [[nodiscard]] bool all_present() const noexcept {
     return std::apply([](auto... p) { return ((p != nullptr) && ...); },
                       m_storages);
   }
 
-  [[nodiscard]] base_ptr leading() const noexcept {
-    base_ptr best = nullptr;
-    usize best_size = ~usize(0);
+  [[nodiscard]] usize leading_index() const noexcept {
+    usize best = NO_LEAD;
+    usize best_size = NO_LEAD;
+    usize at = 0;
     std::apply(
         [&](auto... p) {
           (([&] {
-             const base_ptr b = p;
-             if (b && b->size() < best_size) {
-               best_size = b->size();
-               best = b;
+             if (p != nullptr && p->set().size() < best_size) {
+               best_size = p->set().size();
+               best = at;
              }
+             ++at;
            }()),
            ...);
         },
@@ -376,20 +377,49 @@ private:
     return best;
   }
 
-  [[nodiscard]] bool matches(entity_type e) const noexcept {
-    const bool has_all = std::apply(
-        [&](auto... p) { return (p->contains(e) && ...); }, m_storages);
-    if (!has_all)
-      return false;
-    for (base_ptr ex : m_excludes)
-      if (ex && ex->contains(e))
-        return false;
-    return true;
+  template <typename Fn, usize... I>
+  void walk_from(const usize lead, Fn &fn, std::index_sequence<I...>) const {
+    (void)((I == lead ? (walk<I>(fn), true) : false) || ...);
   }
 
-  template <typename Fn, usize... I>
-  void invoke(Fn &&fn, entity_type e, std::index_sequence<I...>) const {
-    fn(e, std::get<I>(m_storages)->get(e)...);
+  /// The lead's handles and values are two arrays at the same dense index, so
+  /// its entity and its component both come out of the index rather than a
+  /// lookup. Every other type costs exactly one.
+  template <usize L, typename Fn> void walk(Fn &fn) const {
+    const auto &lead = std::get<L>(m_storages)->set();
+    for (usize i = 0, n = lead.size(); i < n; ++i) {
+      const entity_type e = lead.handle_at(i);
+      if (excluded(e))
+        continue;
+      call<L>(fn, e, i, std::index_sequence_for<T...>{});
+    }
+  }
+
+  [[nodiscard]] bool excluded(const entity_type e) const noexcept {
+    for (base_ptr ex : m_excludes)
+      if (ex && ex->contains(e))
+        return true;
+    return false;
+  }
+
+  /// Presence and value are one question, so they are one lookup: the fold
+  /// keeps each pointer it fetched, and stops at the first type the entity
+  /// does not have.
+  template <usize L, typename Fn, usize... I>
+  void call(Fn &fn, const entity_type e, const usize i,
+            std::index_sequence<I...>) const {
+    std::tuple<decltype(pointer<L, I>(e, i))...> found{};
+    if ((... && ((std::get<I>(found) = pointer<L, I>(e, i)) != nullptr)))
+      fn(e, *std::get<I>(found)...);
+  }
+
+  template <usize L, usize I>
+  [[nodiscard]] auto pointer(const entity_type e,
+                             const usize i) const noexcept {
+    if constexpr (I == L)
+      return std::get<I>(m_storages)->set().values().data() + i;
+    else
+      return std::get<I>(m_storages)->try_get(e);
   }
 
   std::tuple<detail::view_storage_ptr<Reg, T>...> m_storages;
