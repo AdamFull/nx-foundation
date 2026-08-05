@@ -4,16 +4,10 @@
  * @file sync.h
  * @brief Futex-based synchronization primitives.
  *
- * Every primitive here is a thin wrapper over a 32-bit futex word
- * (nx::futex in os.h): 4-8 bytes of state, lock-free fast paths, and a
- * kernel wait only under contention. None of them allocate and none of
- * them throw. Timed waits take std::chrono durations; a zero or negative
- * duration means "do not block".
- *
- * Provided types: nx::spin_lock, nx::mutex, nx::recursive_mutex,
- * nx::cond_var, nx::rw_lock, nx::semaphore, nx::event, nx::barrier,
- * nx::once_flag / nx::call_once, and the nx::scoped_lock /
- * nx::scoped_shared_lock guards.
+ * Every primitive here is a thin wrapper over a 32-bit futex word (nx::futex
+ * in os.h): 4-8 bytes of state, lock-free fast paths, and a kernel wait only
+ * under contention. None allocate and none throw. Timed waits take chrono
+ * durations; zero or negative means "do not block".
  */
 
 #include "core/foundation/core/foundation.h"
@@ -24,13 +18,10 @@
 namespace nx {
 
 /**
- * @brief Raw 32-bit futex: the wait/wake kernel primitive every type in
- * this header is built on.
+ * @brief Raw 32-bit futex: the wait/wake primitive everything here builds on.
  *
- * wait() blocks the calling thread while @p addr still holds
- * @p expected_value, returning when another thread changes the word and
- * wakes it (or the timeout elapses). A zero timeout means wait forever.
- * Backed by WaitOnAddress on Windows and SYS_futex on Linux/Android.
+ * wait() blocks while @p addr still holds @p expected_value; a zero timeout
+ * means wait forever. WaitOnAddress on Windows, SYS_futex on Linux/Android.
  * Spurious wakeups are possible: always re-check the word in a loop.
  */
 namespace futex {
@@ -76,13 +67,9 @@ inline bool futex_wait_until(std::atomic<u32> *addr, u32 expected,
 }
 } // namespace detail
 
-/**
- * @brief Minimal test-and-set spin lock.
- *
- * Never enters the kernel: contended waiters burn CPU. Use only for
- * critical sections of a few instructions where a sleeping lock's wake
- * latency would dominate; otherwise prefer nx::mutex.
- */
+/// Minimal test-and-set spin lock. Never enters the kernel, so contended
+/// waiters burn CPU: use only for critical sections of a few instructions
+/// where a sleeping lock's wake latency would dominate.
 class spin_lock {
 public:
   spin_lock() = default;
@@ -108,13 +95,9 @@ private:
   std::atomic<u32> m_locked{0};
 };
 
-/**
- * @brief Fast futex-based mutex (4 bytes).
- *
- * Uncontended lock/unlock is a single CAS / exchange with no kernel
- * involvement; contended waiters spin briefly, then sleep on the futex
- * word. Not recursive and not fair (no FIFO ordering under contention).
- */
+/// Fast futex-based mutex (4 bytes). Uncontended lock/unlock is a single CAS;
+/// contended waiters spin briefly, then sleep. Not recursive and not fair -
+/// no FIFO ordering under contention.
 class mutex {
 public:
   mutex() = default;
@@ -182,12 +165,8 @@ private:
   std::atomic<u32> m_state{0};
 };
 
-/**
- * @brief Recursive mutex built on nx::mutex plus an owner thread id.
- *
- * The owning thread may re-lock any number of times; unlock() must be
- * called once per lock().
- */
+/// Recursive mutex: nx::mutex plus an owner thread id. The owning thread may
+/// re-lock any number of times; unlock() must be called once per lock().
 class recursive_mutex {
 public:
   recursive_mutex() = default;
@@ -233,13 +212,9 @@ private:
   u32 m_depth = 0;
 };
 
-/**
- * @brief Condition variable for nx::mutex.
- *
- * Subject to spurious wakeups like any condition variable: always wait in
- * a predicate loop (or use the predicate overloads, which do it for you).
- * notify_* may be called with or without the mutex held.
- */
+/// Condition variable for nx::mutex. Subject to spurious wakeups: always wait
+/// in a predicate loop, or use the predicate overloads. notify_* may be called
+/// with or without the mutex held.
 class cond_var {
 public:
   cond_var() = default;
@@ -302,13 +277,9 @@ private:
   std::atomic<u32> m_seq{0};
 };
 
-/**
- * @brief Writer-preferring reader/writer lock.
- *
- * Any number of readers or one writer. Once a writer is waiting, new
- * readers block until it has acquired and released, so writers cannot
- * starve. Not recursive; readers must not upgrade in place.
- */
+/// Writer-preferring reader/writer lock: any number of readers or one writer,
+/// and once a writer waits, new readers block so it cannot starve. Not
+/// recursive; readers must not upgrade in place.
 class rw_lock {
 public:
   rw_lock() = default;
@@ -404,12 +375,8 @@ private:
   std::atomic<u32> m_waiting_writers{0};
 };
 
-/**
- * @brief Counting semaphore.
- *
- * acquire() decrements the count, sleeping while it is zero; release()
- * increments it and wakes waiters.
- */
+/// Counting semaphore: acquire() decrements, sleeping while the count is zero;
+/// release() increments and wakes waiters.
 class semaphore {
 public:
   explicit semaphore(u32 initial = 0) noexcept : m_count(initial) {}
@@ -467,13 +434,9 @@ private:
   std::atomic<u32> m_count;
 };
 
-/**
- * @brief Win32-style event: a boolean flag threads can wait on.
- *
- * Manual-reset: set() releases all current and future waiters until
- * reset(). Auto-reset: set() releases exactly one waiter and the flag
- * clears itself.
- */
+/// Win32-style event: a boolean flag threads can wait on. Manual-reset, set()
+/// releases every waiter until reset(); auto-reset, it releases exactly one
+/// and the flag clears itself.
 class event {
 public:
   explicit event(bool manual_reset = false, bool initially_set = false) noexcept
@@ -546,10 +509,9 @@ private:
  * @brief Reusable thread barrier.
  *
  * arrive_and_wait() blocks until @p count threads have arrived, then releases
- * them all and resets for the next phase. Waiters sleep on the futex rather
- * than spin: for the memory-bound parallel phases this backs, a spinning
- * waiter contends with the still-working stragglers for memory bandwidth and
- * costs far more than the syscall it would save (measured).
+ * them and resets. Waiters sleep rather than spin: for the memory-bound phases
+ * this backs, a spinning waiter contends with the still-working stragglers for
+ * bandwidth and costs far more than the syscall it saves (measured).
  */
 class barrier {
 public:
@@ -588,12 +550,8 @@ struct once_flag {
   std::atomic<u32> state{0}; // 0 = idle, 1 = running, 2 = done
 };
 
-/**
- * @brief Runs @p fn exactly once across all threads using the same flag.
- *
- * Concurrent callers block until the winning call finishes. @p fn must
- * not throw.
- */
+/// Runs @p fn exactly once across every thread sharing the flag; concurrent
+/// callers block until the winning call finishes. @p fn must not throw.
 template <typename F, typename... Args>
 void call_once(once_flag &flag, F &&fn, Args &&...args) {
   if (NX_LIKELY(flag.state.load(std::memory_order_acquire) == 2))

@@ -4,31 +4,24 @@
  * @file id_string.h
  * @brief Interned, hash-identified string (nx::id_string).
  *
- * An nx::id_string is an 8-byte, trivially copyable value that identifies a
- * string by a 64-bit FNV-1a hash of its bytes. Two id_strings are equal when
- * their ids are equal, so comparison, ordering, and hashing are integer
- * operations independent of the string length. This is the design used by
- * stingray/bitsquid's idstring and, conceptually, by Unreal's FName.
+ * An 8-byte value identifying a string by a 64-bit FNV-1a hash of its bytes,
+ * so comparison, ordering and hashing are integer operations independent of
+ * length. Unlike a bare hash the original bytes are recoverable: every
+ * id_string built at run time registers them in a process-wide intern pool,
+ * in every build configuration rather than only in debug.
  *
- * Unlike a bare hash, the original bytes are recoverable. Every id_string built
- * at run time registers its bytes in a process-wide, thread-safe intern pool,
- * so view(), c_str(), and to_string() return the original text in every build
- * configuration, not only in debug.
- *
- * The id is a pure function of the bytes: it is stable across runs and across
- * machines and can be computed at compile time. This makes it suitable as a
- * baked key in asset pipelines and as a constant-expression switch label:
+ * The id is a pure function of the bytes - stable across runs and machines,
+ * and computable at compile time, so it works as a baked asset key and as a
+ * constant-expression switch label:
  *
  * @code
  * switch (event.name.id()) {
  *   case nx::id_string::from_literal("jump").id(): on_jump(); break;
- *   case nx::id_string::from_literal("fire").id(): on_fire(); break;
  * }
  * @endcode
  *
- * Identity is case-sensitive and operates on raw UTF-8 bytes; no normalization
- * is performed. Ordering via operator<=> compares ids, which is fast but not
- * lexicographic; use id_string::lexical_less to sort by text.
+ * Case-sensitive over raw UTF-8 bytes; no normalization. operator<=> compares
+ * ids, which is fast but not lexicographic - use lexical_less to sort by text.
  */
 
 #include "core/foundation/containers/hash_map.h"
@@ -58,11 +51,10 @@ namespace detail {
 /**
  * @brief Process-wide intern pool backing nx::id_string.
  *
- * Maps each id to the canonical bytes that produced it. Bytes are kept in an
- * append-only arena of fixed-size pages so that the const char* handed out by
- * lookups stays valid for the entire lifetime of the program; entries are never
- * moved or freed. A shared_mutex allows concurrent lookups and serializes the
- * rare insert. Reach it through id_string_intern_pool().
+ * Bytes live in an append-only arena of fixed-size pages, never moved or
+ * freed, so a const char* from a lookup stays valid for the life of the
+ * program. A shared_mutex allows concurrent lookups and serializes the rare
+ * insert. Reach it through id_string_intern_pool().
  */
 class id_string_pool {
 public:
@@ -161,14 +153,9 @@ private:
 
 } // namespace detail
 
-/**
- * @brief Interned string identified by a 64-bit hash; see id_string.h.
- *
- * Holds a single u64 id. The empty id_string has id 0 and is the default and
- * the canonical form of the empty string. Run-time construction interns the
- * bytes so the text is always recoverable; compile-time construction via
- * from_literal computes the id only.
- */
+/// Interned string identified by a 64-bit hash; see the file header. The empty
+/// id_string has id 0. Run-time construction interns the bytes so the text is
+/// recoverable; from_literal computes the id only.
 class id_string {
 public:
   using id_type = u64;

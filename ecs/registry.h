@@ -5,32 +5,22 @@
  * @brief Entity-component-system registry (nx::ecs::registry /
  * nx::ecs::basic_registry).
  *
- * A low-level, allocator-aware ECS container for managing entities, their
- * components, and parent-child relationships. It is a foundational building
- * block: it knows nothing about scenes, rendering, editors, or GPU types, and
- * other systems are expected to build on top of it.
- *
- * Entities are versioned handles (nx::basic_handle). Components are stored in
- * dense, cache-friendly nx::sparse_set storages, one per registered type.
- * Component types must be registered before use. Typed views and cached
- * queries iterate entities that share a set of components, and a built-in
- * intrusive hierarchy provides parent-child relations.
+ * A low-level, allocator-aware ECS container. It knows nothing about scenes,
+ * rendering or GPU types; other systems build on top of it. Component types
+ * must be registered before use.
  *
  * @section reg_threading Thread safety
- * The registry is not internally synchronized. Concurrent reads are safe only
- * when no thread is writing. Creating or destroying entities, adding or
- * removing components, and changing the hierarchy all mutate shared state and
- * require external synchronization. Mutating the set of components of a type
- * while a view or query over that type is iterating is undefined; finish the
- * iteration first.
+ * Not internally synchronized. Concurrent reads are safe only when no thread
+ * is writing. Mutating the set of components of a type while a view or query
+ * over that type is iterating is undefined; finish the iteration first.
  *
  * @section reg_invalidation Reference and iterator invalidation
- * Component storages are swap-and-pop sparse sets, so a T& or T* obtained from
- * get()/try_get() is invalidated by any add or remove on that same component
- * type (it may refer to a different element afterwards). Refer to components by
- * entity, not by stored pointer, across mutations. Entity handles stay valid
- * until the entity is destroyed; a destroyed-and-recycled slot yields a new
- * version, so old handles report as not alive.
+ * Storages are swap-and-pop sparse sets, so a T& or T* from get()/try_get() is
+ * invalidated by any add or remove on that same component type - it may refer
+ * to a different element afterwards. Refer to components by entity, not by
+ * stored pointer, across mutations. Entity handles stay valid until the entity
+ * is destroyed; a recycled slot yields a new version, so old handles report as
+ * not alive.
  */
 
 #include <cstring>
@@ -104,11 +94,10 @@ template <typename T> [[nodiscard]] component_id component_id_of() noexcept {
   return id;
 }
 
-// Type-erased lifecycle operations derived from a component type. With typed
-// storage these are not used to run the lifetime (the sparse_set already calls
-// the real ctor/dtor), but they are recorded in metadata so reflection and
-// serialization layers built on top of the registry can manipulate components
-// generically. A null pointer means the operation is not available for T.
+// Type-erased lifecycle operations. Not used to run the lifetime - the
+// sparse_set already calls the real ctor/dtor - but recorded so reflection and
+// serialization layers can manipulate components generically. A null pointer
+// means the operation is not available for T.
 struct component_lifecycle {
   void (*default_construct)(void *dst) = nullptr;
   void (*destroy)(void *obj) = nullptr;
@@ -135,15 +124,8 @@ template <typename T>
 
 } // namespace detail
 
-/**
- * @brief Immutable description supplied when registering a component type.
- *
- * Designated-initializer friendly: only fields that matter need to be set.
- *
- * @code
- * registry.register_component<Transform>({ .name = "Transform" });
- * @endcode
- */
+/// Immutable description supplied when registering a component type, e.g.
+/// `registry.register_component<Transform>({ .name = "Transform" })`.
 struct component_desc {
   /// Human-readable type name for debugging and statistics (not owned).
   string_view name = {};
@@ -151,13 +133,9 @@ struct component_desc {
   component_flags flags = component_flags::none;
 };
 
-/**
- * @brief Metadata stored by the registry for each registered component type.
- *
- * The registry owns this record for the registry's lifetime. The storage
- * pointer is owned by the registry; do not free it. Live counts and capacity
- * are not cached here; query them through statistics so they never go stale.
- */
+/// Metadata per registered component type, owned by the registry - the storage
+/// pointer included, so do not free it. Live counts and capacity are not
+/// cached here; ask statistics, so they never go stale.
 struct component_metadata {
   detail::component_id id = 0;
   string_view name = {};
@@ -324,12 +302,10 @@ using view_storage_ptr = std::conditional_t<
 /**
  * @brief Transient, non-owning view over entities sharing components T... .
  *
- * Created by registry::view<T...>(). It holds pointers into the registry's
- * storages and iterates the smallest matching storage, checking the others per
- * entity. A view is cheap to construct and is meant to be used immediately;
- * exclude<U...>() narrows it to entities that have none of U... . Do not add or
- * remove components of any T... (or excluded U...) on the matched entities
- * while iterating.
+ * Created by registry::view<T...>(). Cheap to construct and meant to be used
+ * immediately; exclude<U...>() narrows it to entities that have none of U... .
+ * Do not add or remove components of any T... (or excluded U...) on the
+ * matched entities while iterating.
  *
  * @tparam Reg Registry type, possibly const-qualified.
  * @tparam T   Component types every matched entity must have.
@@ -358,12 +334,8 @@ public:
 
   [[nodiscard]] bool empty() const noexcept { return size_hint() == 0; }
 
-  /**
-   * @brief Invoke fn(entity, T&...) for every matched entity.
-   *
-   * Iterates the smallest storage and skips entities missing any T or present
-   * in any excluded storage.
-   */
+  /// Invoke fn(entity, T&...) for every matched entity, iterating the smallest
+  /// storage.
   template <typename Fn> void each(Fn &&fn) const {
     if (!all_present())
       return;
@@ -498,16 +470,9 @@ struct component_type_statistics {
 /**
  * @brief Allocator-aware entity-component-system registry.
  *
- * Owns entities, their components, and a parent-child hierarchy. Component
- * types must be registered with register_component<T>() before they are used.
- *
- * The default entity handle (handle32) packs 24 index bits and 8 version bits;
- * handle64 packs 32 and 32. Choose the handle and allocator through the
- * template parameters:
- * @code
- * using registry_t = nx::ecs::basic_registry<nx::handle64,
- * nx::Allocator<std::byte>>;
- * @endcode
+ * Component types must be registered with register_component<T>() before use.
+ * The default handle (handle32) packs 24 index bits and 8 version bits;
+ * handle64 packs 32 and 32.
  *
  * @tparam Entity Versioned handle type used as the entity id.
  * @tparam Alloc  Allocator; rebound internally for every dynamic allocation.
@@ -607,12 +572,9 @@ public:
            m_slots[idx].version == e.version();
   }
 
-  /**
-   * @brief Destroy an entity, all its components, and resolve its children.
-   *
-   * Stale or null handles are ignored. The hierarchy is resolved using
-   * @p policy (default: detach children so they become roots).
-   */
+  /// Destroy an entity and all its components; @p policy decides what happens
+  /// to its children (default: detached, so they become roots). Stale or null
+  /// handles are ignored.
   void destroy(Entity e,
                destroy_policy policy = destroy_policy::detach_children) {
     if (!alive(e))
@@ -662,16 +624,11 @@ public:
 
   // --- Component registration --------------------------------------------
 
-  /**
-   * @brief Register a component type so it can be added to entities.
-   *
-   * Must be called once per type before any emplace/get/view/query for it.
-   * Registering the same type twice is a usage error (asserts in debug) and
-   * leaves the first registration in place. The registry owns the resulting
-   * storage and metadata for its lifetime.
-   *
-   * @return Reference to the stored metadata for T.
-   */
+  /// Register a component type. Once per type, before any emplace/get/view/
+  /// query for it. Registering twice is a usage error (asserts in debug) and
+  /// leaves the first registration in place.
+  ///
+  /// @return Reference to the stored metadata for T.
   template <typename C>
   const component_metadata &
   register_component(const component_desc &desc = {}) {
@@ -950,12 +907,8 @@ public:
 
   // --- Hierarchy ----------------------------------------------------------
 
-  /**
-   * @brief Make @p parent the parent of @p child.
-   *
-   * Rejects (returns false) null/stale handles, self-parenting, and any link
-   * that would create a cycle. An existing parent of @p child is replaced.
-   */
+  /// Make @p parent the parent of @p child, replacing any existing one. False
+  /// for null/stale handles, self-parenting, or a link that would cycle.
   bool set_parent(Entity child, Entity parent) {
     if (!alive(child) || !alive(parent))
       return false;
@@ -1387,18 +1340,15 @@ using registry64 = basic_registry<handle64, Allocator<std::byte>>;
 /**
  * @brief Cached query over entities sharing components T... .
  *
- * Obtained from registry::query<T...>(). Unlike a transient view, the registry
- * keeps the match list between calls and rebuilds it lazily: the first each()
- * after a tracked component type was added to or removed from any entity (or
- * after clear()) recomputes the set, otherwise the cached list is reused. This
- * makes it the right choice for a component set iterated every frame.
+ * Obtained from registry::query<T...>(). Unlike a transient view, the match
+ * list is kept between calls and rebuilt lazily, which is what makes it the
+ * right choice for a component set iterated every frame.
  *
  * @section cq_invalidation Invalidation rules
- * A rebuild is triggered when, for any T in the query, a component of that type
- * is added or removed, when an entity carrying such a component is destroyed,
- * or when the registry is cleared. Parent-child changes do not affect cached
- * queries. As with views, do not add or remove components of any T while a
- * query over T is iterating.
+ * A rebuild is triggered when a component of any T is added or removed, when
+ * an entity carrying one is destroyed, or when the registry is cleared.
+ * Parent-child changes do not affect cached queries. As with views, do not add
+ * or remove components of any T while a query over T is iterating.
  *
  * @tparam Reg Registry type, possibly const-qualified.
  * @tparam T   Component types every matched entity has.

@@ -4,34 +4,28 @@
  * @file json.h
  * @brief JSON document model, parser and writer (namespace nx::json).
  *
- * A DOM-style JSON implementation built entirely on the foundation: nx::string
- * for text, nx::vector for arrays and object members, nx::result for errors. It
- * does not allocate beyond the document itself - parsing is a single pass over
- * the input with no intermediate token stream, and writing appends straight
- * into the destination buffer.
+ * DOM-style, built on the foundation throughout. It does not allocate beyond
+ * the document itself: parsing is a single pass with no token stream, and
+ * writing appends straight into the destination buffer.
  *
  * @code
  * auto doc = nx::json::parse(text);
  * if (!doc) return doc.error();
- * const i64 id = (*doc)["id"].as_i64();
  * const nx::string out = nx::json::write(*doc, {.indent = 2});
  * @endcode
  *
  * @section json_numbers Numbers
- * Integers are kept exact. The parser records a number as signed, unsigned or
- * double depending on what the literal actually is, so a u64 identifier past
- * 2^53 survives a parse/write round trip unchanged - which a double-only model
- * cannot do.
+ * Integers are kept exact - a number is recorded as signed, unsigned or double
+ * depending on what the literal was, so a u64 identifier past 2^53 survives a
+ * round trip, which a double-only model cannot do.
  *
  * @section json_custom Custom types
- * Conversion for user types goes through nx::json::serializer<T>. Specialize it
- * (or provide to_json/from_json findable by ADL next to your type) and the
- * whole API - to_value, from_value, parse_as, write_as, and every container
- * built on them - works for that type. See "Custom type registration" below.
+ * Conversion goes through nx::json::serializer<T>; see "Custom type
+ * registration" below.
  *
  * @section json_threading Thread safety
- * A value is a plain object: concurrent reads are safe, concurrent mutation is
- * not. The parser and writer hold no shared state.
+ * A value is a plain object: concurrent reads are safe, mutation is not. The
+ * parser and writer hold no shared state.
  */
 
 #include "core/foundation/containers/flat_map.h"
@@ -69,13 +63,9 @@ enum class error_code : u32 {
 /// Human-readable description of @p e; never empty.
 [[nodiscard]] string_view to_string(error_code e) noexcept;
 
-/**
- * @brief A parse or conversion failure, with the position that caused it.
- *
- * `offset` is a byte index into the input. `line` and `column` are 1-based and
- * measured in bytes; they are computed only when an error is produced, so the
- * success path pays nothing for them.
- */
+/// A parse or conversion failure. `offset` is a byte index into the input;
+/// `line` and `column` are 1-based and in bytes, computed only when an error
+/// is produced, so the success path pays nothing for them.
 struct error {
   error_code code = error_code::none;
   usize offset = 0;
@@ -118,8 +108,7 @@ using object = vector<member>;
 /**
  * @brief A JSON value: null, boolean, number, string, array or object.
  *
- * A tagged union the size of a string plus a tag. Copyable (deep) and cheaply
- * movable. Accessors come in three flavours:
+ * Accessors come in three flavours:
  *
  *  - `as_*()`   - precondition-checked; asserts in debug, undefined otherwise.
  *  - `get_*()`  - returns a fallback when the type does not match.
@@ -228,16 +217,12 @@ public:
   [[nodiscard]] u64 get_u64(u64 fallback = 0) const noexcept;
   [[nodiscard]] f64 get_double(f64 fallback = 0.0) const noexcept;
 
-  /**
-   * Text of a string value, or @p fallback for any other kind.
-   *
-   * The result is a view, so it borrows: on the matching path it aliases this
-   * value's storage and is invalidated by any mutation of it, and on the
-   * fallback path it aliases whatever @p fallback pointed at. The parameter is
-   * marked lifetimebound so that passing a temporary - `get_string(std::string(
-   * "x"))` - is a compile-time dangling diagnostic rather than a silent
-   * use-after-free. Use as_string() or to a copy when you need to own the text.
-   */
+  /// Text of a string value, or @p fallback for any other kind.
+  ///
+  /// The result borrows - from this value's storage on the matching path, from
+  /// @p fallback otherwise - so any mutation invalidates it. @p fallback is
+  /// lifetimebound, making a temporary a compile-time diagnostic rather than a
+  /// use-after-free. Use as_string() when you need to own the text.
   [[nodiscard]] string_view
   get_string(NX_LIFETIMEBOUND string_view fallback = {}) const noexcept;
 
@@ -318,13 +303,9 @@ struct member {
   value val;
 };
 
-/**
- * True when the value holds an integer that T can represent exactly.
- *
- * Reals never fit an integral T, even when their value happens to be whole: a
- * document that said 1.0 asked for a real, and silently narrowing it would make
- * 1.5 decode as 1. Use get_i64()/get_double() to convert deliberately.
- */
+/// True when the value holds an integer that T can represent exactly. Reals
+/// never fit an integral T even when whole: a document that said 1.0 asked for
+/// a real, and narrowing silently would make 1.5 decode as 1.
 template <typename T>
   requires std::is_integral_v<T>
 bool value::fits() const noexcept {
@@ -408,33 +389,16 @@ void write_to(nx::string &out, const value &v,
 
 // Custom type registration
 //
-// Every conversion in this file goes through serializer<T>. There are two ways
-// to teach it about a type, and they cost the same at run time because both are
-// resolved at compile time:
+// Every conversion goes through serializer<T>. Either specialize the trait, or
+// write the two functions beside your own type where ADL finds them:
 //
-//  1. Specialize the trait:
+//     void to_json(nx::json::value &out, const Vec2 &v);
+//     bool from_json(const nx::json::value &in, Vec2 &out);
 //
-//       template <> struct nx::json::serializer<Vec2> {
-//         static void to_json(nx::json::value &out, const Vec2 &v) {
-//           out = nx::json::value::make_array();
-//           out.push_back(v.x);
-//           out.push_back(v.y);
-//         }
-//         static bool from_json(const nx::json::value &in, Vec2 &out) {
-//           if (!in.is_array() || in.size() != 2) return false;
-//           return in[0].fits<f32>() && in[1].fits<f32>() &&
-//                  (out = {in[0].get_double(), in[1].get_double()}, true);
-//         }
-//       };
-//
-//  2. Or write the two functions next to your own type, where ADL finds them:
-//
-//       void to_json(nx::json::value &out, const Vec2 &v);
-//       bool from_json(const nx::json::value &in, Vec2 &out);
-//
-// Either way to_value<T>, from_value<T>, parse_as<T>, write_as<T> and every
-// container of T start working. from_json returns false on a type mismatch;
-// the top-level entry points turn that into a proper nx::json::error.
+// Both are resolved at compile time and cost the same. Either way to_value<T>,
+// from_value<T>, parse_as<T>, write_as<T> and every container of T start
+// working. from_json returns false on a type mismatch; the top-level entry
+// points turn that into an nx::json::error.
 
 /// Primary template. Unspecialized types fall back to ADL to_json/from_json.
 template <typename T, typename Enable = void> struct serializer;
