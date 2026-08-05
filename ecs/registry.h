@@ -886,29 +886,6 @@ public:
       fn(ents, store->set().values().data());
   }
 
-  /// Pointer to the typed storage for T, or nullptr if T is unregistered.
-  template <typename C>
-  [[nodiscard]] detail::component_storage<std::remove_cv_t<C>, Entity, Alloc> *
-  raw_storage() noexcept {
-    using T = std::remove_cv_t<C>;
-    const detail::component_id id = detail::component_id_of<T>();
-    if (id >= m_storages.size() || m_storages[id] == nullptr)
-      return nullptr;
-    return static_cast<detail::component_storage<T, Entity, Alloc> *>(
-        m_storages[id]);
-  }
-  template <typename C>
-  [[nodiscard]] const detail::component_storage<std::remove_cv_t<C>, Entity,
-                                                Alloc> *
-  raw_storage() const noexcept {
-    using T = std::remove_cv_t<C>;
-    const detail::component_id id = detail::component_id_of<T>();
-    if (id >= m_storages.size() || m_storages[id] == nullptr)
-      return nullptr;
-    return static_cast<const detail::component_storage<T, Entity, Alloc> *>(
-        m_storages[id]);
-  }
-
   // --- Hooks --------------------------------------------------------------
 
   /// Append a callback fired after a T is constructed on an entity.
@@ -1142,6 +1119,32 @@ public:
   }
 
 private:
+  // exclude() needs the storage to test against, and takes it type-erased.
+  template <typename Reg, typename... T> friend class basic_view;
+
+  /// Pointer to the typed storage for T, or nullptr if T is unregistered.
+  template <typename C>
+  [[nodiscard]] detail::component_storage<std::remove_cv_t<C>, Entity, Alloc> *
+  raw_storage() noexcept {
+    using T = std::remove_cv_t<C>;
+    const detail::component_id id = detail::component_id_of<T>();
+    if (id >= m_storages.size() || m_storages[id] == nullptr)
+      return nullptr;
+    return static_cast<detail::component_storage<T, Entity, Alloc> *>(
+        m_storages[id]);
+  }
+  template <typename C>
+  [[nodiscard]] const detail::component_storage<std::remove_cv_t<C>, Entity,
+                                                Alloc> *
+  raw_storage() const noexcept {
+    using T = std::remove_cv_t<C>;
+    const detail::component_id id = detail::component_id_of<T>();
+    if (id >= m_storages.size() || m_storages[id] == nullptr)
+      return nullptr;
+    return static_cast<const detail::component_storage<T, Entity, Alloc> *>(
+        m_storages[id]);
+  }
+
   template <typename T> void assert_registered() const noexcept {
     assert(is_component_registered<T>() &&
            "registry: component type not registered");
