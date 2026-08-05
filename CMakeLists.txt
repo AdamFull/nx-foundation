@@ -53,6 +53,7 @@ set(NX_FOUNDATION_HEADERS
   platform/filesystem.h
   platform/native_window.h
   platform/os.h
+  platform/shared_library.h
 
   vfs/vfs.h
   vfs/vfs_internal.h
@@ -73,6 +74,7 @@ set(NX_FOUNDATION_SOURCES
   threading/thread_pool.cpp
   platform/filesystem.cpp
   platform/os.cpp
+  platform/shared_library.cpp
   vfs/vfs.cpp
   vfs/host_device.cpp
   vfs/memory_device.cpp
