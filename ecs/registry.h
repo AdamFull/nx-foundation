@@ -862,16 +862,31 @@ public:
     bump_generation(detail::component_id_of<T>());
   }
 
-  /// Reorder T's dense storage by comp(const T&, const T&). Views and queries
-  /// take their iteration order from the smallest storage where possible.
-  template <typename C, typename Compare> void sort(Compare comp) {
-    using T = std::remove_cv_t<C>;
-    auto &store = assure<T>();
-    store.set().sort(std::move(comp));
+  /// How many entities hold C. Zero for a type nothing has registered.
+  template <typename C> [[nodiscard]] size_type count() const noexcept {
+    const auto *store = raw_storage<std::remove_cv_t<C>>();
+    return store != nullptr ? store->size() : 0;
+  }
+
+  template <typename C, typename Fn> void each_run(Fn &&fn) {
+    auto *store = raw_storage<std::remove_cv_t<C>>();
+    if (store == nullptr)
+      return;
+    const std::span<const Entity> ents = store->entities();
+    if (!ents.empty())
+      fn(ents, store->set().values().data());
+  }
+
+  template <typename C, typename Fn> void each_run(Fn &&fn) const {
+    const auto *store = raw_storage<std::remove_cv_t<C>>();
+    if (store == nullptr)
+      return;
+    const std::span<const Entity> ents = store->entities();
+    if (!ents.empty())
+      fn(ents, store->set().values().data());
   }
 
   /// Pointer to the typed storage for T, or nullptr if T is unregistered.
-  /// Low-level access for systems that iterate a single component densely.
   template <typename C>
   [[nodiscard]] detail::component_storage<std::remove_cv_t<C>, Entity, Alloc> *
   raw_storage() noexcept {
