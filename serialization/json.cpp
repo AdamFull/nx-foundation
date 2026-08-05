@@ -326,13 +326,11 @@ private:
       return error_code::none;
     }
 
-    // Deduplicating each member against the ones already parsed is a linear
-    // scan, which makes an object quadratic in its member count. That is fine
-    // for the handful of keys a normal object has, but it is a denial-of-
-    // service vector on untrusted input: a single 100k-key object would cost
-    // billions of comparisons. Past kIndexThreshold members we switch to a
-    // hash index and the cost becomes linear. The map allocates nothing until
-    // that point, so small objects pay only for an empty container.
+    // Deduplicating by linear scan makes an object quadratic in its member
+    // count - fine for a handful of keys, a denial-of-service vector on
+    // untrusted input, where one 100k-key object costs billions of compares.
+    // Past kIndexThreshold a hash index takes over; it allocates nothing until
+    // then, so small objects pay for an empty container.
     key_index index;
     bool indexed = false;
 
@@ -663,13 +661,12 @@ private:
   static constexpr u32 kMaxPrecision = 64;
 
   void write_real(f64 v) {
-    // JSON has no way to spell a non-finite number; null is what every other
-    // implementation emits and what round-trips without producing invalid text.
+    // JSON cannot spell a non-finite number; null is what every other
+    // implementation emits and round-trips as valid text.
     //
-    // std::isfinite rather than a hand-rolled `v != v || v == infinity()`: on a
-    // target whose numeric_limits reports no infinity, infinity() returns 0.0
-    // and that form would quietly turn every zero into null. It is also the
-    // form that survives a compiler being told it may assume finite math.
+    // std::isfinite rather than `v != v || v == infinity()`: where
+    // numeric_limits reports no infinity, infinity() is 0.0 and that form
+    // turns every zero into null. It also survives -ffinite-math-only.
     if (!std::isfinite(v)) {
       m_out.append("null", nx::cast<usize>(4));
       return;
@@ -958,13 +955,10 @@ void value::destroy() noexcept {
   m_type = type::null;
 }
 
-// Every alternative is activated explicitly, including the scalar ones.
-//
-// memcpy-ing the union would be undefined twice over: `storage` holds a string
-// and two vectors, so it is not trivially copyable and its bytes may not be
-// copied that way; and copying bytes into it never begins the lifetime of any
-// member, leaving the union with no active alternative to read back.
-// construct_at both copies the value and makes that member active.
+// Every alternative is activated explicitly, scalars included. memcpy-ing the
+// union would be undefined twice over: `storage` holds a string and two
+// vectors, so it is not trivially copyable; and copying bytes never begins any
+// member's lifetime, leaving no active alternative to read back.
 void value::construct_from(const value &o) {
   m_type = o.m_type;
   switch (o.m_type) {
@@ -1345,11 +1339,9 @@ bool operator==(const value &a, const value &b) noexcept {
       return false;
     // Member order is not significant, so match by key.
     //
-    // Spelled !(a == b) rather than a != b: this *is* operator==, and in C++20
-    // `!=` on a type with only operator== rewrites back to it, which MSVC
-    // rightly flags (C5232) as a call to the function we are inside. The
-    // recursion is intended - a value is a tree - but the explicit form says so
-    // without going through the rewrite.
+    // Spelled !(a == b) rather than a != b: this *is* operator==, and C++20
+    // rewrites `!=` back to it, which MSVC flags (C5232) as a call to the
+    // function we are inside. The recursion is intended - a value is a tree.
     for (const member &m : x) {
       const value *other = b.find(m.key.view());
       if (!other || !(m.val == *other))

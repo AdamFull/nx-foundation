@@ -5,14 +5,12 @@
  * @brief Stable LSD radix sort over unsigned 32- or 64-bit keys.
  *
  * Linear in n and stable by construction, so ties never reorder between runs.
- * Beats a comparison sort once n is large enough to hide the O(log n) factor.
  *
  * Digits are 11 bits: 2048 counters stay in L1 where a 16-bit digit's 65536
- * would not, and 11 bits needs fewer passes than 8. All histograms are built
- * in one read up front, which lets a digit whose values all agree be skipped
- * and fixes the pass count before any data moves - so a u64 whose values fit
- * in 32 bits costs the same as a u32. Nothing is allocated: the caller
- * supplies scratch the size of the input.
+ * would not, and 11 needs fewer passes than 8. All histograms are built in one
+ * read up front, so a digit whose values agree is skipped and the pass count
+ * is fixed before any data moves - a u64 whose values fit in 32 bits costs the
+ * same as a u32. Nothing is allocated; the caller supplies scratch.
  */
 
 #include "core/foundation/core/foundation.h"
@@ -135,16 +133,13 @@ void radix_sort_pairs(const std::span<Key> keys, const std::span<Value> values,
 /**
  * @brief Parallel stable LSD radix sort.
  *
- * Splits the input into one chunk per pool worker plus the caller. Each chunk
- * builds local histograms, which are converted into disjoint per-chunk offsets
- * for a stable scatter without atomics.
+ * One chunk per pool worker plus the caller. Each builds local histograms,
+ * converted into disjoint per-chunk offsets for a stable scatter with no
+ * atomics. All passes run in one parallel_region with barriers between phases;
+ * calibrate() finds where this beats the serial path on this machine.
  *
- * All passes run inside one parallel_region, with barriers between phases.
- * For small inputs, sort() uses the serial implementation; calibrate() finds
- * the crossover point for the current machine.
- *
- * Reuses internal buffers between calls. Not thread-safe: use one context per
- * caller, and do not call it from a pool worker.
+ * Reuses internal buffers between calls. Not thread-safe: one context per
+ * caller, and never from a pool worker.
  */
 class radix_context {
 public:
@@ -423,12 +418,11 @@ template <typename T, typename KeyFn>
 /**
  * @brief Sorts @p items in place, ascending by key(item).
  *
- * Stable, so equal keys keep the order they arrived in - which is what callers
- * layering one thing behind another depend on.
+ * Stable, which is what callers layering one thing behind another depend on.
  *
- * The radix runs on (key, index) pairs and a single gather applies the
- * permutation, so an element is copied once rather than once per pass. Already
- * ordered input costs the scan that discovers it and nothing else.
+ * The radix runs on (key, index) pairs and one gather applies the permutation,
+ * so an element is copied once rather than once per pass. Already ordered
+ * input costs the scan that discovers it and nothing else.
  */
 template <typename T, typename KeyFn>
 void sort_by_key(nx::vector<T> &items, sort_scratch<T> &scratch, KeyFn key) {

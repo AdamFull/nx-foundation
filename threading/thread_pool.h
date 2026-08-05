@@ -5,19 +5,15 @@
  * @brief Work-stealing thread pool: nx::thread_pool, nx::task_group,
  * nx::future.
  *
- * A fixed set of worker threads executes submitted callables. Each worker
- * owns a bounded lock-free queue and steals from its siblings when idle;
- * external submissions go to a shared queue with an unbounded mutex-guarded
- * overflow, so submit() never fails and never blocks. Idle workers sleep on
- * a futex.
+ * Each worker owns a bounded lock-free queue and steals from its siblings when
+ * idle; external submissions go to a shared queue with an unbounded overflow,
+ * so submit() never fails and never blocks. Idle workers sleep on a futex.
  *
  * Waiting is cooperative: wait_idle(), task_group::wait() and future::get()
- * all execute queued tasks while they wait (from any thread), so a
- * parallel_for caller contributes instead of blocking, and waiting inside a
- * task cannot deadlock the pool.
+ * execute queued tasks while they wait, so a parallel_for caller contributes
+ * instead of blocking and waiting inside a task cannot deadlock the pool.
  *
- * Tasks must not throw. Callables are type-erased through nx::function and
- * therefore must be copy-constructible.
+ * Tasks must not throw, and callables must be copy-constructible.
  */
 
 #include "core/foundation/containers/concurrent_queue.h"
@@ -65,13 +61,9 @@ template <typename T> void future_state_release(future_state<T> *st) noexcept {
 }
 } // namespace detail
 
-/**
- * @brief Completion counter for a batch of thread_pool tasks.
- *
- * Submit any number of tasks against a group, then wait() until every one
- * has finished. Reusable after wait() returns. A group is bound to the
- * first pool it is used with and must outlive its tasks.
- */
+/// Completion counter for a batch of tasks: submit any number against a group,
+/// then wait(). Reusable afterwards. A group is bound to the first pool it is
+/// used with and must outlive its tasks.
 class task_group {
 public:
   task_group() = default;
@@ -100,10 +92,8 @@ private:
 /**
  * @brief One-shot result handle returned by thread_pool::async.
  *
- * Move-only. get() waits for the task (helping the pool execute queued
- * work) and moves the result out; it may be called once on a valid future.
- * Destroying a future early is safe -- the task still runs, the result is
- * discarded.
+ * Move-only. get() waits (helping the pool) and moves the result out; once per
+ * valid future. Destroying one early is safe - the task still runs.
  *
  * @tparam T Result type of the task (may be void).
  */
@@ -150,14 +140,9 @@ private:
   detail::future_state<T> *m_state = nullptr;
 };
 
-/**
- * @brief Fixed-size work-stealing thread pool.
- *
- * Workers are named, optionally pinned to physical cores, and sleep on a
- * futex when idle. Submission from a worker thread goes to that worker's
- * local queue (LIFO-friendly, no contention); external submissions go to
- * the shared queue. See the file header for the waiting model.
- */
+/// Fixed-size work-stealing thread pool. Workers are named and optionally
+/// pinned to physical cores. Submission from a worker goes to that worker's
+/// local queue; external submissions go to the shared one.
 class thread_pool {
 public:
   struct config {
