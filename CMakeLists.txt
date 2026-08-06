@@ -54,6 +54,7 @@ set(NX_FOUNDATION_HEADERS
   platform/native_window.h
   platform/os.h
   platform/shared_library.h
+  platform/socket.h
 
   vfs/vfs.h
   vfs/vfs_internal.h
@@ -75,6 +76,7 @@ set(NX_FOUNDATION_SOURCES
   platform/filesystem.cpp
   platform/os.cpp
   platform/shared_library.cpp
+  platform/socket.cpp
   vfs/vfs.cpp
   vfs/host_device.cpp
   vfs/memory_device.cpp
@@ -104,7 +106,8 @@ target_link_libraries(nx_foundation
 if(WIN32)
   # Synchronization: WaitOnAddress / WakeByAddress* (threading/sync.cpp)
   # Psapi:           GetProcessMemoryInfo           (platform/os.cpp)
-  target_link_libraries(nx_foundation PRIVATE Synchronization Psapi)
+  # ws2_32:          the loopback listener            (platform/socket.cpp)
+  target_link_libraries(nx_foundation PRIVATE Synchronization Psapi ws2_32)
 elseif(ANDROID)
   target_link_libraries(nx_foundation PRIVATE log)
 elseif(UNIX)
