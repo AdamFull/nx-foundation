@@ -319,6 +319,19 @@ enum class file_type : u8 {
   return t != file_type::not_found && t != file_type::none;
 }
 
+struct file_stat {
+  file_type type = file_type::none;
+  u64 size = 0;
+  /// Last write, in nanoseconds since the Unix epoch. 0 when the platform
+  /// would not say. Comparable between calls, which is what watching a file
+  /// for a change needs; not a wall clock.
+  u64 mtime_ns = 0;
+};
+
+/// Type, size and modification time in one query. Both backends already read
+/// all three to answer status(), so this costs nothing beyond it.
+[[nodiscard]] file_stat stat_file(path_view path);
+
 struct directory_entry {
   string path;
   file_type type = file_type::none;

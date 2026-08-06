@@ -690,6 +690,34 @@ io_result<void> rename(const path_view from, const path_view to) {
 file_type status(const path_view path) { return status_w(path, true); }
 file_type symlink_status(const path_view path) { return status_w(path, false); }
 
+file_stat stat_file(const path_view path) {
+  file_stat out;
+  const wide_path wp(path);
+  if (!wp.ok)
+    return out;
+  WIN32_FILE_ATTRIBUTE_DATA d;
+  if (!::GetFileAttributesExW(wp.ptr, GetFileExInfoStandard, &d)) {
+    const DWORD e = ::GetLastError();
+    out.type = (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND)
+                   ? file_type::not_found
+                   : file_type::none;
+    return out;
+  }
+
+  out.type = (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+                 ? file_type::directory
+                 : file_type::regular;
+  out.size = (u64{d.nFileSizeHigh} << 32) | u64{d.nFileSizeLow};
+
+  // FILETIME counts 100ns ticks from 1601-01-01; the epoch is 11644473600
+  // seconds later.
+  constexpr u64 TICKS_TO_EPOCH = 116444736000000000ull;
+  const u64 ticks = (u64{d.ftLastWriteTime.dwHighDateTime} << 32) |
+                    u64{d.ftLastWriteTime.dwLowDateTime};
+  out.mtime_ns = ticks > TICKS_TO_EPOCH ? (ticks - TICKS_TO_EPOCH) * 100ull : 0;
+  return out;
+}
+
 io_result<vector<directory_entry>> directory_entries(const path_view root) {
   vector<directory_entry> out;
   string dir(root.native());
@@ -1108,6 +1136,26 @@ file_type symlink_status(path_view path) {
   if (::lstat(cp.ptr, &st) != 0)
     return errno == ENOENT ? file_type::not_found : file_type::none;
   return type_from_mode(st.st_mode);
+}
+
+file_stat stat_file(path_view path) {
+  file_stat out;
+  cpath cp(path);
+  struct stat st;
+  if (::stat(cp.ptr, &st) != 0) {
+    out.type = errno == ENOENT ? file_type::not_found : file_type::none;
+    return out;
+  }
+  out.type = type_from_mode(st.st_mode);
+  out.size = static_cast<u64>(st.st_size);
+#if defined(NX_PLATFORM_APPLE)
+  out.mtime_ns = static_cast<u64>(st.st_mtimespec.tv_sec) * 1000000000ull +
+                 static_cast<u64>(st.st_mtimespec.tv_nsec);
+#else
+  out.mtime_ns = static_cast<u64>(st.st_mtim.tv_sec) * 1000000000ull +
+                 static_cast<u64>(st.st_mtim.tv_nsec);
+#endif
+  return out;
 }
 
 io_result<vector<directory_entry>> directory_entries(path_view root) {

@@ -1,5 +1,7 @@
 #include "core/foundation/vfs/vfs_internal.h"
 
+#include "core/foundation/platform/os.h"
+
 namespace nx::vfs {
 
 using detail::BlobStream;
@@ -11,7 +13,7 @@ void MemoryDevice::add(const path_view rel, nx::blob<u8> bytes) {
   if (key.empty())
     return;
   nx::scoped_lock lock(m_lock);
-  m_files[std::move(key)] = std::move(bytes);
+  m_files[std::move(key)] = Entry{std::move(bytes), nx::os::ticks_ns()};
 }
 
 io_result<nx::blob<u8>> MemoryDevice::read(const path_view rel) {
@@ -20,7 +22,7 @@ io_result<nx::blob<u8>> MemoryDevice::read(const path_view rel) {
   const auto it = m_files.find(key);
   if (it == m_files.end())
     return err(file_error{io_error::NotFound, 0});
-  return it->second; // deep copy
+  return it->second.bytes; // deep copy
 }
 
 io_result<stream_ptr> MemoryDevice::open(const path_view rel) {
@@ -29,7 +31,7 @@ io_result<stream_ptr> MemoryDevice::open(const path_view rel) {
   const auto it = m_files.find(key);
   if (it == m_files.end())
     return err(file_error{io_error::NotFound, 0});
-  auto *s = nx::allocate<BlobStream>(it->second); // owns a copy
+  auto *s = nx::allocate<BlobStream>(it->second.bytes); // owns a copy
   if (!s)
     return err(file_error{io_error::OpenFailed, 0});
   return stream_ptr(s);
@@ -46,7 +48,8 @@ FileInfo MemoryDevice::stat(const path_view rel) {
   nx::scoped_shared_lock lock(m_lock);
   if (const auto it = m_files.find(key); it != m_files.end()) {
     info.exists = true;
-    info.size = it->second.size();
+    info.size = it->second.bytes.size();
+    info.mtime_ns = it->second.mtime_ns;
     return info;
   }
   // A path with children behaves as a directory.
@@ -85,8 +88,10 @@ io_result<void> MemoryDevice::list(const path_view rel_dir, const ListFn &cb) {
     FileInfo info;
     info.exists = true;
     info.is_directory = is_dir;
-    if (!is_dir)
-      info.size = v.size();
+    if (!is_dir) {
+      info.size = v.bytes.size();
+      info.mtime_ns = v.mtime_ns;
+    }
     cb(child, info);
   }
   if (!any && !dir.empty())
@@ -101,7 +106,7 @@ io_result<void> MemoryDevice::write(const path_view rel,
     return err(file_error{io_error::InvalidArgument, 0});
   nx::blob<u8> bytes(data);
   nx::scoped_lock lock(m_lock);
-  m_files[std::move(key)] = std::move(bytes);
+  m_files[std::move(key)] = Entry{std::move(bytes), nx::os::ticks_ns()};
   return {};
 }
 

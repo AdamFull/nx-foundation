@@ -113,8 +113,16 @@ public:
   [[nodiscard]] const char *name() const noexcept override { return "memory"; }
 
 private:
+  struct Entry {
+    nx::blob<u8> bytes;
+    /// Stamped on every write. A memory device knows exactly when its content
+    /// last changed, so reporting 0 - "unknown" - would be a lie, and anything
+    /// watching for a change would never see one.
+    u64 mtime_ns = 0;
+  };
+
   nx::rw_lock m_lock;
-  nx::hash_map<nx::string, nx::blob<u8>> m_files;
+  nx::hash_map<nx::string, Entry> m_files;
 };
 
 // Device factories (ownership passes to mount())

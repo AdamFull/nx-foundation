@@ -11,8 +11,8 @@ namespace {
 /// Backed by a real directory: every operation joins the root with the request
 /// path and defers to nx::fs. The only writable device.
 ///
-/// stat()/list() leave size and mtime at 0 - nx::fs has no cheap query for
-/// them yet. The memory and zip devices, which know their sizes, fill them in.
+/// list() still leaves size and mtime at 0: the directory walk reports a type
+/// and would have to stat each entry to say more. stat() itself says both.
 class HostDevice final : public Device {
 public:
   explicit HostDevice(nx::string root) : m_root(std::move(root)) {}
@@ -26,11 +26,13 @@ public:
   }
 
   [[nodiscard]] FileInfo stat(const path_view rel) override {
-    const nx::fs::file_type t = nx::fs::status(full(rel));
+    const nx::fs::file_stat s = nx::fs::stat_file(full(rel));
     FileInfo info;
-    info.exists =
-        t != nx::fs::file_type::not_found && t != nx::fs::file_type::none;
-    info.is_directory = t == nx::fs::file_type::directory;
+    info.exists = s.type != nx::fs::file_type::not_found &&
+                  s.type != nx::fs::file_type::none;
+    info.is_directory = s.type == nx::fs::file_type::directory;
+    info.size = info.is_directory ? 0 : s.size;
+    info.mtime_ns = s.mtime_ns;
     return info;
   }
 
