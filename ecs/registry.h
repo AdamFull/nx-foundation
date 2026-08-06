@@ -64,6 +64,9 @@ enum class component_flags : u32 {
   empty = 1u << 0,
   /// Type cannot be copied; recorded for tooling and serialization layers.
   move_only = 1u << 1,
+  /// Its bytes are its value. What lets a caller that only knows a name copy
+  /// one, which a compile-time caller checks with a static_assert instead.
+  trivially_copyable = 1u << 2,
 };
 
 [[nodiscard]] constexpr component_flags operator|(component_flags a,
@@ -169,6 +172,8 @@ public:
   [[nodiscard]] virtual usize capacity() const noexcept = 0;
   [[nodiscard]] virtual usize element_size() const noexcept = 0;
   [[nodiscard]] virtual std::span<const Entity> entities() const noexcept = 0;
+  [[nodiscard]] virtual void *packed() noexcept = 0;
+  [[nodiscard]] virtual void *element(Entity e) noexcept = 0;
 
   // Destroy this object using the allocator it was constructed with.
   virtual void self_delete() noexcept = 0;
@@ -262,6 +267,20 @@ public:
   }
   [[nodiscard]] std::span<const Entity> entities() const noexcept override {
     return m_set.entities();
+  }
+
+  [[nodiscard]] void *packed() noexcept override {
+    if constexpr (std::is_empty_v<T>)
+      return nullptr;
+    else
+      return m_set.values().data();
+  }
+
+  [[nodiscard]] void *element(Entity e) noexcept override {
+    if constexpr (std::is_empty_v<T>)
+      return nullptr;
+    else
+      return m_set.try_get(e);
   }
 
   [[nodiscard]] set_type &set() noexcept { return m_set; }
@@ -678,6 +697,8 @@ public:
       flags = flags | component_flags::empty;
     if constexpr (!std::is_copy_constructible_v<T>)
       flags = flags | component_flags::move_only;
+    if constexpr (std::is_trivially_copyable_v<T>)
+      flags = flags | component_flags::trivially_copyable;
 
     component_metadata md{};
     md.id = id;
@@ -698,6 +719,19 @@ public:
     const detail::component_id id =
         detail::component_id_of<std::remove_cv_t<C>>();
     return id < m_storages.size() && m_storages[id] != nullptr;
+  }
+
+  /// Metadata for the component registered under @p name, or null. For a
+  /// caller that was given a name rather than a type - a script declaring what
+  /// it touches. Linear: this runs when a query is built, not when it runs.
+  [[nodiscard]] const component_metadata *
+  component_metadata_named(const string_view name) const noexcept {
+    if (name.empty())
+      return nullptr;
+    for (usize id = 0; id < m_storages.size(); ++id)
+      if (m_storages[id] != nullptr && m_metadata[id].name == name)
+        return &m_metadata[id];
+    return nullptr;
   }
 
   /// Metadata for a registered T. Precondition: is_component_registered<T>().
