@@ -174,6 +174,7 @@ public:
   [[nodiscard]] virtual std::span<const Entity> entities() const noexcept = 0;
   [[nodiscard]] virtual void *packed() noexcept = 0;
   [[nodiscard]] virtual void *element(Entity e) noexcept = 0;
+  [[nodiscard]] virtual void *emplace_default(registry_type &reg, Entity e) = 0;
 
   // Destroy this object using the allocator it was constructed with.
   virtual void self_delete() noexcept = 0;
@@ -281,6 +282,29 @@ public:
       return nullptr;
     else
       return m_set.try_get(e);
+  }
+
+  [[nodiscard]] void *emplace_default(registry_type &reg,
+                                      const Entity e) override {
+    if constexpr (!std::is_default_constructible_v<T>) {
+      (void)reg;
+      (void)e;
+      return nullptr;
+    } else {
+      if (m_set.contains(e))
+        return element(e);
+      T &ref = m_set.emplace(e);
+      if (!m_on_construct.empty())
+        m_on_construct.fire(reg, e);
+      // An empty type has a slot and no bytes; null is the honest answer and
+      // means "there is nothing to write", not "it is not there".
+      if constexpr (std::is_empty_v<T>) {
+        (void)ref;
+        return nullptr;
+      } else {
+        return &ref;
+      }
+    }
   }
 
   [[nodiscard]] set_type &set() noexcept { return m_set; }
