@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -544,14 +545,303 @@ template <typename T> using Allocator = DefaultAllocator<T>;
 template <typename T, typename Alloc = Allocator<T>>
 using vector = std::vector<T, Alloc>;
 
-template <typename T> using shared_ptr = std::shared_ptr<T>;
+namespace detail {
 
-template <typename T> using weak_ptr = std::weak_ptr<T>;
+struct SharedHeader {
+  void (*destroy)(void *object) noexcept;
+  std::atomic<u32> refs;
+  u32 back;
+};
+
+struct alignas(std::max_align_t) SharedChunk {
+  u8 raw[alignof(std::max_align_t)];
+};
+
+template <typename T, typename Alloc> struct SharedBlock {
+  using chunks =
+      typename std::allocator_traits<Alloc>::template rebind_alloc<SharedChunk>;
+  using traits = std::allocator_traits<chunks>;
+
+  static constexpr bool holds_allocator = !std::is_empty_v<chunks>;
+
+  static_assert(holds_allocator || std::is_default_constructible_v<chunks>,
+                "a stateless allocator is rebuilt rather than stored, so it "
+                "has to be default-constructible");
+  static_assert(!holds_allocator || alignof(chunks) <= alignof(SharedChunk),
+                "an over-aligned allocator cannot be stored in the block");
+
+  static constexpr usize align = max(alignof(T), alignof(SharedHeader));
+  static constexpr usize prefix =
+      align_up(holds_allocator ? sizeof(chunks) : usize(0),
+               alignof(SharedHeader)) +
+      sizeof(SharedHeader);
+  static constexpr usize slack = align > alignof(SharedChunk) ? align
+                                                              : usize(0);
+  static constexpr usize count =
+      (prefix + slack + sizeof(T) + sizeof(SharedChunk) - 1) /
+      sizeof(SharedChunk);
+};
+
+[[nodiscard]] NX_FORCE_INLINE SharedHeader *
+shared_header(const void *object) noexcept {
+  return const_cast<SharedHeader *>(static_cast<const SharedHeader *>(object) -
+                                    1);
+}
+
+NX_FORCE_INLINE void shared_retain(const void *object) noexcept {
+  if (object != nullptr)
+    shared_header(object)->refs.fetch_add(1, std::memory_order_relaxed);
+}
+
+NX_FORCE_INLINE void shared_release(const void *object) noexcept {
+  if (object == nullptr)
+    return;
+  SharedHeader *const head = shared_header(object);
+  if (head->refs.fetch_sub(1, std::memory_order_release) != 1)
+    return;
+  std::atomic_thread_fence(std::memory_order_acquire);
+  head->destroy(const_cast<void *>(object));
+}
+
+template <typename T, typename Alloc>
+void shared_destroy(void *object) noexcept {
+  using U = std::remove_cv_t<T>;
+  using Block = SharedBlock<U, Alloc>;
+  using Held = typename Block::chunks;
+
+  u8 *const base = static_cast<u8 *>(object) - shared_header(object)->back;
+  static_cast<U *>(object)->~U();
+
+  // The allocator has to survive the deallocation of the block it lives in.
+  if constexpr (Block::holds_allocator) {
+    Held *const stored = reinterpret_cast<Held *>(base);
+    Held source(std::move(*stored));
+    stored->~Held();
+    Block::traits::deallocate(source, reinterpret_cast<SharedChunk *>(base),
+                              Block::count);
+  } else {
+    Held source;
+    Block::traits::deallocate(source, reinterpret_cast<SharedChunk *>(base),
+                              Block::count);
+  }
+}
+
+template <typename From, typename To>
+concept SharedRebindable =
+    std::is_convertible_v<From *, To *> &&
+    (std::is_void_v<std::remove_cv_t<To>> ||
+     std::is_same_v<std::remove_cv_t<From>, std::remove_cv_t<To>>);
+
+struct AdoptShared {};
+
+} // namespace detail
+
+template <typename T> class shared_ptr {
+public:
+  using element_type = T;
+
+  constexpr shared_ptr() noexcept = default;
+  constexpr shared_ptr(std::nullptr_t) noexcept {}
+  shared_ptr(detail::AdoptShared, T *object) noexcept : m_ptr(object) {}
+
+  shared_ptr(const shared_ptr &other) noexcept : m_ptr(other.m_ptr) {
+    detail::shared_retain(m_ptr);
+  }
+
+  shared_ptr(shared_ptr &&other) noexcept : m_ptr(other.m_ptr) {
+    other.m_ptr = nullptr;
+  }
+
+  template <typename U>
+    requires detail::SharedRebindable<U, T>
+  shared_ptr(const shared_ptr<U> &other) noexcept : m_ptr(other.m_ptr) {
+    detail::shared_retain(m_ptr);
+  }
+
+  template <typename U>
+    requires detail::SharedRebindable<U, T>
+  shared_ptr(shared_ptr<U> &&other) noexcept : m_ptr(other.m_ptr) {
+    other.m_ptr = nullptr;
+  }
+
+  ~shared_ptr() { detail::shared_release(m_ptr); }
+
+  shared_ptr &operator=(const shared_ptr &other) noexcept {
+    return assign(other.m_ptr);
+  }
+
+  template <typename U>
+    requires detail::SharedRebindable<U, T>
+  shared_ptr &operator=(const shared_ptr<U> &other) noexcept {
+    return assign(other.m_ptr);
+  }
+
+  shared_ptr &operator=(shared_ptr &&other) noexcept {
+    if (this != &other) {
+      detail::shared_release(m_ptr);
+      m_ptr = other.m_ptr;
+      other.m_ptr = nullptr;
+    }
+    return *this;
+  }
+
+  template <typename U>
+    requires detail::SharedRebindable<U, T>
+  shared_ptr &operator=(shared_ptr<U> &&other) noexcept {
+    detail::shared_release(m_ptr);
+    m_ptr = other.m_ptr;
+    other.m_ptr = nullptr;
+    return *this;
+  }
+
+  shared_ptr &operator=(std::nullptr_t) noexcept {
+    reset();
+    return *this;
+  }
+
+  void reset() noexcept {
+    detail::shared_release(m_ptr);
+    m_ptr = nullptr;
+  }
+
+  void swap(shared_ptr &other) noexcept {
+    T *const held = m_ptr;
+    m_ptr = other.m_ptr;
+    other.m_ptr = held;
+  }
+
+  [[nodiscard]] T *get() const noexcept { return m_ptr; }
+  [[nodiscard]] T *operator->() const noexcept { return m_ptr; }
+  [[nodiscard]] std::add_lvalue_reference_t<T> operator*() const noexcept
+    requires(!std::is_void_v<T>)
+  {
+    return *m_ptr;
+  }
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return m_ptr != nullptr;
+  }
+
+  [[nodiscard]] u32 use_count() const noexcept {
+    return m_ptr == nullptr ? 0u
+                            : detail::shared_header(m_ptr)->refs.load(
+                                  std::memory_order_acquire);
+  }
+
+private:
+  template <typename U> friend class shared_ptr;
+
+  // Retaining before releasing costs nothing and makes self-assignment work.
+  shared_ptr &assign(T *object) noexcept {
+    detail::shared_retain(object);
+    detail::shared_release(m_ptr);
+    m_ptr = object;
+    return *this;
+  }
+
+  T *m_ptr = nullptr;
+};
+
+template <typename T, typename U>
+[[nodiscard]] bool operator==(const shared_ptr<T> &a,
+                              const shared_ptr<U> &b) noexcept {
+  return a.get() == b.get();
+}
+
+template <typename T>
+[[nodiscard]] bool operator==(const shared_ptr<T> &a, std::nullptr_t) noexcept {
+  return a.get() == nullptr;
+}
+
+template <typename T> void swap(shared_ptr<T> &a, shared_ptr<T> &b) noexcept {
+  a.swap(b);
+}
+
+/// The object, the header and - when it has state worth keeping - a copy of
+/// @p alloc, in one allocation taken from @p alloc itself.
+template <typename T, typename Alloc, typename... Args>
+  requires(!std::is_array_v<T>)
+[[nodiscard]] shared_ptr<T> allocate_shared(const Alloc &alloc,
+                                            Args &&...args) {
+  using Block = detail::SharedBlock<T, Alloc>;
+  using Held = typename Block::chunks;
+  assert(allocation_allowed() && "allocation inside a scoped_no_alloc");
+
+  Held source(alloc);
+  detail::SharedChunk *const chunk =
+      Block::traits::allocate(source, Block::count);
+  if (chunk == nullptr) [[unlikely]]
+    return {};
+
+  u8 *const base = reinterpret_cast<u8 *>(chunk);
+  T *const object = reinterpret_cast<T *>(
+      align_up(reinterpret_cast<uintptr_t>(base + Block::prefix),
+               uintptr_t(Block::align)));
+
+  detail::SharedHeader *const head =
+      ::new (static_cast<void *>(detail::shared_header(object)))
+          detail::SharedHeader{};
+  head->destroy = &detail::shared_destroy<T, Alloc>;
+  head->refs.store(1, std::memory_order_relaxed);
+  head->back = cast<u32>(reinterpret_cast<u8 *>(object) - base);
+
+  if constexpr (Block::holds_allocator)
+    ::new (static_cast<void *>(base)) Held(source);
+
+  try {
+    ::new (static_cast<void *>(object)) T(std::forward<Args>(args)...);
+  } catch (...) {
+    if constexpr (Block::holds_allocator)
+      reinterpret_cast<Held *>(base)->~Held();
+    Block::traits::deallocate(source, chunk, Block::count);
+    throw;
+  }
+  return shared_ptr<T>(detail::AdoptShared{}, object);
+}
 
 template <typename T, typename... Args>
+  requires(!std::is_array_v<T>)
 [[nodiscard]] shared_ptr<T> make_shared(Args &&...args) {
-  return std::allocate_shared<T>(Allocator<T>{}, std::forward<Args>(args)...);
+  // Qualified: an unqualified call drags in std::allocate_shared by ADL as
+  // soon as T is a std type, and the two overloads are then ambiguous.
+  return nx::allocate_shared<T>(Allocator<T>{}, std::forward<Args>(args)...);
 }
+
+class life_watch {
+public:
+  life_watch() = default;
+
+  [[nodiscard]] bool alive() const noexcept {
+    return m_flag && m_flag->load(std::memory_order_acquire);
+  }
+  [[nodiscard]] explicit operator bool() const noexcept { return alive(); }
+
+private:
+  friend class life_token;
+
+  explicit life_watch(shared_ptr<std::atomic<bool>> flag) noexcept
+      : m_flag(std::move(flag)) {}
+
+  shared_ptr<std::atomic<bool>> m_flag;
+};
+
+/// Held by the object whose life is being watched, as its last member so that
+/// it falls after everything a watcher might reach through.
+class life_token {
+public:
+  life_token() : m_flag(make_shared<std::atomic<bool>>(true)) {}
+  ~life_token() {
+    if (m_flag)
+      m_flag->store(false, std::memory_order_release);
+  }
+
+  life_token(const life_token &) = delete;
+  life_token &operator=(const life_token &) = delete;
+
+  [[nodiscard]] life_watch watch() const noexcept { return life_watch(m_flag); }
+
+private:
+  shared_ptr<std::atomic<bool>> m_flag;
+};
 
 template <typename T> struct AllocDeleter {
   void operator()(T *p) const noexcept {

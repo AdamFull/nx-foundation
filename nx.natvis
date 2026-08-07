@@ -173,4 +173,29 @@
         </Expand>
     </Type>
 
+    <Type Name="nx::shared_ptr&lt;void&gt;">
+        <DisplayString Condition="m_ptr == nullptr">empty</DisplayString>
+        <DisplayString>void* {m_ptr} [{((nx::detail::SharedHeader*)m_ptr - 1)->refs._Storage._Value} refs]</DisplayString>
+        <Expand>
+            <Item Name="[refs]" Condition="m_ptr != nullptr">((nx::detail::SharedHeader*)m_ptr - 1)->refs._Storage._Value</Item>
+            <Item Name="[ptr]">m_ptr</Item>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::shared_ptr&lt;*&gt;">
+        <DisplayString Condition="m_ptr == nullptr">empty</DisplayString>
+        <DisplayString>{*m_ptr} [{((nx::detail::SharedHeader*)m_ptr - 1)->refs._Storage._Value} refs]</DisplayString>
+        <Expand>
+            <Item Name="[refs]" Condition="m_ptr != nullptr">((nx::detail::SharedHeader*)m_ptr - 1)->refs._Storage._Value</Item>
+            <Item Name="[ptr]">m_ptr</Item>
+            <ExpandedItem Condition="m_ptr != nullptr">*m_ptr</ExpandedItem>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::life_watch">
+        <DisplayString Condition="m_flag.m_ptr == nullptr">no token</DisplayString>
+        <DisplayString Condition="m_flag.m_ptr->_Storage._Value">alive</DisplayString>
+        <DisplayString>dead</DisplayString>
+    </Type>
+
 </AutoVisualizer>
