@@ -136,6 +136,13 @@ public:
     return sparse_lookup(h.index());
   }
 
+  [[nodiscard]] repr try_index(Handle h) const noexcept {
+    const repr pos = sparse_lookup(h.index());
+    return (pos != sentinel && m_dense[pos] == h) ? pos : sentinel;
+  }
+
+  static constexpr repr no_index = sentinel;
+
   // Handle currently occupying a dense position; pairs with begin()/values().
   [[nodiscard]] Handle handle_at(size_type dense_index) const noexcept {
     assert(dense_index < m_dense.size());

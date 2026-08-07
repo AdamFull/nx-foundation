@@ -152,6 +152,9 @@ struct component_metadata {
 
 namespace detail {
 
+/// What dense_index reports for an entity a storage does not hold.
+inline constexpr u32 no_dense_index = ~u32{0};
+
 // Type-erased base for a component storage. It exposes only the operations the
 // registry needs without knowing T, so heterogeneous storages can live in one
 // table and components can be removed when an entity is destroyed. Hooks are
@@ -174,6 +177,8 @@ public:
   [[nodiscard]] virtual std::span<const Entity> entities() const noexcept = 0;
   [[nodiscard]] virtual void *packed() noexcept = 0;
   [[nodiscard]] virtual void *element(Entity e) noexcept = 0;
+
+  [[nodiscard]] virtual u32 dense_index(Entity e) const noexcept = 0;
   [[nodiscard]] virtual void *emplace_default(registry_type &reg, Entity e) = 0;
 
   // Destroy this object using the allocator it was constructed with.
@@ -282,6 +287,11 @@ public:
       return nullptr;
     else
       return m_set.try_get(e);
+  }
+
+  [[nodiscard]] u32 dense_index(const Entity e) const noexcept override {
+    const auto pos = m_set.try_index(e);
+    return pos == decltype(m_set)::no_index ? no_dense_index : cast<u32>(pos);
   }
 
   [[nodiscard]] void *emplace_default(registry_type &reg,
