@@ -843,11 +843,18 @@ namespace detail {
 /// A pointer to one field of the never-defined fake object. Passing it as a
 /// template argument is what makes the compiler write the field's name into its
 /// own signature.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wundefined-var-template"
+#endif
 template <class T, usize I> consteval auto field_pointer() {
   return tie(fake<T>, [](const auto &...fields) {
     return std::get<I>(std::make_tuple(&fields...));
   });
 }
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 } // namespace detail
 
