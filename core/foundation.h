@@ -667,6 +667,8 @@ public:
   ~shared_ptr() { detail::shared_release(m_ptr); }
 
   shared_ptr &operator=(const shared_ptr &other) noexcept {
+    if (this == &other)
+      return *this;
     return assign(other.m_ptr);
   }
 
@@ -730,8 +732,9 @@ public:
 private:
   template <typename U> friend class shared_ptr;
 
-  // Retaining before releasing costs nothing and makes self-assignment work.
   shared_ptr &assign(T *object) noexcept {
+    if (m_ptr == object)
+      return *this;
     detail::shared_retain(object);
     detail::shared_release(m_ptr);
     m_ptr = object;

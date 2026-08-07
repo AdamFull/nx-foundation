@@ -91,7 +91,7 @@ assert_fail(const char *file, const int line, const char *cond,
 template <typename... Args>
 [[noreturn]] static void assert_fail(const char *file, const int line,
                                      const char *cond, string_view fmt,
-                                     Args &&...args) {
+                                     Args &&...args) noexcept {
   char buf[512];
   assert_fail(file, line, cond,
               nx::format_to(buf, fmt, std::forward<Args>(args)...));

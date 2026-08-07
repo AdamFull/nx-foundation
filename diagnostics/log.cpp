@@ -2,6 +2,7 @@
 
 #include "core/foundation/containers/concurrent_queue.h"
 #include "core/foundation/containers/small_vector.h"
+#include "core/foundation/core/hash.h"
 #include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread.h"
 
@@ -344,22 +345,25 @@ const char *level_name(Level level) noexcept {
   }
 }
 
-Category category(string_view name) {
+Category category(const string_view name) noexcept {
   Registry &r = registry();
   scoped_lock lock(r.mtx);
 
+  const u64 key = hash_fnv1a64(name);
+  const usize length = min(name.size(), sizeof(CategoryState::name) - 1);
   const u32 count = r.count.load(std::memory_order_relaxed);
   for (u32 i = 0; i < count; ++i)
-    if (name == string_view(r.entries[i].name))
+    if (r.entries[i].key == key &&
+        string_view(r.entries[i].name) == name.substr(0, length))
       return Category{&r.entries[i]};
 
   if (count >= MAX_CATEGORIES)
     return Category{&r.entries[0]}; // registry full: fall back to first
 
   CategoryState &e = r.entries[count];
-  const usize n = min(name.size(), sizeof(e.name) - 1);
-  memcpy(e.name, name.data(), n);
-  e.name[n] = '\0';
+  memcpy(e.name, name.data(), length);
+  e.name[length] = '\0';
+  e.key = key;
   e.level.store(nx::cast<u8>(Level::Trace), std::memory_order_relaxed);
   r.count.store(count + 1, std::memory_order_release);
   return Category{&e};

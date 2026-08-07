@@ -74,57 +74,101 @@ public:
     std::construct_at(&m_storage.value);
   }
 
-  constexpr result(const T &v) : m_has_value(true) {
+  constexpr result(const T &v)
+    requires std::is_copy_constructible_v<T>
+      : m_has_value(true) {
     std::construct_at(&m_storage.value, v);
   }
 
-  constexpr result(T &&v) : m_has_value(true) {
+  constexpr result(T &&v)
+    requires std::is_move_constructible_v<T>
+      : m_has_value(true) {
     std::construct_at(&m_storage.value, std::move(v));
   }
 
-  template <typename G> constexpr result(err<G> &&u) : m_has_value(false) {
+  template <typename G>
+    requires std::is_constructible_v<E, G &&>
+  constexpr result(err<G> &&u) : m_has_value(false) {
     std::construct_at(&m_storage.error, std::move(u).error());
   }
 
-  template <typename G> constexpr result(const err<G> &u) : m_has_value(false) {
+  template <typename G>
+    requires std::is_constructible_v<E, const G &>
+  constexpr result(const err<G> &u) : m_has_value(false) {
     std::construct_at(&m_storage.error, u.error());
   }
 
-  constexpr result(const result &o) : m_has_value(o.m_has_value) {
+  constexpr result(const result &o)
+    requires(std::is_copy_constructible_v<T> && std::is_copy_constructible_v<E>)
+      : m_has_value(o.m_has_value) {
     if (m_has_value)
       std::construct_at(&m_storage.value, o.m_storage.value);
     else
       std::construct_at(&m_storage.error, o.m_storage.error);
   }
 
-  constexpr result(result &&o) noexcept : m_has_value(o.m_has_value) {
+  constexpr result(result &&o) noexcept(
+      std::is_nothrow_move_constructible_v<T> &&
+      std::is_nothrow_move_constructible_v<E>)
+    requires(std::is_move_constructible_v<T> && std::is_move_constructible_v<E>)
+      : m_has_value(o.m_has_value) {
     if (m_has_value)
       std::construct_at(&m_storage.value, std::move(o.m_storage.value));
     else
       std::construct_at(&m_storage.error, std::move(o.m_storage.error));
   }
 
-  constexpr result &operator=(const result &o) {
+  constexpr result &operator=(const result &o)
+    requires(std::is_copy_constructible_v<T> &&
+             std::is_copy_constructible_v<E> && std::is_copy_assignable_v<T> &&
+             std::is_copy_assignable_v<E> &&
+             std::is_nothrow_move_constructible_v<T> &&
+             std::is_nothrow_move_constructible_v<E>)
+  {
     if (this == &o)
       return *this;
-    destroy();
-    m_has_value = o.m_has_value;
-    if (m_has_value)
-      std::construct_at(&m_storage.value, o.m_storage.value);
-    else
-      std::construct_at(&m_storage.error, o.m_storage.error);
+    if (m_has_value == o.m_has_value) {
+      if (m_has_value)
+        m_storage.value = o.m_storage.value;
+      else
+        m_storage.error = o.m_storage.error;
+    } else if (o.m_has_value) {
+      T next(o.m_storage.value);
+      std::destroy_at(&m_storage.error);
+      std::construct_at(&m_storage.value, std::move(next));
+      m_has_value = true;
+    } else {
+      E next(o.m_storage.error);
+      std::destroy_at(&m_storage.value);
+      std::construct_at(&m_storage.error, std::move(next));
+      m_has_value = false;
+    }
     return *this;
   }
 
-  constexpr result &operator=(result &&o) noexcept {
+  constexpr result &
+  operator=(result &&o) noexcept(std::is_nothrow_move_assignable_v<T> &&
+                                 std::is_nothrow_move_assignable_v<E>)
+    requires(std::is_nothrow_move_constructible_v<T> &&
+             std::is_nothrow_move_constructible_v<E> &&
+             std::is_move_assignable_v<T> && std::is_move_assignable_v<E>)
+  {
     if (this == &o)
       return *this;
-    destroy();
-    m_has_value = o.m_has_value;
-    if (m_has_value)
+    if (m_has_value == o.m_has_value) {
+      if (m_has_value)
+        m_storage.value = std::move(o.m_storage.value);
+      else
+        m_storage.error = std::move(o.m_storage.error);
+    } else if (o.m_has_value) {
+      std::destroy_at(&m_storage.error);
       std::construct_at(&m_storage.value, std::move(o.m_storage.value));
-    else
+      m_has_value = true;
+    } else {
+      std::destroy_at(&m_storage.value);
       std::construct_at(&m_storage.error, std::move(o.m_storage.error));
+      m_has_value = false;
+    }
     return *this;
   }
 
@@ -314,41 +358,65 @@ public:
 
   constexpr result() : m_has_value(true) {}
 
-  template <typename G> constexpr result(err<G> &&u) : m_has_value(false) {
+  template <typename G>
+    requires std::is_constructible_v<E, G &&>
+  constexpr result(err<G> &&u) : m_has_value(false) {
     std::construct_at(&m_storage.error, std::move(u).error());
   }
 
-  template <typename G> constexpr result(const err<G> &u) : m_has_value(false) {
+  template <typename G>
+    requires std::is_constructible_v<E, const G &>
+  constexpr result(const err<G> &u) : m_has_value(false) {
     std::construct_at(&m_storage.error, u.error());
   }
 
-  constexpr result(const result &o) : m_has_value(o.m_has_value) {
+  constexpr result(const result &o)
+    requires std::is_copy_constructible_v<E>
+      : m_has_value(o.m_has_value) {
     if (!m_has_value)
       std::construct_at(&m_storage.error, o.m_storage.error);
   }
 
-  constexpr result(result &&o) noexcept : m_has_value(o.m_has_value) {
+  constexpr result(result &&o) noexcept(std::is_nothrow_move_constructible_v<E>)
+    requires std::is_move_constructible_v<E>
+      : m_has_value(o.m_has_value) {
     if (!m_has_value)
       std::construct_at(&m_storage.error, std::move(o.m_storage.error));
   }
 
-  constexpr result &operator=(const result &o) {
+  constexpr result &operator=(const result &o)
+    requires(std::is_copy_constructible_v<E> && std::is_copy_assignable_v<E>)
+  {
     if (this == &o)
       return *this;
-    destroy();
-    m_has_value = o.m_has_value;
-    if (!m_has_value)
+    if (!m_has_value && !o.m_has_value)
+      m_storage.error = o.m_storage.error;
+    else if (m_has_value && !o.m_has_value) {
       std::construct_at(&m_storage.error, o.m_storage.error);
+      m_has_value = false;
+    } else if (!m_has_value && o.m_has_value) {
+      std::destroy_at(&m_storage.error);
+      m_has_value = true;
+    }
     return *this;
   }
 
-  constexpr result &operator=(result &&o) noexcept {
+  constexpr result &
+  operator=(result &&o) noexcept(std::is_nothrow_move_constructible_v<E> &&
+                                 std::is_nothrow_move_assignable_v<E>)
+    requires(std::is_move_constructible_v<E> && std::is_move_assignable_v<E>)
+  {
     if (this == &o)
       return *this;
-    destroy();
-    m_has_value = o.m_has_value;
-    if (!m_has_value)
+    if (!m_has_value && !o.m_has_value)
+      m_storage.error = std::move(o.m_storage.error);
+    else if (m_has_value && !o.m_has_value) {
       std::construct_at(&m_storage.error, std::move(o.m_storage.error));
+      m_has_value = false;
+    } else if (!m_has_value && o.m_has_value) {
+      std::destroy_at(&m_storage.error);
+      m_has_value = true;
+    }
     return *this;
   }
 

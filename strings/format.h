@@ -7,15 +7,17 @@
 
 namespace nx {
 template <usize N, typename... Args>
-const char *format_to(char (&buf)[N], string_view fmt, Args &&...args) {
+const char *format_to(char (&buf)[N], string_view fmt,
+                      Args &&...args) noexcept {
+  static_assert(N > 0);
   struct capped_out_it {
     char **cur;
     char *limit;
     using difference_type = std::ptrdiff_t;
-    capped_out_it &operator++() { return *this; }
-    capped_out_it operator++(int) { return *this; }
-    capped_out_it &operator*() { return *this; }
-    capped_out_it &operator=(const char c) {
+    capped_out_it &operator++() noexcept { return *this; }
+    capped_out_it operator++(int) noexcept { return *this; }
+    capped_out_it &operator*() noexcept { return *this; }
+    capped_out_it &operator=(const char c) noexcept {
       if (*cur < limit)
         *(*cur)++ = c;
       return *this;
@@ -23,8 +25,16 @@ const char *format_to(char (&buf)[N], string_view fmt, Args &&...args) {
   };
 
   char *cur = buf;
-  std::vformat_to(capped_out_it{&cur, buf + N - 1}, fmt,
-                  std::make_format_args(args...));
+  try {
+    std::vformat_to(capped_out_it{&cur, buf + N - 1}, fmt,
+                    std::make_format_args(args...));
+  } catch (...) {
+    cur = buf;
+    constexpr string_view fallback = "[format error]";
+    for (const char c : fallback)
+      if (cur < buf + N - 1)
+        *cur++ = c;
+  }
   *cur = '\0';
   return buf;
 }

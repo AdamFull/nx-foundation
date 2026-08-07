@@ -52,6 +52,7 @@ inline constexpr usize LOG_MESSAGE_CAPACITY = 1024;
 /// lifetime; never construct one directly, obtain a Category via category().
 struct CategoryState {
   char name[32];
+  u64 key;
   std::atomic<u8> level; // minimum Level for this category
 };
 
@@ -101,7 +102,7 @@ public:
 
 /// Returns the handle for @p name, registering it on first use. Thread-safe
 /// and idempotent: the same name always yields the same handle.
-Category category(string_view name);
+Category category(string_view name) noexcept;
 
 /// Sets the global minimum level (applies across all categories).
 void set_level(Level level);
@@ -177,14 +178,15 @@ namespace nx {
 
 #define NX_LOG_FUNC(fn, LVL)                                                   \
   template <typename... Args>                                                  \
-  void fn(log::Category cat, string_view fmt, Args &&...args) {                \
+  void fn(log::Category cat, string_view fmt, Args &&...args) noexcept {       \
     if (!log::should_log(log::Level::LVL, cat))                                \
       return;                                                                  \
     char buf[log::LOG_MESSAGE_CAPACITY];                                       \
     log::detail::submit(log::Level::LVL, cat,                                  \
                         format_to(buf, fmt, std::forward<Args>(args)...));     \
   }                                                                            \
-  template <typename... Args> void fn(string_view fmt, Args &&...args) {       \
+  template <typename... Args>                                                  \
+  void fn(string_view fmt, Args &&...args) noexcept {                          \
     fn(log::app, fmt, std::forward<Args>(args)...);                            \
   }
 
