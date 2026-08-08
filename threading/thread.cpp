@@ -288,9 +288,17 @@ void sleep_for(const std::chrono::nanoseconds d) noexcept {
 #endif
 }
 
+namespace {
+thread_local char t_name[NAME_CAPACITY] = {};
+} // namespace
+
+const char *name() noexcept { return t_name; }
+
 void set_name(const char *name) noexcept {
   if (!name)
     return;
+
+  nx::str_copy(t_name, NAME_CAPACITY, name);
 
 #if NX_HAS_WINDOWS_API
   wchar_t wide[64];

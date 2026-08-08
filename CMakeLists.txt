@@ -59,6 +59,7 @@ set(NX_FOUNDATION_HEADERS
   vfs/vfs.h
   vfs/vfs_internal.h
 
+  diagnostics/crash.h
   diagnostics/diagnostic.h
   diagnostics/log.h
   diagnostics/profiler.h
@@ -81,6 +82,7 @@ set(NX_FOUNDATION_SOURCES
   vfs/host_device.cpp
   vfs/memory_device.cpp
   vfs/zip_device.cpp
+  diagnostics/crash.cpp
   diagnostics/log.cpp
   serialization/json.cpp
   reflection/layout.cpp
@@ -107,7 +109,7 @@ if(WIN32)
   # Synchronization: WaitOnAddress / WakeByAddress* (threading/sync.cpp)
   # Psapi:           GetProcessMemoryInfo           (platform/os.cpp)
   # ws2_32:          the loopback listener            (platform/socket.cpp)
-  target_link_libraries(nx_foundation PRIVATE Synchronization Psapi ws2_32)
+  target_link_libraries(nx_foundation PRIVATE Synchronization Psapi ws2_32 Dbghelp)
 elseif(ANDROID)
   target_link_libraries(nx_foundation PRIVATE log)
 elseif(UNIX)

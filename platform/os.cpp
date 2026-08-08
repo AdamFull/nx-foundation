@@ -1,7 +1,8 @@
 #include "core/foundation/platform/os.h"
 
-#include "core/foundation/core/time.h"
 #include "core/foundation/core/scope_guard.h"
+#include "core/foundation/core/time.h"
+#include "core/foundation/strings/format.h"
 
 #include <chrono>
 
@@ -16,7 +17,25 @@
 #elif NX_PLATFORM_POSIX
 #include <sys/mman.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
 #include <unistd.h>
+#endif
+
+#if NX_ARCH_X64 || NX_ARCH_X86
+#if defined(NX_COMPILER_MSVC) && !defined(NX_COMPILER_CLANG)
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#endif
+
+#if NX_PLATFORM_ANDROID
+#include <sys/system_properties.h>
+#endif
+
+#if NX_PLATFORM_APPLE
+#include <mach-o/dyld.h>
+#include <sys/sysctl.h>
 #endif
 
 namespace nx {
@@ -215,6 +234,188 @@ u32 system_ram_mb() noexcept {
                        (1024ull * 1024ull));
 #else
   return 0;
+#endif
+}
+
+namespace {
+
+usize say(char *const out, const usize capacity, const char *const text,
+          const usize length) noexcept {
+  if (out == nullptr || capacity == 0)
+    return 0;
+  const usize kept = length < capacity - 1 ? length : capacity - 1;
+  for (usize i = 0; i < kept; ++i)
+    out[i] = text[i];
+  out[kept] = '\0';
+  return kept;
+}
+
+usize say(char *const out, const usize capacity,
+          const char *const text) noexcept {
+  usize length = 0;
+  while (text[length] != '\0')
+    ++length;
+  return say(out, capacity, text, length);
+}
+
+} // namespace
+
+#if NX_PLATFORM_ANDROID
+namespace {
+usize android_property(const char *const name, char *const out,
+                       const usize capacity) noexcept {
+  char value[PROP_VALUE_MAX] = {};
+  if (__system_property_get(name, value) <= 0)
+    return say(out, capacity, "");
+  return say(out, capacity, value);
+}
+} // namespace
+#endif
+
+usize os_version(char *const out, const usize capacity) noexcept {
+#if NX_HAS_WINDOWS_API
+  // RtlGetVersion rather than GetVersionEx: the latter lies to a process
+  // without a matching compatibility manifest, reporting 6.2 on Windows 10.
+  using RtlGetVersionFn = LONG(WINAPI *)(PRTL_OSVERSIONINFOW);
+  const HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+  RTL_OSVERSIONINFOW info = {};
+  info.dwOSVersionInfoSize = sizeof(info);
+  if (ntdll != nullptr) {
+    const auto query = reinterpret_cast<RtlGetVersionFn>(
+        reinterpret_cast<void *>(::GetProcAddress(ntdll, "RtlGetVersion")));
+    if (query != nullptr && query(&info) == 0) {
+      char text[96];
+      return say(out, capacity,
+                 nx::format_to(text, "Windows {}.{} build {}",
+                               info.dwMajorVersion, info.dwMinorVersion,
+                               info.dwBuildNumber));
+    }
+  }
+  return say(out, capacity, "Windows");
+#elif NX_PLATFORM_ANDROID
+  char release[64] = {};
+  char sdk[64] = {};
+  android_property("ro.build.version.release", release, sizeof(release));
+  android_property("ro.build.version.sdk", sdk, sizeof(sdk));
+  char text[160];
+  return say(out, capacity,
+             nx::format_to(text, "Android {} (API {})",
+                           nx::string_view(release), nx::string_view(sdk)));
+#elif NX_PLATFORM_POSIX
+  utsname info = {};
+  if (::uname(&info) != 0)
+    return say(out, capacity, "");
+  char text[256];
+  return say(out, capacity,
+             nx::format_to(text, "{} {} {}", nx::string_view(info.sysname),
+                           nx::string_view(info.release),
+                           nx::string_view(info.machine)));
+#else
+  return say(out, capacity, "");
+#endif
+}
+
+usize device_model(char *const out, const usize capacity) noexcept {
+#if NX_PLATFORM_ANDROID
+  char brand[64] = {};
+  char model[64] = {};
+  android_property("ro.product.manufacturer", brand, sizeof(brand));
+  android_property("ro.product.model", model, sizeof(model));
+  char text[160];
+  return say(out, capacity,
+             nx::format_to(text, "{} {}", nx::string_view(brand),
+                           nx::string_view(model)));
+#elif NX_PLATFORM_APPLE
+  char model[128] = {};
+  usize size = sizeof(model);
+  if (::sysctlbyname("hw.model", model, &size, nullptr, 0) != 0)
+    return say(out, capacity, "");
+  return say(out, capacity, model);
+#elif NX_HAS_WINDOWS_API
+  // The SMBIOS system name, which is what a laptop reports as its model.
+  char model[128] = {};
+  DWORD size = sizeof(model);
+  if (::RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\BIOS",
+                     "SystemProductName", RRF_RT_REG_SZ, nullptr, model,
+                     &size) != ERROR_SUCCESS)
+    return say(out, capacity, "");
+  return say(out, capacity, model);
+#else
+  return say(out, capacity, "");
+#endif
+}
+
+usize cpu_brand(char *const out, const usize capacity) noexcept {
+#if NX_ARCH_X64 || NX_ARCH_X86
+  // The 48-byte brand string, CPUID leaves 0x80000002..4.
+  u32 regs[4] = {};
+  char brand[49] = {};
+#if defined(NX_COMPILER_MSVC) && !defined(NX_COMPILER_CLANG)
+  __cpuid(reinterpret_cast<int *>(regs), nx::cast<int>(0x80000000u));
+#else
+  __get_cpuid(0x80000000u, &regs[0], &regs[1], &regs[2], &regs[3]);
+#endif
+  if (regs[0] < 0x80000004u)
+    return say(out, capacity, "");
+  for (u32 leaf = 0; leaf < 3; ++leaf) {
+#if defined(NX_COMPILER_MSVC) && !defined(NX_COMPILER_CLANG)
+    __cpuid(reinterpret_cast<int *>(regs), nx::cast<int>(0x80000002u + leaf));
+#else
+    __get_cpuid(0x80000002u + leaf, &regs[0], &regs[1], &regs[2], &regs[3]);
+#endif
+    for (u32 i = 0; i < 4; ++i)
+      for (u32 b = 0; b < 4; ++b)
+        brand[leaf * 16 + i * 4 + b] =
+            nx::cast<char>((regs[i] >> (b * 8)) & 0xffu);
+  }
+  const char *start = brand;
+  while (*start == ' ')
+    ++start;
+  return say(out, capacity, start);
+#elif NX_PLATFORM_APPLE
+  char brand[128] = {};
+  usize size = sizeof(brand);
+  if (::sysctlbyname("machdep.cpu.brand_string", brand, &size, nullptr, 0) != 0)
+    return say(out, capacity, "");
+  return say(out, capacity, brand);
+#elif NX_PLATFORM_ANDROID
+  char hardware[64] = {};
+  android_property("ro.hardware", hardware, sizeof(hardware));
+  return say(out, capacity, hardware);
+#else
+  return say(out, capacity, "");
+#endif
+}
+
+u32 process_id() noexcept {
+#if NX_HAS_WINDOWS_API
+  return nx::cast<u32>(::GetCurrentProcessId());
+#elif NX_PLATFORM_POSIX
+  return nx::cast<u32>(::getpid());
+#else
+  return 0;
+#endif
+}
+
+usize executable_path(char *const out, const usize capacity) noexcept {
+#if NX_HAS_WINDOWS_API
+  char path[1024] = {};
+  const DWORD length = ::GetModuleFileNameA(nullptr, path, sizeof(path));
+  return say(out, capacity, path, nx::cast<usize>(length));
+#elif NX_PLATFORM_APPLE
+  char path[1024] = {};
+  u32 size = sizeof(path);
+  if (_NSGetExecutablePath(path, &size) != 0)
+    return say(out, capacity, "");
+  return say(out, capacity, path);
+#elif NX_PLATFORM_POSIX
+  char path[1024] = {};
+  const ssize_t length = ::readlink("/proc/self/exe", path, sizeof(path) - 1);
+  if (length <= 0)
+    return say(out, capacity, "");
+  return say(out, capacity, path, nx::cast<usize>(length));
+#else
+  return say(out, capacity, "");
 #endif
 }
 } // namespace os

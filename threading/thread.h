@@ -135,8 +135,12 @@ void sleep_for(std::chrono::duration<Rep, Period> d) noexcept {
   sleep_for(std::chrono::ceil<std::chrono::nanoseconds>(d));
 }
 
+inline constexpr usize NAME_CAPACITY = 32;
+
 /// Names the calling thread for debuggers/profilers.
 void set_name(const char *name) noexcept;
+
+[[nodiscard]] const char *name() noexcept;
 
 /// Pins the calling thread to the logical processors set in @p mask.
 bool set_affinity(u64 mask) noexcept;

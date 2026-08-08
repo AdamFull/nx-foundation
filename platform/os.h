@@ -10,7 +10,7 @@ enum class MemProtFlag : u32 {
   Exec = 1 << 3
 };
 NX_ENUM_FLAGS_DEFINE(MemProtFlag, MemProtFlags)
-}
+} // namespace nx::vmem
 
 namespace nx::vmem {
 usize get_page_size();
@@ -37,4 +37,11 @@ u64 ticks_ms() noexcept;
 
 // Total physical system memory in megabytes (0 if it cannot be determined).
 u32 system_ram_mb() noexcept;
-}
+
+usize os_version(char *out, usize capacity) noexcept;
+usize device_model(char *out, usize capacity) noexcept;
+usize cpu_brand(char *out, usize capacity) noexcept;
+
+u32 process_id() noexcept;
+usize executable_path(char *out, usize capacity) noexcept;
+} // namespace nx::os
