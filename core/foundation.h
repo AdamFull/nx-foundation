@@ -857,7 +857,8 @@ template <typename T> struct AllocDeleter {
   }
 };
 
-template <typename T> using unique_ptr = std::unique_ptr<T, AllocDeleter<T>>;
+template <typename T, typename Deleter = AllocDeleter<T>>
+using unique_ptr = std::unique_ptr<T, Deleter>;
 
 template <typename T, typename... Args>
 [[nodiscard]] unique_ptr<T> make_unique(Args &&...args) {
