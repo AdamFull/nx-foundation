@@ -5,9 +5,11 @@
 #include "core/foundation/platform/filesystem.h"
 #include "core/foundation/platform/os.h"
 #include "core/foundation/strings/format.h"
+#include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread.h"
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 
 #if NX_HAS_WINDOWS_API
@@ -16,11 +18,9 @@
 #include <dbghelp.h>
 #include <signal.h>
 #elif NX_PLATFORM_POSIX
-#include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
-#include <unwind.h>
 #endif
 
 namespace nx::crash {
@@ -29,7 +29,6 @@ namespace {
 constexpr usize PATH_CAPACITY = 1024;
 constexpr usize PREAMBLE_CAPACITY = 8192;
 constexpr usize TAIL_MESSAGE_CAPACITY = 256;
-constexpr usize BACKTRACE_CAPACITY = 64;
 
 // A handler cannot format with anything that allocates or takes a lock, so it
 // gets this: a fixed buffer flushed through one raw write per fill.
@@ -125,7 +124,7 @@ private:
 };
 
 struct Note {
-  std::atomic<u32> revision{0};
+  bool occupied = false;
   char key[NOTE_KEY_CAPACITY] = {};
   char value[NOTE_VALUE_CAPACITY] = {};
   u16 length = 0;
@@ -154,11 +153,13 @@ struct State {
   char preamble[PREAMBLE_CAPACITY] = {};
   usize preamble_length = 0;
 
+  mutex notes_mutex;
   Note notes[NOTE_CAPACITY];
 
+  mutex tail_mutex;
   TailRecord tail[LOG_TAIL_CAPACITY];
-  std::atomic<u64> tail_written{0};
-  bool tail_enabled = false;
+  u64 tail_written = 0;
+  std::atomic<bool> tail_enabled{false};
 
   u64 started_ns = 0;
   u64 started_wall_ns = 0;
@@ -171,10 +172,9 @@ struct State {
   log::Sink *tail_sink = nullptr;
 };
 
-State &state() noexcept {
-  static State value;
-  return value;
-}
+State g_state;
+
+State &state() noexcept { return g_state; }
 
 const char *thread_label() noexcept {
   const char *const named = nx::this_thread::name();
@@ -196,7 +196,8 @@ class TailSink final : public log::Sink {
 public:
   void write(const log::Record &record) override {
     State &s = state();
-    const u64 slot = s.tail_written.load(std::memory_order_relaxed);
+    const scoped_lock lock(s.tail_mutex);
+    const u64 slot = s.tail_written;
     TailRecord &into = s.tail[slot % LOG_TAIL_CAPACITY];
     into.timestamp_ns = record.timestamp_ns;
     into.thread_id = record.thread_id;
@@ -205,7 +206,7 @@ public:
     into.length =
         nx::cast<u16>(copy_into(into.message, TAIL_MESSAGE_CAPACITY,
                                 string_view(record.message, record.length)));
-    s.tail_written.store(slot + 1, std::memory_order_release);
+    s.tail_written = slot + 1;
   }
 };
 
@@ -280,11 +281,22 @@ void gather_preamble(const Config &config) {
   s.preamble_length = used;
 }
 
-void write_notes(Out &out) noexcept {
+void write_notes(Out &out, const bool best_effort = false) noexcept {
   State &s = state();
+  Note snapshot[NOTE_CAPACITY];
+  if (best_effort) {
+    if (!s.notes_mutex.try_lock())
+      return;
+  } else {
+    s.notes_mutex.lock();
+  }
+  for (usize i = 0; i < NOTE_CAPACITY; ++i)
+    snapshot[i] = s.notes[i];
+  s.notes_mutex.unlock();
+
   bool any = false;
-  for (const Note &note : s.notes) {
-    if (note.revision.load(std::memory_order_acquire) == 0)
+  for (const Note &note : snapshot) {
+    if (!note.occupied)
       continue;
     if (!any) {
       out.text("\n--- notes ---\n");
@@ -297,21 +309,35 @@ void write_notes(Out &out) noexcept {
   }
 }
 
-void write_tail(Out &out) noexcept {
+void write_tail(Out &out, const bool best_effort = false) noexcept {
   State &s = state();
-  if (!s.tail_enabled)
-    return;
-  const u64 written = s.tail_written.load(std::memory_order_acquire);
-  if (written == 0)
+  if (!s.tail_enabled.load(std::memory_order_acquire))
     return;
 
-  out.text("\n--- log (most recent ");
+  TailRecord snapshot[LOG_TAIL_CAPACITY];
+  if (best_effort) {
+    if (!s.tail_mutex.try_lock())
+      return;
+  } else {
+    s.tail_mutex.lock();
+  }
+  const u64 written = s.tail_written;
+  if (written == 0) {
+    s.tail_mutex.unlock();
+    return;
+  }
+
   const u64 count = written < LOG_TAIL_CAPACITY ? written : LOG_TAIL_CAPACITY;
+  for (u64 i = 0; i < count; ++i)
+    snapshot[i] = s.tail[(written - count + i) % LOG_TAIL_CAPACITY];
+  s.tail_mutex.unlock();
+
+  out.text("\n--- log (most recent ");
   out.dec(count);
   out.text(") ---\n");
 
-  for (u64 i = written - count; i < written; ++i) {
-    const TailRecord &record = s.tail[i % LOG_TAIL_CAPACITY];
+  for (u64 i = 0; i < count; ++i) {
+    const TailRecord &record = snapshot[i];
     // Milliseconds since the process started, because turning a wall-clock
     // epoch into a date needs libc calls a handler must not make.
     const u64 since = record.timestamp_ns > s.started_wall_ns
@@ -364,57 +390,6 @@ void close_report(const Out::handle_type handle) noexcept {
 
 #if NX_PLATFORM_POSIX
 
-struct Frames {
-  void *address[BACKTRACE_CAPACITY] = {};
-  usize count = 0;
-};
-
-_Unwind_Reason_Code collect_frame(_Unwind_Context *const context,
-                                  void *const arg) {
-  auto *const frames = static_cast<Frames *>(arg);
-  if (frames->count == BACKTRACE_CAPACITY)
-    return _URC_END_OF_STACK;
-  const uintptr_t pc = _Unwind_GetIP(context);
-  if (pc != 0)
-    frames->address[frames->count++] = reinterpret_cast<void *>(pc);
-  return _URC_NO_REASON;
-}
-
-void write_backtrace(Out &out) noexcept {
-  Frames frames;
-  _Unwind_Backtrace(&collect_frame, &frames);
-  if (frames.count == 0)
-    return;
-
-  out.text("\n--- backtrace ---\n");
-  for (usize i = 0; i < frames.count; ++i) {
-    out.text("#");
-    out.dec(i);
-    out.text(i < 10 ? "  " : " ");
-    out.hex(reinterpret_cast<uintptr_t>(frames.address[i]));
-
-    // dladdr takes the loader lock, which a handler is not supposed to touch.
-    // It is taken anyway: an unsymbolised address is useless without the exact
-    // binary, and a deadlock here costs a report that would not have been
-    // readable regardless.
-    Dl_info info = {};
-    if (::dladdr(frames.address[i], &info) != 0) {
-      if (info.dli_fname != nullptr) {
-        out.text(" ");
-        out.text(info.dli_fname);
-      }
-      if (info.dli_sname != nullptr) {
-        out.text(" ");
-        out.text(info.dli_sname);
-        out.text("+");
-        out.dec(nx::cast<u64>(static_cast<const u8 *>(frames.address[i]) -
-                              static_cast<const u8 *>(info.dli_saddr)));
-      }
-    }
-    out.nl();
-  }
-}
-
 const char *signal_name(const int number) noexcept {
   switch (number) {
   case SIGSEGV:
@@ -436,6 +411,7 @@ const char *signal_name(const int number) noexcept {
 
 constexpr int HANDLED_SIGNALS[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT};
 struct sigaction g_previous[nx::array_size(HANDLED_SIGNALS)];
+std::atomic_flag g_handling_signal = ATOMIC_FLAG_INIT;
 // A fixed size rather than SIGSTKSZ: recent bionic and glibc define that as a
 // sysconf() call, which is not a constant expression. 64 KiB is well above
 // what the handler needs and it is reserved once, at install.
@@ -443,9 +419,9 @@ char g_alt_stack[65536];
 
 void handle_signal(const int number, siginfo_t *const info,
                    void *const context) {
+  const int saved_errno = errno;
   State &s = state();
-  bool expected = false;
-  if (s.handling.compare_exchange_strong(expected, true)) {
+  if (!g_handling_signal.test_and_set(std::memory_order_relaxed)) {
     const Out::handle_type handle = open_report(s.report_path);
     {
       Out out(handle);
@@ -458,19 +434,10 @@ void handle_signal(const int number, siginfo_t *const info,
       out.text("\nfault address: ");
       out.hex(reinterpret_cast<uintptr_t>(info != nullptr ? info->si_addr
                                                           : nullptr));
-      out.text("\nthread       : ");
-      out.text(thread_label());
-      out.nl();
-      write_runtime(out);
       out.nl();
       out.text(s.preamble, s.preamble_length);
-      // Everything past here can hang or fault a second time - the unwinder,
-      // the loader lock, a corrupt log ring. What is already known lands on
-      // disk first so that losing the rest does not lose the report.
-      out.flush();
-      write_backtrace(out);
-      write_notes(out);
-      write_tail(out);
+      out.text("\nUse the OS tombstone/core dump for the crashing thread's "
+               "registers and backtrace.\n");
     }
     close_report(handle);
   }
@@ -481,7 +448,9 @@ void handle_signal(const int number, siginfo_t *const info,
     if (HANDLED_SIGNALS[i] == number)
       ::sigaction(number, &g_previous[i], nullptr);
   (void)context;
-  ::raise(number);
+  errno = saved_errno;
+  if (::raise(number) != 0)
+    ::_exit(128 + number);
 }
 
 void install_handlers() {
@@ -506,6 +475,8 @@ void remove_handlers() {
 }
 
 #elif NX_HAS_WINDOWS_API
+
+constexpr usize BACKTRACE_CAPACITY = 64;
 
 using MiniDumpWriteDumpFn = BOOL(WINAPI *)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
                                            PMINIDUMP_EXCEPTION_INFORMATION,
@@ -721,8 +692,8 @@ void write_report(const Request &request) noexcept {
     out.flush();
     write_registers(out, context);
     write_stack(out, context);
-    write_notes(out);
-    write_tail(out);
+    write_notes(out, true);
+    write_tail(out, true);
   }
   close_report(handle);
 }
@@ -901,7 +872,7 @@ bool install(const Config &config) {
   gather_preamble(config);
 
   if (config.log_tail) {
-    s.tail_enabled = true;
+    s.tail_enabled.store(true, std::memory_order_release);
     s.tail_sink = nx::allocate<TailSink>();
     if (s.tail_sink != nullptr)
       log::add_sink(s.tail_sink);
@@ -922,7 +893,7 @@ void shutdown() {
     log::remove_sink(s.tail_sink);
     s.tail_sink = nullptr;
   }
-  s.tail_enabled = false;
+  s.tail_enabled.store(false, std::memory_order_release);
 }
 
 bool installed() noexcept {
@@ -936,9 +907,10 @@ string_view directory() noexcept {
 
 void note(const string_view key, const string_view value) {
   State &s = state();
+  const scoped_lock lock(s.notes_mutex);
   Note *free_slot = nullptr;
   for (Note &slot : s.notes) {
-    if (slot.revision.load(std::memory_order_acquire) == 0) {
+    if (!slot.occupied) {
       if (free_slot == nullptr)
         free_slot = &slot;
       continue;
@@ -946,7 +918,6 @@ void note(const string_view key, const string_view value) {
     if (string_view(slot.key) == key) {
       slot.length =
           nx::cast<u16>(copy_into(slot.value, NOTE_VALUE_CAPACITY, value));
-      slot.revision.fetch_add(1, std::memory_order_release);
       return;
     }
   }
@@ -955,15 +926,17 @@ void note(const string_view key, const string_view value) {
   copy_into(free_slot->key, NOTE_KEY_CAPACITY, key);
   free_slot->length =
       nx::cast<u16>(copy_into(free_slot->value, NOTE_VALUE_CAPACITY, value));
-  free_slot->revision.store(1, std::memory_order_release);
+  free_slot->occupied = true;
 }
 
 void clear_note(const string_view key) {
   State &s = state();
+  const scoped_lock lock(s.notes_mutex);
   for (Note &slot : s.notes)
-    if (slot.revision.load(std::memory_order_acquire) != 0 &&
-        string_view(slot.key) == key)
-      slot.revision.store(0, std::memory_order_release);
+    if (slot.occupied && string_view(slot.key) == key) {
+      slot.occupied = false;
+      return;
+    }
 }
 
 bool report(const Fatal &fatal) {
