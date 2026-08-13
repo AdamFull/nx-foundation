@@ -45,8 +45,7 @@ public:
   [[nodiscard]] std::span<const u8> address() const noexcept;
   [[nodiscard]] nx::string to_string() const;
 
-  [[nodiscard]] friend bool operator==(const Endpoint &a,
-                                       const Endpoint &b) noexcept;
+  friend bool operator==(const Endpoint &a, const Endpoint &b) noexcept;
 
 private:
   u8 m_bytes[16] = {};
