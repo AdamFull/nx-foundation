@@ -705,6 +705,15 @@ public:
         q->valid = false;
   }
 
+  void release_components() noexcept {
+    clear();
+    destroy_everything();
+    m_metadata.clear();
+    m_generations.clear();
+    m_query_index.clear();
+    m_registered_count = 0;
+  }
+
   /// Reserve capacity for an expected number of entity slots.
   void reserve(size_type n) {
     m_slots.reserve(n);
