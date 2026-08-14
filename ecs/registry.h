@@ -679,7 +679,8 @@ public:
   }
 
   /// Remove every entity, component, and relation; storages are kept
-  /// registered.
+  /// registered. Entity slots are retained and versioned so a handle from
+  /// before the clear can never become live again after the registry is reused.
   void clear() {
     for (base_storage *s : m_storages)
       if (s)
@@ -688,8 +689,16 @@ public:
       ++g;
     m_hierarchy.clear();
     m_relation_count = 0;
-    m_slots.clear();
-    m_free.clear();
+    for (usize i = 0; i < m_slots.size(); ++i) {
+      entity_slot &slot = m_slots[i];
+      if (!slot.live)
+        continue;
+      slot.live = false;
+      if (slot.version < Entity::max_version) {
+        ++slot.version;
+        m_free.push_back(nx::cast<repr>(i));
+      }
+    }
     m_alive_count = 0;
     for (qcache *q : m_query_caches)
       if (q)
