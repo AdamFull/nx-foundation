@@ -125,6 +125,7 @@ world.destroy(e); // detaches children by default; see destroy_policy
 | `nx::enums::flags` | `core/enum.h` | A type-safe bitset over a scoped enum's enumerators, with bit operators. |
 | `nx::result` / `nx::err` | `core/result.h` | An error-or-value type for exception-free error handling, with `and_then`/`transform`/`or_else`/`transform_error` combinators. |
 | `nx::scope_guard` | `core/scope_guard.h` | Run an action on scope exit unless dismissed. Also `scoped_exit()` and the Go-style `defer { ... };` macro. |
+| `nx::scoped_value` | `core/scope_guard.h` | Temporarily replace a value and restore it on scope exit, including correctly nested scopes. |
 | `nx::Guid` | `core/random.h` | A 128-bit unique identifier (UUID): parse, format, compare, hash. Generate via `nx::Rng::guid()`. |
 | `nx::Rng` | `core/random.h` | A seedable pseudo-random generator. |
 

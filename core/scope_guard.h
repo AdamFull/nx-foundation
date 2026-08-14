@@ -2,13 +2,40 @@
 
 /**
  * @file scope_guard.h
- * @brief Run-on-scope-exit helpers: nx::scope_guard, scoped_exit and defer.
+ * @brief Scope-exit helpers and temporary value replacement.
  */
 
 #include <type_traits>
 #include <utility>
 
 namespace nx {
+
+template <typename T> class [[nodiscard]] scoped_value {
+public:
+  scoped_value(T &target, T replacement) noexcept(
+      std::is_nothrow_move_constructible_v<T> &&
+      std::is_nothrow_move_assignable_v<T>)
+      : m_target(&target),
+        m_previous(std::exchange(target, std::move(replacement))) {}
+
+  scoped_value(scoped_value &&other) noexcept(
+      std::is_nothrow_move_constructible_v<T>)
+      : m_target(std::exchange(other.m_target, nullptr)),
+        m_previous(std::move(other.m_previous)) {}
+
+  scoped_value(const scoped_value &) = delete;
+  scoped_value &operator=(const scoped_value &) = delete;
+  scoped_value &operator=(scoped_value &&) = delete;
+
+  ~scoped_value() noexcept(std::is_nothrow_move_assignable_v<T>) {
+    if (m_target != nullptr)
+      *m_target = std::move(m_previous);
+  }
+
+private:
+  T *m_target;
+  T m_previous;
+};
 
 /**
  * @brief Runs a callable when it leaves scope, unless dismissed first.
