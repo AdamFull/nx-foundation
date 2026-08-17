@@ -49,6 +49,10 @@ public:
     u16v(nx::cast<u16>(v));
     u16v(nx::cast<u16>(v >> 16));
   }
+  void u64v(const u64 v) {
+    u32v(nx::cast<u32>(v));
+    u32v(nx::cast<u32>(v >> 32));
+  }
   void f32v(const f32 v) {
     u32 bits = 0;
     std::memcpy(&bits, &v, sizeof(bits));
@@ -97,6 +101,11 @@ public:
     const u32 lo = u16v();
     const u32 hi = u16v();
     return lo | (hi << 16);
+  }
+  u64 u64v() {
+    const u64 lo = u32v();
+    const u64 hi = u32v();
+    return lo | (hi << 32);
   }
   f32 f32v() {
     const u32 bits = u32v();
