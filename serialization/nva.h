@@ -126,6 +126,18 @@ public:
     return s;
   }
 
+  /// The next @p n bytes as a view, advancing past them - for a chunk that nests
+  /// another container's bytes. Empty and not-ok past the end.
+  [[nodiscard]] std::span<const u8> raw(const usize n) {
+    if (!m_ok || m_pos + n > m_b.size()) {
+      m_ok = false;
+      return {};
+    }
+    const std::span<const u8> s = m_b.subspan(m_pos, n);
+    m_pos += n;
+    return s;
+  }
+
   [[nodiscard]] bool ok() const noexcept { return m_ok; }
 
 private:
