@@ -71,10 +71,8 @@ public:
   explicit Reader(const std::span<const u8> b) : m_b(b) {}
 
   u8 u8v() {
-    if (m_pos + 1 > m_b.size()) {
-      m_ok = false;
+    if (!require_bytes(1))
       return 0;
-    }
     return m_b[m_pos++];
   }
   u16 u16v() {
@@ -101,31 +99,52 @@ public:
   /// A view into the reader's bytes, valid as long as they are.
   [[nodiscard]] nx::string_view str() {
     const u32 n = u32v();
-    if (!m_ok || m_pos + n > m_b.size()) {
-      m_ok = false;
+    if (!require_bytes(n))
       return {};
-    }
     const nx::string_view s(reinterpret_cast<const char *>(m_b.data() + m_pos),
                             n);
     m_pos += n;
     return s;
   }
 
-  /// The next @p n bytes as a view, advancing past them - for a chunk that nests
-  /// another container's bytes. Empty and not-ok past the end.
+  /// The next @p n bytes as a view, advancing past them - for a chunk that
+  /// nests another container's bytes. Empty and not-ok past the end.
   [[nodiscard]] std::span<const u8> raw(const usize n) {
-    if (!m_ok || m_pos + n > m_b.size()) {
-      m_ok = false;
+    if (!require_bytes(n))
       return {};
-    }
     const std::span<const u8> s = m_b.subspan(m_pos, n);
     m_pos += n;
     return s;
   }
 
   [[nodiscard]] bool ok() const noexcept { return m_ok; }
+  [[nodiscard]] usize remaining() const noexcept {
+    return m_ok && m_pos <= m_b.size() ? m_b.size() - m_pos : 0;
+  }
+
+  /// Proves that a variable-length collection has enough encoded payload for
+  /// every element before its count is used to allocate or drive a loop.
+  [[nodiscard]] bool require_items(const u64 count,
+                                   const u64 min_bytes_per_item) noexcept {
+    if (!m_ok || min_bytes_per_item == 0 ||
+        count > nx::cast<u64>(remaining()) / min_bytes_per_item) {
+      m_ok = false;
+      return false;
+    }
+    return true;
+  }
+
+  void fail() noexcept { m_ok = false; }
 
 private:
+  [[nodiscard]] bool require_bytes(const usize n) noexcept {
+    if (!m_ok || m_pos > m_b.size() || n > m_b.size() - m_pos) {
+      m_ok = false;
+      return false;
+    }
+    return true;
+  }
+
   std::span<const u8> m_b;
   usize m_pos = 0;
   bool m_ok = true;
@@ -196,11 +215,17 @@ public:
     if (expect_format != 0 && format != expect_format)
       return std::nullopt;
     const u32 count = u32_at(bytes, 12);
-    if (16 + usize(count) * 12 > bytes.size())
+    constexpr usize header_size = 16;
+    constexpr usize entry_size = 12;
+    if (count > (bytes.size() - header_size) / entry_size)
       return std::nullopt;
+    const usize table_end = header_size + usize(count) * entry_size;
     for (u32 i = 0; i < count; ++i) {
-      const usize base = 16 + usize(i) * 12;
-      if (usize(u32_at(bytes, base + 4)) + u32_at(bytes, base + 8) > bytes.size())
+      const usize base = header_size + usize(i) * entry_size;
+      const usize offset = u32_at(bytes, base + 4);
+      const usize size = u32_at(bytes, base + 8);
+      if (offset < table_end || offset > bytes.size() ||
+          size > bytes.size() - offset)
         return std::nullopt;
     }
     View v;
@@ -239,4 +264,4 @@ private:
   u32 m_count = 0;
 };
 
-}
+} // namespace nx::nva

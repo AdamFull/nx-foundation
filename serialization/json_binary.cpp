@@ -3,6 +3,13 @@
 #include <cstring>
 
 namespace nx::json {
+namespace {
+
+inline constexpr u32 MAX_READ_DEPTH = 128;
+
+[[nodiscard]] value read_binary_impl(nx::nva::Reader &r, u32 depth);
+
+} // namespace
 
 void write_binary(const value &v, nx::nva::Writer &w) {
   w.u8v(nx::cast<u8>(v.kind()));
@@ -49,7 +56,13 @@ void write_binary(const value &v, nx::nva::Writer &w) {
   }
 }
 
-value read_binary(nx::nva::Reader &r) {
+namespace {
+
+value read_binary_impl(nx::nva::Reader &r, const u32 depth) {
+  if (depth > MAX_READ_DEPTH) {
+    r.fail();
+    return value();
+  }
   const auto tag = r.u8v();
   if (!r.ok())
     return value();
@@ -73,17 +86,23 @@ value read_binary(nx::nva::Reader &r) {
     return value(r.str());
   case type::array: {
     const u32 n = r.u32v();
+    if (!r.require_items(n, 1))
+      return value();
     value a = value::make_array();
     for (u32 i = 0; i < n && r.ok(); ++i)
-      a.push_back(read_binary(r));
+      a.push_back(read_binary_impl(r, depth + 1));
     return a;
   }
   case type::object: {
     const u32 n = r.u32v();
+    // Every member has at least a four-byte key length and a one-byte value
+    // tag, even when both are empty/null.
+    if (!r.require_items(n, 5))
+      return value();
     value o = value::make_object();
     for (u32 i = 0; i < n && r.ok(); ++i) {
       const nx::string_view key = r.str();
-      value member_value = read_binary(r);
+      value member_value = read_binary_impl(r, depth + 1);
       if (!r.ok())
         break;
       (void)o.insert(key, std::move(member_value));
@@ -92,9 +111,12 @@ value read_binary(nx::nva::Reader &r) {
   }
   }
 
-  while (r.ok())
-    r.u8v();
+  r.fail();
   return value();
 }
 
-}
+} // namespace
+
+value read_binary(nx::nva::Reader &r) { return read_binary_impl(r, 0); }
+
+} // namespace nx::json
