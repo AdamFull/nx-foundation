@@ -1,16 +1,10 @@
 #pragma once
 
-/**
- * @file shared_library.h
- * @brief Loading code at run time and finding a symbol in it (nx::os).
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 
 namespace nx::os {
 
-/// Move-only: it owns the OS handle, and two owners would unload it twice.
 class shared_library {
 public:
   shared_library() = default;
@@ -21,7 +15,6 @@ public:
   shared_library(shared_library &&other) noexcept;
   shared_library &operator=(shared_library &&other) noexcept;
 
-  /// Whether this platform loads code at run time at all.
   [[nodiscard]] static bool supported() noexcept;
 
   [[nodiscard]] static string decorate(string_view stem);
@@ -40,4 +33,4 @@ private:
   string m_error;
 };
 
-} // namespace nx::os
+}

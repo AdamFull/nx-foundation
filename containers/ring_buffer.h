@@ -1,11 +1,5 @@
 #pragma once
 
-/**
- * @file ring_buffer.h
- * @brief Bounded lock-free single-producer / single-consumer ring:
- * nx::spsc::Ring.
- */
-
 #include "core/foundation/core/foundation.h"
 
 #include <atomic>
@@ -14,24 +8,7 @@
 
 namespace nx {
 
-/**
- * @brief Bounded lock-free SPSC ring over bulk trivially-copyable data.
- *
- * One thread writes, one thread reads, neither blocks or allocates after
- * reset(). Where the queues in concurrent_queue.h move one element per call,
- * this moves runs of them: a decoder hands over a few thousand samples and the
- * consumer takes whatever count it needs, so the unit of transfer is a span
- * rather than an item.
- *
- * Capacity is a reset() argument rather than a template parameter because the
- * size a stream wants is its channel count times its sample rate times a
- * latency budget - none of them known at compile time. It is rounded up to a
- * power of two.
- *
- * size() is exact when the consumer asks and space() is exact when the
- * producer asks, because the other side only ever makes more room available,
- * never less. Asked from any third thread both are lower bounds.
- */
+/// Bounded lock-free SPSC ring over bulk trivially-copyable data.
 namespace spsc {
 
 template <typename T> class Ring {
@@ -80,7 +57,6 @@ public:
   [[nodiscard]] bool empty() const noexcept { return size() == 0; }
   [[nodiscard]] bool full() const noexcept { return space() == 0; }
 
-  /// Copies up to @p count elements in, returning how many fit. Producer only.
   usize write(const T *src, const usize count) noexcept {
     const usize w = m_write.load(std::memory_order_relaxed);
     const usize r = m_read.load(std::memory_order_acquire);
@@ -98,8 +74,6 @@ public:
     return n;
   }
 
-  /// Copies up to @p count elements out, returning how many there were.
-  /// Consumer only.
   usize read(T *dst, const usize count) noexcept {
     const usize r = m_read.load(std::memory_order_relaxed);
     const usize w = m_write.load(std::memory_order_acquire);
@@ -117,7 +91,6 @@ public:
     return n;
   }
 
-  /// Drops up to @p count elements without copying them. Consumer only.
   usize discard(const usize count) noexcept {
     const usize r = m_read.load(std::memory_order_relaxed);
     const usize w = m_write.load(std::memory_order_acquire);
@@ -126,8 +99,6 @@ public:
     return n;
   }
 
-  /// Drops everything buffered. Consumer only - it moves the read cursor, so
-  /// a producer running concurrently keeps working rather than tearing.
   void clear() noexcept {
     m_read.store(m_write.load(std::memory_order_acquire),
                  std::memory_order_release);
@@ -155,6 +126,6 @@ private:
   usize m_mask = 0;
 };
 
-} // namespace spsc
+}
 
-} // namespace nx
+}

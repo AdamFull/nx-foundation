@@ -1,29 +1,5 @@
 #pragma once
 
-/**
- * @file id_string.h
- * @brief Interned, hash-identified string (nx::id_string).
- *
- * An 8-byte value identifying a string by a 64-bit FNV-1a hash of its bytes,
- * so comparison, ordering and hashing are integer operations independent of
- * length. Unlike a bare hash the original bytes are recoverable: every
- * id_string built at run time registers them in a process-wide intern pool,
- * in every build configuration rather than only in debug.
- *
- * The id is a pure function of the bytes - stable across runs and machines,
- * and computable at compile time, so it works as a baked asset key and as a
- * constant-expression switch label:
- *
- * @code
- * switch (event.name.id()) {
- *   case nx::id_string::from_literal("jump").id(): on_jump(); break;
- * }
- * @endcode
- *
- * Case-sensitive over raw UTF-8 bytes; no normalization. operator<=> compares
- * ids, which is fast but not lexicographic - use lexical_less to sort by text.
- */
-
 #include "core/foundation/containers/hash_map.h"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/hash.h"
@@ -48,14 +24,8 @@ namespace detail {
   return h == 0 ? ~u64{0} : h;
 }
 
-/**
- * @brief Process-wide intern pool backing nx::id_string.
- *
- * Bytes live in an append-only arena of fixed-size pages, never moved or
- * freed, so a const char* from a lookup stays valid for the life of the
- * program. A shared_mutex allows concurrent lookups and serializes the rare
- * insert. Reach it through id_string_intern_pool().
- */
+/// Bytes live in an append-only arena of fixed-size pages, never moved or freed, so a const char*
+/// from a lookup stays valid for the life of the program.
 class id_string_pool {
 public:
   struct entry {
@@ -151,7 +121,7 @@ private:
   return *pool;
 }
 
-} // namespace detail
+}
 
 /// Interned string identified by a 64-bit hash; see the file header. The empty
 /// id_string has id 0. Run-time construction interns the bytes so the text is
@@ -237,7 +207,6 @@ public:
     return a.m_id == detail::id_string_hash(b);
   }
 
-  /// Comparator that orders id_strings by their resolved text.
   struct lexical_less {
     [[nodiscard]] bool operator()(id_string a, id_string b) const noexcept {
       return a.view() < b.view();
@@ -253,19 +222,17 @@ static_assert(std::is_trivially_copyable_v<id_string>);
 
 NX_FORCE_INLINE void swap(id_string &a, id_string &b) noexcept { a.swap(b); }
 
-/// Snapshot of intern-pool usage for diagnostics and budgeting.
 [[nodiscard]] inline detail::id_string_pool::stats id_string_stats() noexcept {
   return detail::id_string_intern_pool().snapshot();
 }
 
 inline namespace literals {
-/// Interns at run time and yields a resolvable id_string.
 [[nodiscard]] inline id_string operator""_id(const char *s, usize n) {
   return id_string(string_view(s, n));
 }
-} // namespace literals
+}
 
-} // namespace nx
+}
 
 template <> struct std::hash<nx::id_string> {
   [[nodiscard]] std::size_t operator()(const nx::id_string &s) const noexcept {

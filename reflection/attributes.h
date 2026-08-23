@@ -1,14 +1,5 @@
 #pragma once
 
-/**
- * @file attributes.h
- * @brief What is said *about* a field, as opposed to about its type
- * (namespace nx::reflect).
- *
- * Fields, names and types are discovered, so nothing is written twice. A field
- * appears here only when it has something to say.
- */
-
 #include "core/foundation/core/enum.h"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/reflection/aggregate.h"
@@ -32,7 +23,6 @@
 
 namespace nx::reflect {
 
-/// What a walker may do with a field, beyond reading its value.
 enum class field_flag : u16 {
   none = 0,
   transient = 1u << 0,
@@ -54,16 +44,11 @@ struct field_attributes {
 #endif
 };
 
-/// One value of an enum and a spelling that names it in a document. A table may
-/// name one value twice; the first entry naming it is canonical, so accepting
-/// an alias never changes what gets written back out.
 struct enum_spelling {
   i64 value;
   string_view name;
 };
 
-/// Specialised by NX_REFLECT_ENUM. The primary leaves an enum described by its
-/// width and signedness alone, which is still enough to read one.
 template <class E> struct enum_spellings {
   static constexpr std::span<const enum_spelling> entries{};
 };
@@ -73,7 +58,6 @@ struct field_attribute_entry {
   field_attributes attributes;
 };
 
-/// Specialised by NX_ATTRIBUTES. The primary says nothing about anything.
 template <class T> struct attributes_of {
   static constexpr std::span<const field_attribute_entry> entries{};
 };
@@ -105,13 +89,10 @@ attributes_for(const string_view name) {
   return {};
 }
 
-} // namespace detail
+}
 
-} // namespace nx::reflect
+}
 
-// A parenthesised item is a single macro argument until something rescans it,
-// so unwrapping one needs a variadic hop whose body re-splits the expansion
-// into the argument list the macro after it expects.
 #define NX_RF_UNWRAP(...) __VA_ARGS__
 
 #define NX_RF_FE_1(M, x) M(x)
@@ -152,8 +133,6 @@ attributes_for(const string_view name) {
                    _26, _27, _28, _29, _30, _31, _32, NAME, ...)               \
   NAME
 
-/// Applies @p M to each parenthesised item, for any count up to 32. The
-/// trailing 0 keeps the variadic tail non-empty for a single item.
 #define NX_RF_LIST(M, ...)                                                     \
   NX_RF_PICK(__VA_ARGS__, NX_RF_FE_32, NX_RF_FE_31, NX_RF_FE_30, NX_RF_FE_29,  \
              NX_RF_FE_28, NX_RF_FE_27, NX_RF_FE_26, NX_RF_FE_25, NX_RF_FE_24,  \
@@ -171,8 +150,6 @@ attributes_for(const string_view name) {
     #field, { __VA_ARGS__ }                                                    \
   }
 
-/// Says something about the fields of @p Type that have anything to say. Write
-/// it at global scope with a fully qualified type.
 #define NX_ATTRIBUTES(Type, ...)                                               \
   template <> struct nx::reflect::attributes_of<Type> {                        \
     static constexpr ::std::array table = {                                    \
@@ -189,13 +166,6 @@ attributes_for(const string_view name) {
 #define NX_ENUM_MAKE(enumerator, text)                                         \
   ::nx::reflect::enum_spelling { static_cast<i64>(Enum_::enumerator), text }
 
-/// Spells @p Enum out for a document and an inspector. The enumerators are
-/// unqualified, so each is written once.
-///
-/// @code
-/// NX_REFLECT_ENUM(nxe::scene::TextureFilter, (Linear, "linear"),
-///                 (Nearest, "nearest"), (Nearest, "point"))
-/// @endcode
 #define NX_REFLECT_ENUM(Enum, ...)                                             \
   template <> struct nx::reflect::enum_spellings<Enum> {                       \
     using Enum_ = Enum;                                                        \

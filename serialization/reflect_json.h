@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file reflect_json.h
- * @brief Walking a described type into a document and back (nx::json).
- */
-
 #include "core/foundation/reflection/type.h"
 #include "core/foundation/serialization/json.h"
 
@@ -32,4 +27,4 @@ template <class T> void read_fields(const value &in, T &object) {
   read_fields(reflect::type_of<T>(), in, &object);
 }
 
-} // namespace nx::json
+}

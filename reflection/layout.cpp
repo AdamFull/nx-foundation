@@ -12,12 +12,11 @@ void fold(fnv1a64 &hash, const string_view text) noexcept {
   hash.combine(u8{0});
 }
 
-/// A field's own size, which the digest needs and field_info does not carry.
 [[nodiscard]] u32 width_of(const field_info &field) noexcept {
   return field.type != nullptr ? field.type->size : 0u;
 }
 
-} // namespace
+}
 
 u64 layout_digest(const type_info &type) noexcept {
   fnv1a64 hash;
@@ -26,8 +25,6 @@ u64 layout_digest(const type_info &type) noexcept {
   hash.combine(type.align);
   hash.combine(cast<u32>(type.kind));
 
-  // Declaration order, not sorted: two fields swapped is a different layout
-  // even when the set of them is the same.
   for (const field_info &field : type.fields) {
     fold(hash, field.name);
     hash.combine(field.offset);
@@ -46,4 +43,4 @@ string describe_layout(const type_info &type) {
   return out;
 }
 
-} // namespace nx::reflect
+}

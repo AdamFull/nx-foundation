@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file callable.h
- * @brief Type-erased callables: nx::function and nx::inplace_function.
- */
-
 #include "core/foundation/core/foundation.h"
 
 #include <cstring>
@@ -32,22 +27,13 @@ using traits_of = function_traits<decltype(&std::decay_t<F>::operator())>;
 template <typename F>
 inline constexpr usize storage_size_for =
     align_up(sizeof(std::decay_t<F>), alignof(std::max_align_t));
-} // namespace detail
+}
 
 template <typename, usize Size = alignof(std::max_align_t)>
 class inplace_function;
 
-/**
- * @brief Type-erased callable that stores its target in an inline buffer.
- *
- * Similar to std::function but never allocates: the callable is held in a
- * fixed-size internal buffer, so construction from a functor that does not fit
- * (or is over-aligned) fails to compile. Copyable and movable.
- *
- * @tparam R    Return type of the call signature.
- * @tparam Args Argument types of the call signature.
- * @tparam Size Size in bytes of the inline storage buffer.
- */
+/// Similar to std::function but never allocates: the callable is held in a fixed-size internal
+/// buffer, so construction from a functor that does not fit (or is over-aligned) fails to compile.
 template <typename R, typename... Args, usize Size>
 class inplace_function<R(Args...), Size> {
 public:
@@ -187,8 +173,6 @@ template <typename R, typename... Args>
 inplace_function(R (*)(Args...))
     -> inplace_function<R(Args...), detail::storage_size_for<R (*)(Args...)>>;
 
-/// Builds an nx::inplace_function, deducing the signature and buffer size from
-/// @p f.
 template <usize Size = 0, typename F>
 NX_FORCE_INLINE auto make_inplace_function(F &&f) {
   using FType = std::decay_t<F>;
@@ -207,16 +191,7 @@ NX_FORCE_INLINE auto make_inplace_function(R (*fn)(Args...)) {
 
 template <typename> class function;
 
-/**
- * @brief Type-erased, owning callable wrapper (heap-backed).
- *
- * Equivalent in spirit to std::function: holds any callable matching the
- * signature R(Args...) on the heap. Copyable and movable. Prefer
- * nx::inplace_function when allocation must be avoided.
- *
- * @tparam R    Return type of the call signature.
- * @tparam Args Argument types of the call signature.
- */
+/// Prefer nx::inplace_function when allocation must be avoided.
 template <typename R, typename... Args> class function<R(Args...)> {
 public:
   function() = default;
@@ -338,8 +313,6 @@ public:
     };
   }
 
-  /// From a function pointer, which is copied rather than referred to - so this
-  /// one has nothing to outlive.
   template <typename FR, typename... FArgs>
     requires std::is_invocable_r_v<R, FR (*)(FArgs...), Args...>
   function_ref(FR (*fn)(FArgs...)) noexcept {
@@ -363,7 +336,6 @@ private:
   R (*m_call)(storage, Args...) = nullptr;
 };
 
-/// Builds an nx::function, deducing the call signature from @p f.
 template <typename F> auto make_function(F &&f) {
   using FType = std::decay_t<F>;
   using Traits = decltype([]<typename C, typename Ret, typename... A>(
@@ -377,4 +349,4 @@ template <typename R, typename... Args> auto make_function(R (*fn)(Args...)) {
   return function<R(Args...)>(fn);
 }
 
-} // namespace nx
+}

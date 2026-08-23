@@ -16,20 +16,18 @@
 #endif
 
 #if NX_PLATFORM_APPLE
-// Darwin has no futex syscall. __ulock is the kernel wait primitive underneath
-// os_unfair_lock and libc++'s atomic wait/notify - the same call libc++, Rust
-// and Go all make for exactly this purpose. It ships in libSystem but has no
-// public header, so declare it here.
+// Darwin has no futex syscall. __ulock is the kernel wait primitive underneath os_unfair_lock and
+// libc++'s atomic wait/notify - the same call libc++, Rust and Go all make for exactly this
+// purpose.
 extern "C" int __ulock_wait(uint32_t operation, void *addr, uint64_t value,
                             uint32_t timeout_us);
 extern "C" int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
 
 namespace {
-// From xnu's sys/ulock.h.
 constexpr uint32_t UL_COMPARE_AND_WAIT = 1;  ///< compare 32 bits at addr
 constexpr uint32_t ULF_WAKE_ALL = 0x00000100;
-constexpr uint32_t ULF_NO_ERRNO = 0x01000000; ///< return -errno, don't set errno
-} // namespace
+constexpr uint32_t ULF_NO_ERRNO = 0x01000000;
+}
 #endif
 
 namespace nx::futex {
@@ -80,8 +78,6 @@ Result wait(std::atomic<u32> *addr, u32 expected_value,
     return Result::Success;
   if (rc == -ETIMEDOUT)
     return Result::TimedOut;
-  // -EINTR and -EFAULT alike: the caller re-checks the word in a loop, so a
-  // spurious return is safe. Matches what the Linux path does with EAGAIN.
   return Result::Success;
 #elif NX_PLATFORM_POSIX
   timespec ts;
@@ -120,8 +116,6 @@ i32 wake(std::atomic<u32> *addr, const i32 count) {
   for (i32 i = 0; i < count; ++i)
     WakeByAddressSingle(addr);
 #elif NX_PLATFORM_APPLE
-  // __ulock_wake has no "wake n" mode, only one or all, so wake singly and
-  // stop when the kernel reports there is nobody left (-ENOENT).
   i32 woken = 0;
   for (i32 i = 0; i < count; ++i) {
     if (__ulock_wake(UL_COMPARE_AND_WAIT | ULF_NO_ERRNO, addr, 0) != 0)
@@ -153,4 +147,4 @@ i32 wake_all(std::atomic<u32> *addr) {
   return 1;
 }
 
-} // namespace nx::futex
+}

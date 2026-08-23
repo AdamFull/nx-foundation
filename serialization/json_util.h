@@ -1,35 +1,17 @@
 #pragma once
 
-/**
- * @file json_util.h
- * @brief Lenient readers for hand-authored documents (namespace nx::json).
- *
- * json.h's serializer<T> is strict: a missing field or a wrong type is an
- * error, which is what a wire format wants. An asset a person edits wants the
- * opposite - state the two fields that differ from the defaults and leave the
- * rest out - so everything here takes a fallback and never fails.
- *
- * The vector helpers deduce their type from that fallback, so this stays
- * usable from any layer without foundation having to know a maths library.
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/reflection/type.h"
 #include "core/foundation/serialization/json.h"
 
 namespace nx::json {
 
-/// Element @p i of @p array, or @p fallback when it is not an array or is too
-/// short. value::operator[](usize) has a bounds precondition; this does not.
 [[nodiscard]] inline f64 at_or(const value &array, const usize i,
                                const f64 fallback) noexcept {
   if (!array.is_array() || i >= array.size())
     return fallback;
   return array[i].get_double(fallback);
 }
-
-// owner[key] on a missing key is a shared null, so these are safe on any
-// document - including one where owner is not an object at all.
 
 [[nodiscard]] inline f32 f32_or(const value &owner, const string_view key,
                                 const f32 fallback) noexcept {
@@ -52,11 +34,6 @@ namespace nx::json {
   return owner[key].get_string(fallback);
 }
 
-/// A two-component vector written as `[x, y]`. Each component falls back on its
-/// own, so `[3]` reads as x = 3 with y left at the default.
-///
-/// The array itself, for a vector that is an element rather than a field - a
-/// point in a polygon, say, where there is no key to name it by.
 template <class V>
 [[nodiscard]] V read_vec2(const value &v, const V &fallback) noexcept {
   return V{cast<f32>(at_or(v, 0, cast<f64>(fallback.x))),
@@ -99,12 +76,6 @@ template <class V> [[nodiscard]] value write_vec4(const V &v) {
   return a;
 }
 
-/// True when @p root declares no version, or one at or below @p current.
-///
-/// Absent is accepted on purpose: a hand-authored document should not need
-/// boilerplate to load, and every writer stamps a version anyway. A *newer* one
-/// is refused, which is the only thing the field is for - a reader that ignores
-/// it loads half a document it does not understand and says nothing.
 [[nodiscard]] inline bool version_ok(const value &root,
                                      const u64 current) noexcept {
   const value &v = root["version"];
@@ -129,4 +100,4 @@ template <spelled_enum E>
   return reflect::type_of<E>().enumeration->text(static_cast<i64>(value));
 }
 
-} // namespace nx::json
+}

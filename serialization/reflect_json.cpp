@@ -93,7 +93,6 @@ void read_value(const type_info &t, const value &v, void *p);
     return true;
   }
   case type_kind::opaque:
-    // Nothing generic may read it, so nothing generic may compare it either.
     return true;
   default:
     return std::memcmp(a, b, t.size) == 0;
@@ -174,8 +173,6 @@ void read_value(const type_info &t, const value &v, void *p) {
     break;
   }
   case type_kind::enumeration:
-    // A spelling this build does not know leaves the field alone, so a document
-    // from a later version loads on the default rather than failing.
     if (v.is_string()) {
       i64 out = 0;
       if (t.enumeration->value(v.get_string({}), out))
@@ -191,8 +188,6 @@ void read_value(const type_info &t, const value &v, void *p) {
     if (!v.is_array())
       break;
     const auto &seq = *t.sequence;
-    // A C array's resize refuses on its own, which is what leaves the tail of a
-    // short document alone.
     seq.resize(p, v.size());
     const usize n = nx::min(v.size(), seq.size(p));
     for (usize i = 0; i < n; ++i)
@@ -204,7 +199,7 @@ void read_value(const type_info &t, const value &v, void *p) {
   }
 }
 
-} // namespace
+}
 
 value write_fields(const type_info &type, const void *object,
                    const write_mode mode) {
@@ -229,4 +224,4 @@ void read_fields(const type_info &type, const value &in, void *object) {
   }
 }
 
-} // namespace nx::json
+}

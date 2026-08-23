@@ -9,6 +9,6 @@ namespace nx::detail {
 // which would let one TU arm the guard and another read zero.
 thread_local u32 t_no_alloc_depth = 0;
 
-} // namespace nx::detail
+}
 
 #endif

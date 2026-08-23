@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file fixed.h
- * @brief Deterministic Q16.16 fixed-point arithmetic.
- */
-
 #include "core/foundation/core/foundation.h"
 
 #include <compare>
@@ -27,17 +22,13 @@ struct fixed {
   [[nodiscard]] static constexpr fixed from_int(const i32 i) noexcept {
     return from_raw(i * ONE);
   }
-  /// A constant from an exact rational, e.g. ratio(1, 60) for a 60 Hz step. The
-  /// rounding is computed once here and is the same on every target.
   [[nodiscard]] static constexpr fixed ratio(const i32 num,
                                              const i32 den) noexcept {
     return from_raw(static_cast<i32>((static_cast<i64>(num) << FRAC) / den));
   }
 
-  /// Truncates toward zero. floor() rounds down, which differs for negatives.
   [[nodiscard]] constexpr i32 to_int() const noexcept { return raw / ONE; }
   [[nodiscard]] constexpr i32 floor() const noexcept { return raw >> FRAC; }
-  /// Rendering only - never feed the result back into the simulation.
   [[nodiscard]] constexpr f32 to_float() const noexcept {
     return static_cast<f32>(raw) / static_cast<f32>(ONE);
   }
@@ -81,4 +72,4 @@ struct fixed {
   }
 };
 
-} // namespace nx
+}

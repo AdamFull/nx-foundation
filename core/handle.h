@@ -8,14 +8,8 @@
 
 namespace nx {
 
-// A packed handle: low IndexBits hold the slot index, the remaining high bits
-// hold the version (generation). The all-ones value is the canonical null.
-//
-//   basic_handle<u32, 24>  ->  24 index bits / 8  version bits
-//   basic_handle<u64, 32>  ->  32 index bits / 32 version bits
-//
-// Tag makes handles to different resource kinds distinct types so they cannot
-// be assigned to one another by mistake.
+// A packed handle: low IndexBits hold the slot index, the remaining high bits hold the version
+// (generation).
 template <typename Repr, usize IndexBits, typename Tag = void>
 class basic_handle {
   static_assert(std::is_unsigned_v<Repr>, "Repr must be an unsigned integer");
@@ -91,7 +85,7 @@ using handle64 = basic_handle<u64, 32>;
 template <typename Tag> using typed_handle32 = basic_handle<u32, 24, Tag>;
 template <typename Tag> using typed_handle64 = basic_handle<u64, 32, Tag>;
 
-} // namespace nx
+}
 
 namespace std {
 
@@ -106,4 +100,4 @@ struct hash<nx::basic_handle<Repr, IndexBits, Tag>> {
   }
 };
 
-} // namespace std
+}

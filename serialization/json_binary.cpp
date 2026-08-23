@@ -74,7 +74,6 @@ value read_binary(nx::nva::Reader &r) {
   case type::array: {
     const u32 n = r.u32v();
     value a = value::make_array();
-    // No reserve on the raw count: a corrupt length would ask for a huge one.
     for (u32 i = 0; i < n && r.ok(); ++i)
       a.push_back(read_binary(r));
     return a;
@@ -93,11 +92,9 @@ value read_binary(nx::nva::Reader &r) {
   }
   }
 
-  // An unknown tag: the stream is not one we wrote. Run it dry so the caller
-  // sees a failed read rather than a null that looks like a real value.
   while (r.ok())
     r.u8v();
   return value();
 }
 
-} // namespace nx::json
+}

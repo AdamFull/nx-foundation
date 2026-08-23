@@ -1,11 +1,5 @@
 #pragma once
 
-/**
- * @file aggregate.h
- * @brief Reading a plain aggregate's fields without being told about them
- * (namespace nx::reflect).
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string_view.h"
 
@@ -15,8 +9,6 @@
 
 namespace nx::reflect {
 
-/// Most fields a described aggregate may have. Raising it means regenerating
-/// the tie arms below; nothing else.
 inline constexpr usize max_fields = 64;
 
 template <class T>
@@ -25,24 +17,14 @@ concept plain_aggregate =
 
 namespace detail {
 
-/// Converts to a reference rather than a value on purpose: binding a reference
-/// is a single conversion, so a field whose type has a dozen implicit
-/// constructors - nx::string, say - stays unambiguous.
 struct any_ref {
   template <class T> constexpr operator T &() const noexcept;
 };
 
-/// One initialiser slot. Only exists so a pack of indices can expand into a
-/// pack of `any_ref`s.
 template <usize> using slot = any_ref;
 
-/// The most initialisers `T{...}` accepts.
-///
-/// This is an upper bound on the field count, not the count itself. An array
-/// cannot be initialised from a reference, so the compiler elides its braces
-/// and `i32 slots[4]` reads as four slots - under clang and gcc, at least;
-/// MSVC hands the whole array one. count_fields below turns the bound into the
-/// real count.
+/// An array cannot be initialised from a reference, so the compiler elides its braces and `i32
+/// slots[4]` reads as four slots - under clang and gcc, at least;
 template <class T, class... Probe> consteval usize count_slots() {
   if constexpr (requires { T{Probe{}..., any_ref{}}; })
     return count_slots<T, Probe..., any_ref>();
@@ -50,36 +32,23 @@ template <class T, class... Probe> consteval usize count_slots() {
     return sizeof...(Probe);
 }
 
-/// Whether `T{any_ref x Head, {}, any_ref x Tail}` initialises.
-///
-/// The explicit `{}` is the point of the exercise: a member handed a
-/// brace-enclosed initialiser keeps its braces, so nothing is elided into it
-/// and `Tail` counts only the slots the members *after* it take.
 template <class T, usize... Head, usize... Tail>
 consteval bool fits_around(std::index_sequence<Head...>,
                            std::index_sequence<Tail...>) {
   return requires { T{slot<Head>{}..., {}, slot<Tail>{}...}; };
 }
 
-/// How many of @p Total slots the member sitting at slot @p Head takes.
-///
-/// The tail counts down from the largest it could be, so the search costs one
-/// step per slot the member takes and the walk below stays linear in Total.
 template <class T, usize Total, usize Head, usize Tail>
 consteval usize slots_at() {
   if constexpr (fits_around<T>(std::make_index_sequence<Head>{},
                                std::make_index_sequence<Tail>{}))
     return Total - Head - Tail;
   else if constexpr (Tail == 0)
-    // `{}` does not initialise this member at all - it has no default
-    // constructor, say. An array or a subaggregate would have taken it, so
-    // nothing was elided into this one and it took its single slot.
     return 1;
   else
     return slots_at<T, Total, Head, Tail - 1>();
 }
 
-/// Walks the slots one member at a time.
 template <class T, usize Total, usize Head> consteval usize count_fields() {
   if constexpr (Head >= Total)
     return 0;
@@ -89,12 +58,6 @@ template <class T, usize Total, usize Head> consteval usize count_fields() {
                         Head + slots_at<T, Total, Head, Total - Head - 1>()>();
 }
 
-/// Never defined. Its address is only ever a template argument, which is what
-/// puts a field's name into a compiler signature.
-///
-/// This is what makes a described type need linkage: clang rejects the use
-/// outright for a type declared in an anonymous namespace, because it can see
-/// the object could not be defined in any translation unit either.
 template <class T> extern const T fake;
 
 template <class T, usize I, auto P> consteval string_view signature() {
@@ -105,10 +68,6 @@ template <class T, usize I, auto P> consteval string_view signature() {
 #endif
 }
 
-/// Cuts the field name out of a signature. Both spellings were read off the
-/// compilers rather than assumed:
-///   MSVC   ...<&nx::reflect::detail::fake<struct Camera2D>->zoom>(void)
-///   clang  std::string_view nx::reflect::detail::signature() [P = &fake.zoom]
 [[nodiscard]] consteval string_view name_from(const string_view sig) {
 #if defined(_MSC_VER) && !defined(__clang__)
   const usize arrow = sig.rfind("->");
@@ -815,22 +774,13 @@ template <> struct tie_n<64> {
   }
 };
 
-} // namespace detail
+}
 
-/// How many fields @p T has, counted the way a structured binding counts: an
-/// array member is one field, whatever its length.
-///
-/// That is not the same as the number of initialisers the type accepts, which
-/// is why this takes two steps rather than one. Probing with references alone
-/// reads `i32 slots[4]` as four fields on clang and gcc, and a wrong count is a
-/// compile error at the tie below rather than a wrong answer.
 template <plain_aggregate T>
 inline constexpr usize field_count =
     detail::count_fields<std::remove_cvref_t<T>,
                          detail::count_slots<std::remove_cvref_t<T>>(), 0>();
 
-/// Calls `fn(field0, field1, ...)` with a reference to each field of @p object.
-/// Everything else in the reflection layer is built on this one call.
 template <plain_aggregate T, class Fn>
 constexpr decltype(auto) tie(T &object, Fn &&fn) {
   static_assert(field_count<T> <= max_fields,
@@ -840,9 +790,6 @@ constexpr decltype(auto) tie(T &object, Fn &&fn) {
 
 namespace detail {
 
-/// A pointer to one field of the never-defined fake object. Passing it as a
-/// template argument is what makes the compiler write the field's name into its
-/// own signature.
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wundefined-var-template"
@@ -856,14 +803,10 @@ template <class T, usize I> consteval auto field_pointer() {
 #pragma clang diagnostic pop
 #endif
 
-} // namespace detail
+}
 
 namespace detail {
 
-/// Cuts the type name out of a signature, again read off the compilers:
-///   MSVC   ...nx::reflect::detail::type_signature<struct Camera2D>(void)
-///   clang  std::string_view nx::reflect::detail::type_signature() [T =
-///   Camera2D]
 [[nodiscard]] consteval string_view type_name_from(const string_view sig) {
 #if defined(_MSC_VER) && !defined(__clang__)
   constexpr string_view marker = "type_signature<";
@@ -873,7 +816,6 @@ namespace detail {
     return {};
   string_view name =
       sig.substr(first + marker.size(), last - first - marker.size());
-  // MSVC spells the elaborated form; nobody wants "struct" in a type's name.
   for (const string_view prefix : {"struct ", "class ", "enum ", "union "})
     if (name.starts_with(prefix))
       name.remove_prefix(prefix.size());
@@ -895,14 +837,12 @@ template <class T> consteval string_view type_signature() {
 #endif
 }
 
-} // namespace detail
+}
 
-/// The name of @p T as its own compiler spells it, without RTTI.
 template <class T> [[nodiscard]] consteval string_view type_name() {
   return detail::type_name_from(detail::type_signature<T>());
 }
 
-/// The name of field @p I, exactly as it is spelled in the type.
 template <plain_aggregate T, usize I>
 [[nodiscard]] consteval string_view field_name() {
   static_assert(I < field_count<T>, "nx::reflect: no such field");
@@ -911,4 +851,4 @@ template <plain_aggregate T, usize I>
       detail::signature<U, I, detail::field_pointer<U, I>()>());
 }
 
-} // namespace nx::reflect
+}

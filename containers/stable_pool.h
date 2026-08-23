@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file stable_pool.h
- * @brief Pointer-stable handle-keyed pool (nx::stable_pool).
- */
-
 #include <bit>
 #include <iterator>
 #include <stdexcept>
@@ -17,19 +12,9 @@
 
 namespace nx {
 
-/**
- * @brief Handle-keyed pool whose element addresses stay valid until erased.
- *
- * Elements live in fixed-size pages that are never reallocated, so a T& or T*
- * remains valid until that specific element is erased. Choose this over
- * nx::slot_map when other systems hold raw references into the pool. Iteration
- * walks the pages and skips empty slots, so it is less cache-dense than a slot
- * map.
- *
- * @tparam T      Element type.
- * @tparam Handle Handle type used as the key (carries index and version).
- * @tparam Alloc  Allocator type.
- */
+/// Handle-keyed pool whose element addresses stay valid until erased. Elements live in fixed-size
+/// pages that are never reallocated, so a T& or T* remains valid until that specific element is
+/// erased.
 template <typename T, typename Handle = handle32, typename Alloc = Allocator<T>>
 class stable_pool {
   using repr = Handle::repr_type;
@@ -408,4 +393,4 @@ private:
   usize m_capacity = 0;
 };
 
-} // namespace nx
+}

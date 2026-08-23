@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file flat_map.h
- * @brief Sorted associative container over contiguous arrays (nx::flat_map).
- */
-
 #include <algorithm>
 #include <compare>
 #include <functional>
@@ -34,30 +29,13 @@ template <typename C>
 struct fm_has_is_transparent<C, std::void_t<typename C::is_transparent>>
     : std::true_type {};
 
-// operator-> needs to hand back something pointer-like, but the iterator's
-// reference is a pair of references that lives nowhere stable. Wrapping it lets
-// the arrow chain reach a real address for the duration of the full expression.
 template <typename Ref> struct fm_arrow_proxy {
   Ref ref;
   Ref *operator->() noexcept { return std::addressof(ref); }
 };
 
-} // namespace detail
+}
 
-/**
- * @brief Ordered key/value map backed by sorted contiguous arrays.
- *
- * Keys and mapped values live in two parallel dense arrays. Lookups are binary
- * searches over the keys, so they are cache-friendly and iteration is ordered.
- * Insert and erase are O(n) because elements shift, making this best for
- * read-heavy maps built once and queried often rather than churn-heavy
- * workloads.
- *
- * @tparam Key     Key type.
- * @tparam T       Mapped value type.
- * @tparam Compare Strict-weak ordering on keys.
- * @tparam Alloc   Allocator type.
- */
 template <
     typename Key, typename T, typename Compare = std::less<Key>,
     typename Alloc = Allocator<Key>, typename KeyContainer = vector<Key, Alloc>,
@@ -739,9 +717,6 @@ private:
 
   void sort_and_unique() { sort_and_unique_keep_first(0); }
 
-  // Stable-sort every key and keep the first element of each equivalence class.
-  // Indices below from_head were already sorted and unique and carry the lower
-  // original positions, so they win over later duplicates appended afterward.
   void sort_and_unique_keep_first(size_type from_head) {
     const size_type n = size();
     if (n - from_head == 0)
@@ -787,9 +762,6 @@ erase_if(flat_map<Key, T, Compare, KC, MC> &m, Pred pred) {
   using size_type = typename flat_map<Key, T, Compare, KC, MC>::size_type;
   const size_type before = m.size();
 
-  // Compact survivors forward through both arrays in lockstep, then trim. The
-  // extract/replace round trip keeps the public const-key invariant intact
-  // while still letting us move elements out of the underlying containers.
   auto cont = std::move(m).extract();
   size_type out = 0;
   const size_type n = cont.keys.size();
@@ -810,4 +782,4 @@ erase_if(flat_map<Key, T, Compare, KC, MC> &m, Pred pred) {
   return before - m.size();
 }
 
-} // namespace nx
+}

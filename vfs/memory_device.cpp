@@ -22,7 +22,7 @@ io_result<nx::blob<u8>> MemoryDevice::read(const path_view rel) {
   const auto it = m_files.find(key);
   if (it == m_files.end())
     return err(file_error{io_error::NotFound, 0});
-  return it->second.bytes; // deep copy
+  return it->second.bytes;
 }
 
 io_result<stream_ptr> MemoryDevice::open(const path_view rel) {
@@ -31,7 +31,7 @@ io_result<stream_ptr> MemoryDevice::open(const path_view rel) {
   const auto it = m_files.find(key);
   if (it == m_files.end())
     return err(file_error{io_error::NotFound, 0});
-  auto *s = nx::allocate<BlobStream>(it->second.bytes); // owns a copy
+  auto *s = nx::allocate<BlobStream>(it->second.bytes);
   if (!s)
     return err(file_error{io_error::OpenFailed, 0});
   return stream_ptr(s);
@@ -40,7 +40,7 @@ io_result<stream_ptr> MemoryDevice::open(const path_view rel) {
 FileInfo MemoryDevice::stat(const path_view rel) {
   const nx::string key = canon_rel(rel);
   FileInfo info;
-  if (key.empty()) { // the root
+  if (key.empty()) {
     info.exists = true;
     info.is_directory = true;
     return info;
@@ -52,7 +52,6 @@ FileInfo MemoryDevice::stat(const path_view rel) {
     info.mtime_ns = it->second.mtime_ns;
     return info;
   }
-  // A path with children behaves as a directory.
   nx::string prefix = key;
   prefix.push_back('/');
   for (const auto &[k, v] : m_files) {
@@ -120,4 +119,4 @@ io_result<void> MemoryDevice::remove(const path_view rel) {
 
 MemoryDevice *make_memory_device() { return nx::allocate<MemoryDevice>(); }
 
-} // namespace nx::vfs
+}

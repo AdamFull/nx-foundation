@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file filesystem.h
- * @brief Path inspection (nx::fs::path_view) and filesystem I/O helpers.
- */
-
 #include "core/foundation/containers/blob.h"
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/result.h"
@@ -35,7 +30,7 @@ constexpr bool is_dotdot(const string_view s) noexcept {
   return s.size() == 2 && s[0] == '.' && s[1] == '.';
 }
 
-} // namespace detail
+}
 
 constexpr bool is_separator(const char c) noexcept {
   return c == '/' || c == '\\';
@@ -46,8 +41,6 @@ constexpr bool is_absolute(const string_view p) noexcept {
     return false;
   if (is_separator(p[0]))
     return true;
-  // A drive letter is absolute only when followed by a separator (C:\x);
-  // bare "C:" or "C:x" is drive-relative.
   if (p.size() >= 2 && detail::is_alpha(p[0]) && p[1] == ':')
     return p.size() >= 3 && is_separator(p[2]);
   return false;
@@ -103,9 +96,6 @@ constexpr bool has_extension(const string_view p) noexcept {
   return !extension(p).empty();
 }
 
-// Lexically joins tail onto base. An absolute (or separator-rooted) tail
-// replaces base; an empty tail leaves base unchanged. Windows root-name
-// semantics such as "C:foo" are not applied.
 [[nodiscard]] inline string join(const string_view base,
                                  const string_view tail) {
   if (tail.empty())
@@ -119,21 +109,13 @@ constexpr bool has_extension(const string_view p) noexcept {
   return out;
 }
 
-// Lexically resolves "." and "..", collapses redundant separators and returns a
-// forward-slash path. Touches no filesystem, so symlinks are not followed.
-//
-// An absolute path stays absolute and keeps its root name ("C:"); a relative
-// one stays relative, keeping leading ".." that cannot be resolved without
-// knowing the base. A path that normalizes away yields ".".
-//
-// Returns "" for an empty path, and for a ".." that escapes an absolute root -
-// which is what makes this usable as a containment check.
+// An absolute path stays absolute and keeps its root name ("C:"); a relative one stays relative,
+// keeping leading ".." that cannot be resolved without knowing the base.
 [[nodiscard]] inline string normalize(const string_view p) {
   const string_view root = root_name(p);
   const string_view rest = p.substr(root.size());
   const bool absolute = !rest.empty() && is_separator(rest[0]);
 
-  // Inline: paths are shallow, and normalize() sits on every VFS lookup.
   small_vector<string_view, 16> segs;
   usize i = 0;
   while (i < rest.size()) {
@@ -152,9 +134,9 @@ constexpr bool has_extension(const string_view p) noexcept {
       if (!segs.empty() && !detail::is_dotdot(segs.back())) {
         segs.pop_back();
       } else if (absolute) {
-        return {}; // escapes the root
+        return {};
       } else {
-        segs.push_back(seg); // relative: nothing to pop against
+        segs.push_back(seg);
       }
       continue;
     }
@@ -174,16 +156,10 @@ constexpr bool has_extension(const string_view p) noexcept {
   return out;
 }
 
-} // namespace path
+}
 
-/**
- * @brief Non-owning view over a UTF-8 filesystem path.
- *
- * Wraps a string_view and offers lexical path queries (filename, stem,
- * extension, parent_path, root_name, is_absolute) and joining via join() or
- * operator/. It does not touch the filesystem and copies nothing; the
- * referenced bytes must outlive the view.
- */
+/// Non-owning view over a UTF-8 filesystem path. It does not touch the filesystem and copies
+/// nothing; the referenced bytes must outlive the view.
 class path_view {
 public:
   constexpr path_view() noexcept = default;
@@ -309,8 +285,6 @@ enum class file_type : u8 {
   other,
 };
 
-// status follows symlinks, symlink_status does not. not_found means nothing
-// exists at path; none means the query itself failed.
 [[nodiscard]] file_type status(path_view path);
 [[nodiscard]] file_type symlink_status(path_view path);
 
@@ -328,8 +302,6 @@ struct file_stat {
   u64 mtime_ns = 0;
 };
 
-/// Type, size and modification time in one query. Both backends already read
-/// all three to answer status(), so this costs nothing beyond it.
 [[nodiscard]] file_stat stat_file(path_view path);
 
 struct directory_entry {
@@ -346,30 +318,21 @@ recursive_directory_entries(path_view root);
 [[nodiscard]] io_result<void> copy_file(path_view from, path_view to,
                                         bool overwrite_existing = false);
 
-// Recursively copies the entry at from to the exact path to. On POSIX symlinks
-// are recreated rather than followed; on Windows file symlinks are copied as
-// their target. Recursion is bounded by an internal depth limit.
 [[nodiscard]] io_result<void> copy(path_view from, path_view to,
                                    bool overwrite_existing = false);
 
-// Moves from to to, falling back to copy + remove_all across volumes.
 [[nodiscard]] io_result<void> rename(path_view from, path_view to);
 
 [[nodiscard]] io_result<void> remove(path_view path);
 [[nodiscard]] io_result<void> remove_all(path_view path);
 
-// Directory containing the running executable (no trailing separator).
 [[nodiscard]] io_result<string> executable_dir();
 
 enum class seek_origin : u8 { begin, current, end };
 
-/**
- * @brief Read-only sequential/seekable byte stream.
- *
- * A minimal cross-platform stream interface over a file (OS handle) or an
- * in-memory buffer. Obtain one from open_file() / open_memory(); the returned
- * stream_ptr owns it and closes it on destruction.
- */
+/// Read-only sequential/seekable byte stream. A minimal cross-platform stream interface over a file
+/// (OS handle) or an in-memory buffer. Obtain one from open_file() / open_memory(); the returned
+/// stream_ptr owns it and closes it on destruction.
 struct stream {
   stream() = default;
   virtual ~stream() = default;
@@ -379,17 +342,14 @@ struct stream {
   /// Reads up to @p bytes into @p dst; returns the count actually read (a
   /// short read, including 0, signals end of stream).
   virtual usize read(void *dst, usize bytes) = 0;
-  /// Moves the read cursor; returns false on failure.
   virtual bool seek(i64 offset, seek_origin origin = seek_origin::begin) = 0;
   /// Current cursor position in bytes, or -1 on error.
   [[nodiscard]] virtual i64 tell() const = 0;
   /// Total size in bytes, or -1 if unknown.
   [[nodiscard]] virtual i64 size() const = 0;
-  /// True once the cursor has reached the end of the stream.
   [[nodiscard]] virtual bool eof() const = 0;
 };
 
-/// Move-only owning handle to a stream; closes it on destruction.
 class stream_ptr {
 public:
   stream_ptr() = default;
@@ -425,12 +385,11 @@ private:
   stream *m_s = nullptr;
 };
 
-/// Opens @p path for reading.
 [[nodiscard]] io_result<stream_ptr> open_file(path_view path);
 /// Wraps an existing read-only buffer (not copied; must outlive the stream).
 [[nodiscard]] io_result<stream_ptr> open_memory(const void *data, usize size);
 
-} // namespace nx::fs
+}
 
 // Formats a path_view as its UTF-8 string representation with no copy.
 template <>

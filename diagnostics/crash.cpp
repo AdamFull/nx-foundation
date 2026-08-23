@@ -412,9 +412,6 @@ const char *signal_name(const int number) noexcept {
 constexpr int HANDLED_SIGNALS[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT};
 struct sigaction g_previous[nx::array_size(HANDLED_SIGNALS)];
 std::atomic_flag g_handling_signal = ATOMIC_FLAG_INIT;
-// A fixed size rather than SIGSTKSZ: recent bionic and glibc define that as a
-// sysconf() call, which is not a constant expression. 64 KiB is well above
-// what the handler needs and it is reserved once, at install.
 char g_alt_stack[65536];
 
 void handle_signal(const int number, siginfo_t *const info,
@@ -442,8 +439,6 @@ void handle_signal(const int number, siginfo_t *const info,
     close_report(handle);
   }
 
-  // Restore and re-raise so the OS still does what it would have: a tombstone
-  // on Android, a core file elsewhere, and the right exit status either way.
   for (usize i = 0; i < nx::array_size(HANDLED_SIGNALS); ++i)
     if (HANDLED_SIGNALS[i] == number)
       ::sigaction(number, &g_previous[i], nullptr);
@@ -529,8 +524,6 @@ void write_dump(EXCEPTION_POINTERS *const pointers,
   info.ExceptionPointers = pointers;
   info.ClientPointers = FALSE;
 
-  // Indirectly-referenced memory rather than just the stacks: it is what makes
-  // the locals of a crashed frame inspectable, and costs a few hundred KiB.
   DWORD type = MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithDataSegs |
                MiniDumpWithHandleData | MiniDumpWithThreadInfo |
                MiniDumpWithUnloadedModules;
@@ -548,8 +541,6 @@ void write_stack(Out &out, CONTEXT *const context) noexcept {
     return;
   out.text("\n--- backtrace ---\n");
 
-  // CaptureStackBackTrace walks this thread; with an exception context, the
-  // frames worth having start where it faulted, so unwind that instead.
   STACKFRAME64 frame = {};
   CONTEXT walking = *context;
   DWORD machine = 0;
@@ -642,8 +633,6 @@ struct Request {
   EXCEPTION_POINTERS *pointers = nullptr;
   DWORD thread_id = 0;
   const char *thread_name = "";
-  /// Set for the paths that have no exception behind them, and used as the
-  /// headline in place of one.
   const char *reason = nullptr;
 };
 
@@ -709,16 +698,11 @@ LONG WINAPI handle_exception(EXCEPTION_POINTERS *const pointers) {
   if (!s.handling.compare_exchange_strong(expected, true))
     return EXCEPTION_CONTINUE_SEARCH;
 
-  // Static, because the stack this is running on may be the reason for the
-  // crash: EXCEPTION_STACK_OVERFLOW leaves one guard page, and a report needs
-  // more than that. The single-entry guard above is what makes it safe.
   static Request request;
   request.pointers = pointers;
   request.thread_id = ::GetCurrentThreadId();
   request.thread_name = thread_label();
 
-  // A thread of its own gets a whole fresh stack, and MiniDumpWriteDump is
-  // documented as preferring to run outside the thread it is dumping.
   const HANDLE worker = ::CreateThread(nullptr, 512 * 1024, &report_on_worker,
                                        &request, 0, nullptr);
   if (worker != nullptr) {
@@ -730,10 +714,6 @@ LONG WINAPI handle_exception(EXCEPTION_POINTERS *const pointers) {
   return EXCEPTION_EXECUTE_HANDLER;
 }
 
-// abort(), a failed assert and a std::terminate all bypass the unhandled
-// exception filter. There is no exception record for them, so the context is
-// captured here instead - without it the report would have no registers and no
-// backtrace, which is most of what makes one useful.
 [[noreturn]] void report_and_exit(const char *const reason) {
   State &s = state();
   bool expected = false;
@@ -830,7 +810,7 @@ void prune(const string_view where, const u32 keep) {
     (void)fs::remove(reports[i]);
 }
 
-} // namespace
+}
 
 bool install(const Config &config) {
   State &s = state();
@@ -998,4 +978,4 @@ vector<string> pending_reports() {
   return found;
 }
 
-} // namespace nx::crash
+}

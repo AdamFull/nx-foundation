@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file utf8_string.h
- * @brief UTF-8 string with small-string optimization (nx::string).
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/hash.h"
 #include "core/foundation/strings/utf8_string_view.h"
@@ -20,13 +15,13 @@ constexpr bool is_continuation_byte(const char c) { return (c & 0xC0) == 0x80; }
 
 constexpr usize sequence_length(const char first_byte) {
   if ((first_byte & 0x80) == 0x00)
-    return 1; // 0xxxxxxx
+    return 1;
   if ((first_byte & 0xE0) == 0xC0)
-    return 2; // 110xxxxx
+    return 2;
   if ((first_byte & 0xF0) == 0xE0)
-    return 3; // 1110xxxx
+    return 3;
   if ((first_byte & 0xF8) == 0xF0)
-    return 4; // 11110xxx
+    return 4;
   return 0;
 }
 
@@ -230,10 +225,8 @@ void for_each_codepoint(const char *data, const usize length, Fn &&fn) {
   return at;
 }
 
-// Places a caret can stand, which is what next_char steps through.
-// basic_string::code_point_count answers the decoder's question instead, and
-// the two differ on a stray continuation byte: this one gives it to the
-// character before it, that one calls it a code point of its own.
+// Places a caret can stand, which is what next_char steps through. basic_string::code_point_count
+// answers the decoder's question instead, and the two differ on a stray continuation byte:
 [[nodiscard]] constexpr usize count_chars(const string_view text) noexcept {
   usize n = 0;
   for (usize at = 0; at < text.size(); at = next_char(text, at))
@@ -252,7 +245,7 @@ void for_each_codepoint(const char *data, const usize length, Fn &&fn) {
     return 0;
   return cp;
 }
-} // namespace utf8
+}
 
 namespace detail {
 
@@ -271,19 +264,10 @@ concept stringish = requires(const S &s) {
   std::basic_string_view<typename std::remove_cvref_t<S>::value_type>(s);
 };
 
-} // namespace detail
+}
 
-/**
- * @brief Owning UTF-8 string with small-string optimization.
- *
- * Stores text as UTF-8 bytes and keeps short strings inline (no allocation).
- * Construction and assignment transcode from char, char8_t, char16_t, char32_t
- * and wchar_t sources. Offers a std::string-like interface (append, insert,
- * erase, find, substr, c_str, iterators) and converts implicitly to
- * nx::string_view. Use the nx::string alias for the default allocator.
- *
- * @tparam Alloc Allocator over char8_t.
- */
+/// Owning UTF-8 string with small-string optimization. Stores text as UTF-8 bytes and keeps short
+/// strings inline (no allocation).
 template <class Alloc = Allocator<char8_t>> class basic_string {
   using ATraits = std::allocator_traits<Alloc>;
   static_assert(std::is_same_v<typename ATraits::value_type, char8_t>,
@@ -565,8 +549,6 @@ public:
     return *this;
   }
 
-  // Encodes and appends a single code point. An invalid scalar value appends
-  // the U+FFFD replacement character.
   basic_string &append_codepoint(const char32_t cp) {
     char buf[4];
     usize len = 0;
@@ -642,8 +624,6 @@ public:
     return {data(), size()};
   }
 
-  // Owning conversions. The view operators above share the UTF-8 bytes; these
-  // copy, and the u16/u32 forms transcode out of UTF-8.
   [[nodiscard]] std::string string() const { return {data(), size()}; }
   [[nodiscard]] std::u8string u8string() const {
     return {reinterpret_cast<const char8_t *>(data()), size()};
@@ -829,7 +809,6 @@ private:
     reallocate(new_cap);
   }
 
-  // Allocates a buffer of new_cap + 1 bytes and migrates the contents.
   void reallocate(const usize new_cap) {
     const usize sz = size();
     const char8_t *src = is_heap() ? m_heap.data : m_sso.data;
@@ -855,7 +834,6 @@ private:
       ATraits::deallocate(m_alloc, m_heap.data, heap_capacity() + 1);
   }
 
-  // Takes ownership of o's buffer and leaves o empty. Allocators untouched.
   NX_FORCE_INLINE void steal(basic_string &o) noexcept {
     m_raw = o.m_raw;
     o.init_empty();
@@ -926,7 +904,6 @@ private:
   template <class> friend class basic_string;
 };
 
-/// Default UTF-8 string type; see nx::basic_string.
 using string = basic_string<>;
 
 static_assert(sizeof(string) == 3 * sizeof(void *));
@@ -944,7 +921,7 @@ template <class A> bool append_char(basic_string<A> &out, const char32_t cp) {
   return true;
 }
 
-} // namespace utf8
+}
 
 template <class A>
 basic_string<A> operator+(const basic_string<A> &a, string_view b) {
@@ -986,17 +963,10 @@ NX_FORCE_INLINE void swap(basic_string<A> &a, basic_string<A> &b) noexcept {
   a.swap(b);
 }
 
-} // namespace nx
+}
 
-/**
- * Hash support, so nx::string can key nx::hash_map and std::unordered_map.
- *
- * Hashes the raw UTF-8 bytes with the same function nx::id_string uses, so a
- * string and its interned id agree on what identity means. Deliberately equal
- * to the hash of the corresponding std::string_view: a container keyed by
- * nx::string can then be probed with a view under a transparent hash without
- * the two disagreeing.
- */
+/// Hashes the raw UTF-8 bytes with the same function nx::id_string uses, so a string and its
+/// interned id agree on what identity means.
 template <class A> struct std::hash<nx::basic_string<A>> {
   [[nodiscard]] std::size_t
   operator()(const nx::basic_string<A> &s) const noexcept {

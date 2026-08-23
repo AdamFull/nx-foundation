@@ -1,9 +1,3 @@
-# nx foundation - the bottom layer of the engine: platform/compiler detection,
-# allocators, containers, strings, threading, filesystem and logging.
-#
-# Mostly header-only, but the platform backends (threading, filesystem, os,
-# logging) are real translation units, so this ships as a static library rather
-# than an interface target.
 
 set(NX_FOUNDATION_HEADERS
   core/callable.h
@@ -69,8 +63,6 @@ set(NX_FOUNDATION_HEADERS
 
   ecs/registry.h)
 
-# Platform selection happens inside these files (#if NX_PLATFORM_*), so the
-# source list is the same everywhere.
 set(NX_FOUNDATION_SOURCES
   core/foundation.cpp
   core/random.cpp
@@ -97,23 +89,13 @@ set(NX_FOUNDATION_SOURCES
 add_library(nx_foundation STATIC ${NX_FOUNDATION_SOURCES} ${NX_FOUNDATION_HEADERS})
 add_library(nx::foundation ALIAS nx_foundation)
 
-# Includes are rooted at engine/, so every include reads
-# #include "core/foundation/<scope>/<file>.h" - unambiguous from anywhere.
 target_include_directories(nx_foundation PUBLIC "${CMAKE_SOURCE_DIR}/engine")
 
-# PUBLIC because these are used from public headers: foundation/core/foundation.h
-# includes <mimalloc.h>, and diagnostics/profiler.h includes <tracy/Tracy.hpp>
-# when profiling is enabled. Linking TracyClient unconditionally keeps the link
-# line the same across configs; it is inert unless TRACY_ENABLE is set.
-# minizip-ng backs nx::vfs::ZipDevice, but only inside vfs/zip_device.cpp.
 target_link_libraries(nx_foundation
   PUBLIC nx::mimalloc Tracy::TracyClient
   PRIVATE nx::compile_options nx::minizip)
 
 if(WIN32)
-  # Synchronization: WaitOnAddress / WakeByAddress* (threading/sync.cpp)
-  # Psapi:           GetProcessMemoryInfo           (platform/os.cpp)
-  # ws2_32:          the loopback listener            (platform/socket.cpp)
   target_link_libraries(nx_foundation PRIVATE Synchronization Psapi ws2_32 Dbghelp)
 elseif(ANDROID)
   target_link_libraries(nx_foundation PRIVATE log)
@@ -123,7 +105,6 @@ elseif(UNIX)
   target_link_libraries(nx_foundation PUBLIC Threads::Threads PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
-# Debugger visualizers for the custom containers (MSVC embeds them in the PDB).
 if(MSVC)
   target_sources(nx_foundation PRIVATE nx.natvis)
 endif()

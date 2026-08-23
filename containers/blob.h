@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file blob.h
- * @brief Fixed-size, heap-allocated, owning array (nx::blob).
- */
-
 #include "core/foundation/core/foundation.h"
 
 #include <cassert>
@@ -13,18 +8,6 @@
 
 namespace nx {
 
-/**
- * @brief Owning array of @p T whose size is fixed at construction.
- *
- * Like a std::vector that never grows or shrinks: it allocates once, owns the
- * elements, and exposes a contiguous range. Use it for buffers whose length is
- * known up front and never changes (file contents, decoded data, scratch
- * space). Provides the usual container access (operator[], at, front, back,
- * data, iterators) plus comparison and span conversion.
- *
- * @tparam T     Element type.
- * @tparam Alloc Allocator type.
- */
 template <typename T, typename Alloc = Allocator<T>> class blob {
   using ATraits = std::allocator_traits<Alloc>;
   static_assert(std::is_same_v<typename ATraits::value_type, T>,
@@ -94,7 +77,6 @@ public:
       }
       m_size = n;
     } else {
-      // Single-pass source: buffer first, then take a single fixed allocation.
       vector<T, Alloc> tmp(m_alloc);
       for (; first != last; ++first)
         tmp.push_back(*first);
@@ -159,9 +141,6 @@ public:
     return *this;
   }
 
-  /// Takes ownership of an externally allocated, fully constructed buffer.
-  // Adopts a buffer of `size` elements that was allocated and constructed with
-  // an equal allocator; on destruction it is deallocated with `size`.
   [[nodiscard]] static blob from_owned(T *data, usize size,
                                        const Alloc &a = Alloc()) noexcept {
     blob b(a);
@@ -352,4 +331,4 @@ void swap(blob<T, Alloc> &a, blob<T, Alloc> &b) noexcept {
   a.swap(b);
 }
 
-} // namespace nx
+}

@@ -75,7 +75,7 @@ inline i32 translate_protection_flags(const MemProtFlags p) {
   return flags;
 }
 #endif
-} // namespace detail
+}
 
 usize get_page_size() {
 #if NX_HAS_WINDOWS_API
@@ -159,16 +159,13 @@ bool protect(void *addr, const usize size, const MemProtFlags prot) {
 
   return true;
 }
-} // namespace vmem
+}
 
 namespace os {
 MemStats mem_get_stats() noexcept {
   MemStats s = {};
 
 #if NX_USE_MIMALLOC
-  // mi_process_info wants size_t*, which is not u64* everywhere (it is
-  // unsigned long long on Darwin and unsigned long here), so go through
-  // temporaries rather than reinterpreting the struct's fields.
   size_t rss = 0, peak_rss = 0, committed = 0;
   mi_process_info(nullptr, nullptr, nullptr, &rss, &peak_rss, &committed,
                   nullptr, nullptr);
@@ -258,7 +255,7 @@ usize say(char *const out, const usize capacity,
   return say(out, capacity, text, length);
 }
 
-} // namespace
+}
 
 #if NX_PLATFORM_ANDROID
 namespace {
@@ -269,13 +266,11 @@ usize android_property(const char *const name, char *const out,
     return say(out, capacity, "");
   return say(out, capacity, value);
 }
-} // namespace
+}
 #endif
 
 usize os_version(char *const out, const usize capacity) noexcept {
 #if NX_HAS_WINDOWS_API
-  // RtlGetVersion rather than GetVersionEx: the latter lies to a process
-  // without a matching compatibility manifest, reporting 6.2 on Windows 10.
   using RtlGetVersionFn = LONG(WINAPI *)(PRTL_OSVERSIONINFOW);
   const HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
   RTL_OSVERSIONINFOW info = {};
@@ -332,7 +327,6 @@ usize device_model(char *const out, const usize capacity) noexcept {
     return say(out, capacity, "");
   return say(out, capacity, model);
 #elif NX_HAS_WINDOWS_API
-  // The SMBIOS system name, which is what a laptop reports as its model.
   char model[128] = {};
   DWORD size = sizeof(model);
   if (::RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\BIOS",
@@ -418,6 +412,6 @@ usize executable_path(char *const out, const usize capacity) noexcept {
   return say(out, capacity, "");
 #endif
 }
-} // namespace os
+}
 
-} // namespace nx
+}

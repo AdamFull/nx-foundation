@@ -47,7 +47,7 @@ template <class... Args>
   return out;
 }
 
-} // namespace nx
+}
 
 template <class A, class CharT>
 struct std::formatter<nx::basic_string<A>, CharT>

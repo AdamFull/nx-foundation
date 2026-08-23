@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file type.h
- * @brief What a type is, described so a walker can act on it (nx::reflect).
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/hash.h"
 #include "core/foundation/reflection/aggregate.h"
@@ -33,7 +28,6 @@ enum class type_kind : u8 {
   floating,
   string,
   id,
-  /// Two, three or four `f32` in a row. How many is size / sizeof(f32).
   floats,
   enumeration,
   aggregate,
@@ -86,7 +80,6 @@ struct enum_data {
   }
 };
 
-/// How to walk a list without knowing what it is.
 struct sequence_data {
   const type_info *element = nullptr;
   /// A C array cannot grow: resize does nothing and size is its length.
@@ -97,9 +90,6 @@ struct sequence_data {
   const void *(*const_at)(const void *, usize) = nullptr;
 };
 
-/// Making, unmaking and copying an instance without naming the type. Nothing in
-/// serialisation needs this; a tool holding a scratch value or reverting a
-/// field does.
 struct type_ops {
   void (*default_construct)(void *) = nullptr;
   void (*destroy)(void *) = nullptr;
@@ -112,16 +102,12 @@ struct type_info {
   u32 size = 0;
   u32 align = 0;
   type_kind kind = type_kind::opaque;
-  /// aggregate only.
   std::span<const field_info> fields;
   const enum_data *enumeration = nullptr;
   const sequence_data *sequence = nullptr;
   const type_ops *ops = nullptr;
-  /// A default-constructed instance: what a writer compares against to leave an
-  /// unchanged field out, and what a tool copies back to revert one.
   const void *defaults = nullptr;
 
-  /// floats only. The width already says it, so it is not stored twice.
   [[nodiscard]] constexpr u32 components() const noexcept {
     return size / cast<u32>(sizeof(f32));
   }
@@ -134,9 +120,6 @@ struct type_info {
     return nullptr;
   }
 };
-
-// Shapes recognised without being told. A vector is recognised by its shape
-// rather than by name, so foundation describes glm without including it.
 
 template <class T>
 concept float_component = std::is_same_v<std::remove_cvref_t<T>, f32>;
@@ -168,8 +151,6 @@ concept vec4_like =
 template <class T>
 concept float_vector = vec2_like<T> || vec3_like<T> || vec4_like<T>;
 
-/// Convertible to a view of its own characters, which is what tells a string
-/// apart from a `nx::vector<char>` that happens to have the same operations.
 template <class T>
 concept string_like = std::is_convertible_v<const T &, string_view> &&
                       requires(T s, usize n) { s.resize(n); };
@@ -190,11 +171,8 @@ template <class T> const type_info &type_of();
 
 namespace detail {
 
-/// Two orderings here are load-bearing and were confirmed by breaking them:
-/// bool and an enum are both integral, and a vector of two floats is also a
-/// plain aggregate. A string reaching this before a sequence is *not* what
-/// keeps it a string - `resizable_sequence` excludes one - so do not rely on
-/// the position of that one.
+/// A string reaching this before a sequence is *not* what keeps it a string - `resizable_sequence`
+/// excludes one - so do not rely on the position of that one.
 template <class T> constexpr type_kind kind_of() {
   if constexpr (std::is_same_v<T, bool>)
     return type_kind::boolean;
@@ -217,13 +195,9 @@ template <class T> constexpr type_kind kind_of() {
   else if constexpr (plain_aggregate<T>)
     return type_kind::aggregate;
   else
-    // A handle, a b2BodyId, anything with its state private. Described by name
-    // and size so a tool can see it exists; nothing generic may read it.
     return type_kind::opaque;
 }
 
-/// One instance per type. It is the probe field offsets are measured against
-/// and the defaults a writer compares to, which is why it is worth its space.
 template <class T> const T &defaults_of() {
   static const T value{};
   return value;
@@ -262,8 +236,6 @@ template <plain_aggregate T> const auto &fields_of() {
           out[i].type = types[i];
         }
       });
-      // The name needs its index as a template argument, so it is unrolled
-      // rather than looped.
       [&]<usize... I>(std::index_sequence<I...>) {
         ((out[I].name = field_name<T, I>(),
           out[I].name_hash =
@@ -312,12 +284,9 @@ template <class T> const sequence_data &sequence_of() {
   return data;
 }
 
-/// Every enum has one, described or not: an undescribed enum still has a width
-/// and a signedness a walker needs, and what it lacks is spellings. The table
-/// is filled in by NX_REFLECT_ENUM; see enum_spellings below.
 template <class E> const enum_data &enum_of();
 
-} // namespace detail
+}
 
 namespace detail {
 
@@ -353,12 +322,10 @@ template <class T> const type_info &build() {
   return info;
 }
 
-} // namespace detail
+}
 
-/// The description of @p T. Built once on first use and never again; callers on
-/// a hot path hold the reference rather than asking each time.
 template <class T> const type_info &type_of() {
   return detail::build<std::remove_cv_t<T>>();
 }
 
-} // namespace nx::reflect
+}

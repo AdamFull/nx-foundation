@@ -27,8 +27,6 @@
 
 namespace nx {
 
-// nx::thread
-
 namespace {
 struct thread_start {
   thread::entry_fn fn;
@@ -47,9 +45,6 @@ void apply_start_options(const thread_start &s) noexcept {
 }
 
 #if NX_PLATFORM_POSIX
-// pthread_t is an integer on Linux and an opaque pointer on Darwin, so neither
-// a static_cast nor a reinterpret_cast round-trips it on both. It is the size
-// of a pointer either way, which is all bit_cast needs.
 static_assert(sizeof(pthread_t) == sizeof(uintptr_t));
 
 uintptr_t to_handle(const pthread_t t) noexcept {
@@ -79,7 +74,7 @@ void *thread_entry(void *arg) {
   return nullptr;
 }
 #endif
-} // namespace
+}
 
 thread::thread(entry_fn fn, const thread_options &opts) {
   if (!fn)
@@ -149,8 +144,6 @@ void thread::detach() {
   m_id = 0;
 }
 
-// nx::this_thread
-
 namespace this_thread {
 
 u64 id() noexcept {
@@ -159,8 +152,6 @@ u64 id() noexcept {
 #if NX_HAS_WINDOWS_API
     cached = nx::cast<u64>(GetCurrentThreadId());
 #elif NX_PLATFORM_APPLE
-    // Darwin has no gettid; pthread_threadid_np gives the same system-wide
-    // unique id that the debugger and Instruments show.
     u64 tid = 0;
     pthread_threadid_np(nullptr, &tid);
     cached = tid;
@@ -188,7 +179,6 @@ void yield() noexcept {
 
 namespace {
 
-/// One high-resolution timer per thread, closed when the thread exits.
 struct waitable_timer {
   HANDLE handle = CreateWaitableTimerExW(nullptr, nullptr,
                                          CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
@@ -199,15 +189,6 @@ struct waitable_timer {
   }
 };
 
-/// Current scheduler tick, in 100 ns units.
-///
-/// This matters because a high-resolution waitable timer only keeps its
-/// sub-millisecond accuracy while a single wait stays under the scheduler
-/// period; past that it degrades back to tick granularity. sleep_for() slices
-/// its waits against this value.
-///
-/// Read once. Another process raising the global timer resolution can change
-/// it later, but that only ever makes our slices conservatively small.
 u64 timer_period_100ns() noexcept {
   // NtQueryTimerResolution is the only way to read the period actually in
   // force (timeGetDevCaps reports the supported range, not the current value).
@@ -222,10 +203,10 @@ u64 timer_period_100ns() noexcept {
         current != 0)
       return current;
   }
-  return 156250; // 15.625 ms, the default tick.
+  return 156250;
 }
 
-} // namespace
+}
 #endif
 
 void sleep_for(const std::chrono::nanoseconds d) noexcept {
@@ -233,15 +214,10 @@ void sleep_for(const std::chrono::nanoseconds d) noexcept {
     return;
 
 #if NX_HAS_WINDOWS_API
-  // Sleep() only resolves to the scheduler tick (~15.6 ms by default), so a
-  // 14 ms request can block for 23 ms - enough to turn a 60 Hz frame budget
-  // into 42 fps. A high-resolution waitable timer avoids that without
-  // timeBeginPeriod()'s process-global (and battery-hostile) side effects.
   static thread_local waitable_timer timer;
 
   if (timer.handle != nullptr) {
     static const u64 period = timer_period_100ns();
-    // Stay just under the scheduler period, where the timer is accurate.
     const i64 fine_slice = nx::cast<i64>(period * 95 / 100);
     const auto deadline = std::chrono::steady_clock::now() + d;
 
@@ -256,10 +232,6 @@ void sleep_for(const std::chrono::nanoseconds d) noexcept {
 
       i64 slice;
       if (remaining_100ns > 2 * nx::cast<i64>(period)) {
-        // Far out: cover the distance in one wait, deliberately stopping a
-        // full period short. Tick-granularity overshoot then cannot carry us
-        // past the deadline, and a multi-second sleep costs one wakeup here
-        // instead of one per tick.
         slice = remaining_100ns - nx::cast<i64>(period);
       } else {
         // Close in, where precision is what matters: sub-period slices.
@@ -267,7 +239,7 @@ void sleep_for(const std::chrono::nanoseconds d) noexcept {
       }
 
       LARGE_INTEGER due;
-      due.QuadPart = -slice; // negative = relative, in 100 ns units
+      due.QuadPart = -slice;
       if (!SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE))
         break;
       WaitForSingleObject(timer.handle, INFINITE);
@@ -275,8 +247,6 @@ void sleep_for(const std::chrono::nanoseconds d) noexcept {
     return;
   }
 
-  // Pre-1803 Windows: round down to whole ticks so we never overshoot, and let
-  // the caller's spin (if any) cover the remainder.
   const auto ms = std::chrono::ceil<std::chrono::milliseconds>(d);
   Sleep(nx::cast<DWORD>(ms.count()));
 #elif NX_PLATFORM_POSIX
@@ -290,7 +260,7 @@ void sleep_for(const std::chrono::nanoseconds d) noexcept {
 
 namespace {
 thread_local char t_name[NAME_CAPACITY] = {};
-} // namespace
+}
 
 const char *name() noexcept { return t_name; }
 
@@ -307,14 +277,11 @@ void set_name(const char *name) noexcept {
   if (n > 0)
     SetThreadDescription(GetCurrentThread(), wide);
 #elif NX_PLATFORM_APPLE
-  // Darwin's pthread_setname_np takes no thread argument - it can only name
-  // the calling thread, which is all this function ever does. The limit is
-  // MAXTHREADNAMESIZE (64).
   char truncated[64];
   snprintf(truncated, sizeof(truncated), "%s", name);
   pthread_setname_np(truncated);
 #elif NX_PLATFORM_POSIX
-  char truncated[16]; // Linux limits thread names to 15 chars + NUL
+  char truncated[16];
   snprintf(truncated, sizeof(truncated), "%s", name);
   pthread_setname_np(pthread_self(), truncated);
 #endif
@@ -328,10 +295,6 @@ bool set_affinity(const u64 mask) noexcept {
   return SetThreadAffinityMask(GetCurrentThread(), nx::cast<DWORD_PTR>(mask)) !=
          0;
 #elif NX_PLATFORM_APPLE
-  // Darwin exposes no way to pin a thread to a cpu. THREAD_AFFINITY_POLICY is
-  // only an "these threads share data" hint, it is unimplemented on Apple
-  // silicon, and it cannot express a mask at all. Report the failure rather
-  // than pretend: callers treat affinity as best-effort.
   (void)mask;
   return false;
 #elif NX_PLATFORM_POSIX
@@ -341,8 +304,6 @@ bool set_affinity(const u64 mask) noexcept {
     if (mask & (1ull << i))
       CPU_SET(i, &set);
 #if defined(NX_PLATFORM_ANDROID)
-  // Bionic has no pthread_setaffinity_np; go through the syscall wrapper
-  // instead. Passing tid 0 means "the calling thread".
   return sched_setaffinity(0, sizeof(set), &set) == 0;
 #else
   return pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0;
@@ -370,10 +331,6 @@ thread_priority set_priority(const thread_priority prio) noexcept {
     native = THREAD_PRIORITY_HIGHEST;
     break;
   case thread_priority::Realtime:
-    // Base priority 15 inside a NORMAL_PRIORITY_CLASS process, not the 31 that
-    // REALTIME_PRIORITY_CLASS would give. Raising the class is a whole-process
-    // decision that can starve the input and audio stacks of the machine, so
-    // this is the ceiling a game gets to ask for on its own.
     native = THREAD_PRIORITY_TIME_CRITICAL;
     break;
   }
@@ -381,9 +338,6 @@ thread_priority set_priority(const thread_priority prio) noexcept {
              ? prio
              : thread_priority::Normal;
 #elif NX_PLATFORM_APPLE
-  // Nice is per-process on Darwin, so setpriority() would slow the whole game
-  // down. QoS is the supported per-thread knob, and it is what the scheduler
-  // actually uses to pick core clusters on Apple silicon.
   qos_class_t qos = QOS_CLASS_DEFAULT;
   switch (prio) {
   case thread_priority::Low:
@@ -398,11 +352,6 @@ thread_priority set_priority(const thread_priority prio) noexcept {
   case thread_priority::AboveNormal:
     qos = QOS_CLASS_USER_INITIATED;
     break;
-  // QoS stops at USER_INTERACTIVE. Real time on Darwin is
-  // thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY), which needs the caller's
-  // period and worst-case compute time - facts a priority enum does not carry.
-  // Until something needs a deadline badly enough to pass them, Realtime lands
-  // on the same class as High and says so.
   case thread_priority::High:
   case thread_priority::Realtime:
     qos = QOS_CLASS_USER_INTERACTIVE;
@@ -416,12 +365,7 @@ thread_priority set_priority(const thread_priority prio) noexcept {
     const int lo = sched_get_priority_min(SCHED_FIFO);
     const int hi = sched_get_priority_max(SCHED_FIFO);
     sched_param param{};
-    // Low in the real-time band deliberately: above every ordinary thread on
-    // the machine, below the kernel threads that keep it answering interrupts.
     param.sched_priority = nx::min(lo + 5, hi);
-    // Needs CAP_SYS_NICE, which a game launched from a desktop session does
-    // not have. Falling through to the nice path is the whole reason this
-    // function reports what it managed rather than returning a bool.
     if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) == 0)
       return thread_priority::Realtime;
   }
@@ -454,9 +398,7 @@ thread_priority set_priority(const thread_priority prio) noexcept {
 #endif
 }
 
-} // namespace this_thread
-
-// nx::cpu
+}
 
 namespace cpu {
 namespace {
@@ -507,7 +449,7 @@ void query_topology(topology_info &t) noexcept {
       for (WORD g = 0; g < info->Processor.GroupCount; ++g) {
         const GROUP_AFFINITY &ga = info->Processor.GroupMask[g];
         core.logical_count += nx::cast<u32>(std::popcount(ga.Mask));
-        if (ga.Group == 0) // logical_mask only covers the first group
+        if (ga.Group == 0)
           core.logical_mask |= nx::cast<u64>(ga.Mask);
       }
       t.cores.push_back(core);
@@ -558,10 +500,9 @@ void query_topology(topology_info &t) noexcept {
 
 #elif NX_PLATFORM_APPLE
 
-// Darwin has neither sysfs nor /proc; sysctl is the whole interface. Integer
-// nodes are 32- or 64-bit depending on the key, and sysctl happily writes a
-// short value into a larger buffer (it only errors when the buffer is too
-// small), so a zeroed u64 reads both correctly on little-endian.
+// Integer nodes are 32- or 64-bit depending on the key, and sysctl happily writes a short value
+// into a larger buffer (it only errors when the buffer is too small), so a zeroed u64 reads both
+// correctly on little-endian.
 bool sysctl_u64(const char *name, u64 &out) noexcept {
   u64 value = 0;
   usize size = sizeof(value);
@@ -590,18 +531,12 @@ void query_topology(topology_info &t) noexcept {
   t.logical_count = nx::cast<u32>(sysctl_or("hw.logicalcpu", 1));
   const u32 physical = nx::cast<u32>(sysctl_or("hw.physicalcpu", 0));
   t.package_count = nx::cast<u32>(sysctl_or("hw.packages", 1));
-  t.numa_node_count = 1; // No Apple machine is NUMA.
+  t.numa_node_count = 1;
   t.cache_line_size = nx::cast<u32>(sysctl_or("hw.cachelinesize", 64));
 
-  // Hybrid CPUs (every Apple silicon part) describe themselves as a list of
-  // "perf levels", ordered fastest first. Our efficiency_class runs the other
-  // way - 0 is the most efficient - so the ranks are inverted below.
   const u32 levels = max<u32>(1, nx::cast<u32>(sysctl_or("hw.nperflevels", 1)));
   t.efficiency_class_count = levels;
 
-  // No API maps a physical core to its logical cpu ids, and set_affinity() is
-  // a no-op here anyway, so the masks are synthesised in perf-level order:
-  // the counts and classes are what callers actually schedule against.
   u32 next_logical = 0;
   for (u32 level = 0; level < levels; ++level) {
     char key[64];
@@ -624,7 +559,7 @@ void query_topology(topology_info &t) noexcept {
       core_info core;
       core.index = nx::cast<u32>(t.cores.size());
       core.package = 0;
-      core.efficiency_class = levels - 1 - level; // fastest level -> highest
+      core.efficiency_class = levels - 1 - level;
       core.logical_count = smt_width;
       for (u32 s = 0; s < smt_width && next_logical < 64; ++s, ++next_logical)
         core.logical_mask |= 1ull << next_logical;
@@ -633,10 +568,6 @@ void query_topology(topology_info &t) noexcept {
   }
   t.physical_count = nx::cast<u32>(t.cores.size());
 
-  // hw.cacheconfig is an array of logical-cpu counts sharing each level:
-  // [0] is the machine's cpu count, [1] is L1, [2] L2, [3] L3. Instances =
-  // cpus / sharers. sysctl refuses to truncate, so the buffer has to hold the
-  // whole array - Darwin publishes 10 entries, so leave generous headroom.
   u64 cache_config[32] = {};
   usize config_size = sizeof(cache_config);
   const bool has_config = sysctlbyname("hw.cacheconfig", cache_config,
@@ -686,7 +617,6 @@ bool read_sys_str(const char *path, char *buf, usize size) noexcept {
   return ok;
 }
 
-// Parses "32K" / "1024K" / "8M" style sysfs cache sizes.
 u64 parse_cache_size(const char *s) noexcept {
   char *end = nullptr;
   u64 v = strtoull(s, &end, 10);
@@ -699,7 +629,6 @@ u64 parse_cache_size(const char *s) noexcept {
   return v;
 }
 
-// First cpu index in a "0-3,8-11" style cpu list.
 i64 parse_first_cpu(const char *s) noexcept {
   if (!s[0])
     return -1;
@@ -713,8 +642,7 @@ void query_topology(topology_info &t) noexcept {
   char path[128];
   char buf[256];
 
-  // Physical cores: group logical cpus by (package_id, core_id).
-  small_vector<u64, 64> core_keys; // (package << 32) | core_id
+  small_vector<u64, 64> core_keys;
   small_vector<u64, 64> capacities;
   bool has_topology = false;
 
@@ -728,7 +656,7 @@ void query_topology(topology_info &t) noexcept {
     read_sys_u64(path, pkg_id);
     has_topology = has_topology || got_core;
 
-    u64 capacity = 1024; // arm big.LITTLE exposes relative cpu_capacity
+    u64 capacity = 1024;
     snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cpu_capacity",
              lp);
     read_sys_u64(path, capacity);
@@ -754,7 +682,6 @@ void query_topology(topology_info &t) noexcept {
   }
 
   if (!has_topology || t.cores.empty()) {
-    // sysfs unavailable (restricted sandbox): assume one logical per core.
     t.cores.clear();
     for (u32 i = 0; i < t.logical_count && i < 64; ++i) {
       core_info core;
@@ -767,7 +694,6 @@ void query_topology(topology_info &t) noexcept {
   }
   t.physical_count = nx::cast<u32>(t.cores.size());
 
-  // Efficiency classes: rank of the core's capacity among distinct values.
   small_vector<u64, 8> distinct;
   for (usize i = 0; i < capacities.size(); ++i) {
     bool known = false;
@@ -776,7 +702,6 @@ void query_topology(topology_info &t) noexcept {
     if (!known)
       distinct.push_back(capacities[i]);
   }
-  // Insertion sort ascending: lowest capacity = efficiency class 0.
   for (usize i = 1; i < distinct.size(); ++i)
     for (usize j = i; j > 0 && distinct[j - 1] > distinct[j]; --j)
       std::swap(distinct[j - 1], distinct[j]);
@@ -788,8 +713,6 @@ void query_topology(topology_info &t) noexcept {
         break;
       }
 
-  // Caches: layout from cpu0, instance count = number of cpus that are the
-  // first member of their shared set for that cache index.
   for (u32 index = 0; index < 10; ++index) {
     snprintf(path, sizeof(path),
              "/sys/devices/system/cpu/cpu0/cache/index%u/level", index);
@@ -838,7 +761,6 @@ void query_topology(topology_info &t) noexcept {
                           max<u32>(instances, 1)});
   }
 
-  // NUMA nodes.
   for (u32 node = 0;; ++node) {
     snprintf(path, sizeof(path), "/sys/devices/system/node/node%u/cpulist",
              node);
@@ -870,7 +792,7 @@ void finalize_topology(topology_info &t) noexcept {
 topology_info g_topology;
 once_flag g_topology_once;
 
-} // namespace
+}
 
 const topology_info &topology() noexcept {
   call_once(g_topology_once, [] {
@@ -900,6 +822,6 @@ u32 efficiency_core_count() noexcept {
   return t.physical_count - performance_core_count();
 }
 
-} // namespace cpu
+}
 
-} // namespace nx
+}

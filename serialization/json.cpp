@@ -22,14 +22,8 @@ namespace {
 #if defined(__cpp_lib_to_chars)
 using std::from_chars;
 #else
-/// std::from_chars for f64, on toolchains that do not have it yet.
-///
-/// strtod_l with a null locale is the C locale on Darwin, which is what JSON
-/// needs: a user running under de_DE must not have "1.5" parsed as 1.
 std::from_chars_result from_chars(const char *first, const char *last,
                                   f64 &out) noexcept {
-  // strtod needs a terminator and the parser hands us a view. A number literal
-  // this long is malformed in every practical sense, so rejecting is fine.
   char buf[512];
   const usize len = nx::cast<usize>(last - first);
   if (len == 0 || len >= sizeof(buf))
@@ -51,15 +45,11 @@ std::from_chars_result from_chars(const char *first, const char *last,
 }
 #endif
 
-// Character classification
-//
-// Table lookups rather than comparison chains: the scanner touches every byte
-// of the input at least once, so a single indexed load beats four branches.
+// Character classification Table lookups rather than comparison chains: the scanner touches every
+// byte of the input at least once, so a single indexed load beats four branches.
 
 /// Bit 0: JSON whitespace. Bit 1: terminates a bare number literal.
 alignas(64) constexpr u8 kCharClass[256] = {
-    // 0x00-0x1F: only the four whitespace characters are legal in a document,
-    // and none of them may appear unescaped inside a string.
     /*00*/ 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0,
     /*10*/ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     /*20*/ 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0,
@@ -82,7 +72,6 @@ NX_FORCE_INLINE bool is_space(u8 c) noexcept {
 }
 NX_FORCE_INLINE bool is_digit(u8 c) noexcept { return c >= '0' && c <= '9'; }
 
-/// -1 when @p c is not a hex digit.
 NX_FORCE_INLINE i32 hex_value(u8 c) noexcept {
   if (c >= '0' && c <= '9')
     return c - '0';
@@ -92,8 +81,6 @@ NX_FORCE_INLINE i32 hex_value(u8 c) noexcept {
     return c - 'A' + 10;
   return -1;
 }
-
-// Parser
 
 class parser {
 public:
@@ -131,8 +118,6 @@ private:
     return nx::cast<u8>(*m_cur);
   }
 
-  /// Records where an error happened and returns the code, so callers can
-  /// `return set(code)` in one statement.
   NX_FORCE_INLINE error_code set(error_code e, const char *at) noexcept {
     m_error_pos = at;
     return e;
@@ -168,12 +153,11 @@ private:
           ++m_cur;
         m_cur = (m_cur + 1 < m_end) ? m_cur + 2 : m_end;
       } else {
-        return; // a lone '/' is not a comment; let the value parser reject it
+        return;
       }
     }
   }
 
-  /// Matches a bare literal such as `true`; m_cur is left past it on success.
   NX_FORCE_INLINE bool match(const char *lit, usize n) noexcept {
     if (nx::cast<usize>(m_end - m_cur) < n || std::memcmp(m_cur, lit, n) != 0)
       return false;
@@ -220,7 +204,7 @@ private:
   error_code parse_array(value &out, u32 depth) {
     if (depth >= m_opts.max_depth)
       return set(error_code::depth_exceeded, m_cur);
-    ++m_cur; // '['
+    ++m_cur;
     out = value::make_array();
 
     skip_space();
@@ -262,9 +246,6 @@ private:
     }
   }
 
-  /// Member count past which an object switches from a linear duplicate scan
-  /// to a hash index. Below it the scan is cheaper than hashing; above it the
-  /// quadratic cost starts to dominate.
   static constexpr usize kIndexThreshold = 32;
   using key_index = hash_map<u64, u32>;
 
@@ -293,8 +274,6 @@ private:
     return nullptr;
   }
 
-  /// Records the member just appended, building the index on the way past the
-  /// threshold.
   static void note_member(object &members, key_index &index, bool &indexed) {
     if (indexed) {
       const member &m = members.back();
@@ -315,7 +294,7 @@ private:
   error_code parse_object(value &out, u32 depth) {
     if (depth >= m_opts.max_depth)
       return set(error_code::depth_exceeded, m_cur);
-    ++m_cur; // '{'
+    ++m_cur;
     out = value::make_object();
 
     skip_space();
@@ -326,11 +305,6 @@ private:
       return error_code::none;
     }
 
-    // Deduplicating by linear scan makes an object quadratic in its member
-    // count - fine for a handful of keys, a denial-of-service vector on
-    // untrusted input, where one 100k-key object costs billions of compares.
-    // Past kIndexThreshold a hash index takes over; it allocates nothing until
-    // then, so small objects pay for an empty container.
     key_index index;
     bool indexed = false;
 
@@ -364,7 +338,7 @@ private:
       if (existing != nullptr) {
         if (m_opts.reject_duplicate_keys)
           return set(error_code::duplicate_key, key_at);
-        *existing = std::move(element); // last occurrence wins
+        *existing = std::move(element);
       } else {
         members.push_back(member{std::move(key), std::move(element)});
         note_member(members, index, indexed);
@@ -394,7 +368,6 @@ private:
   }
 
   error_code parse_escape(nx::string &out) {
-    // m_cur points at the character after the backslash.
     if (at_end())
       return set(error_code::unexpected_end, m_cur);
     const char *esc_at = m_cur - 1;
@@ -451,16 +424,13 @@ private:
       return error_code::none;
     }
     if (utf8::is_low_surrogate(nx::cast<char16_t>(unit)))
-      return set(error_code::invalid_surrogate, esc_at); // unpaired low half
+      return set(error_code::invalid_surrogate, esc_at);
 
     utf8::append_char(out, nx::cast<char32_t>(unit));
     return error_code::none;
   }
 
   error_code read_hex4(u32 &out, const char *esc_at) {
-    // Checked one character at a time so the two failure modes stay distinct:
-    // running out of input is a truncated document, whereas a character that
-    // is present but not a hex digit is a malformed escape.
     u32 v = 0;
     for (int i = 0; i < 4; ++i) {
       if (m_cur + i >= m_end)
@@ -476,7 +446,7 @@ private:
   }
 
   error_code parse_string(nx::string &out) {
-    ++m_cur; // opening quote
+    ++m_cur;
     out.clear();
 
     // Copy in runs: scan for the next byte that needs attention and append
@@ -503,7 +473,7 @@ private:
       if (c < 0x20) // raw control characters must be escaped
         return set(error_code::invalid_string, m_cur);
 
-      ++m_cur; // the backslash
+      ++m_cur;
       if (const error_code e = parse_escape(out); e != error_code::none)
         return e;
     }
@@ -517,7 +487,6 @@ private:
     if (at_end())
       return set(error_code::invalid_number, start);
 
-    // Integer part: either a lone 0 or a digit sequence with no leading zero.
     if (peek() == '0') {
       ++m_cur;
     } else if (is_digit(peek())) {
@@ -559,9 +528,6 @@ private:
 
     const auto len = nx::cast<usize>(m_cur - start);
     if (integral) {
-      // Exact integer path. from_chars reports out_of_range rather than
-      // silently wrapping, and we then fall back to a double so that huge
-      // literals still parse instead of failing the whole document.
       if (*start == '-') {
         i64 v = 0;
         const auto r = std::from_chars(start, m_cur, v);
@@ -573,9 +539,6 @@ private:
         u64 v = 0;
         const auto r = std::from_chars(start, m_cur, v);
         if (r.ec == std::errc{} && r.ptr == m_cur) {
-          // Prefer the signed representation when it fits, so that small
-          // positive integers compare equal to their signed counterparts
-          // without needing cross-representation logic everywhere.
           if (v <= nx::cast<u64>(9223372036854775807LL))
             out = nx::cast<i64>(v);
           else
@@ -586,20 +549,15 @@ private:
     }
 
     f64 d = 0.0;
-    const auto r = from_chars(start, m_cur, d); // unqualified: see the top of
-                                                // this file for the fallback
+    const auto r = from_chars(start, m_cur, d);
     if (r.ptr != m_cur ||
         (r.ec != std::errc{} && r.ec != std::errc::result_out_of_range))
       return set(error_code::invalid_number, start);
-    // result_out_of_range means the literal overflowed to +/-inf or underflowed
-    // to zero; from_chars has already stored the saturated value.
     (void)len;
     out = d;
     return error_code::none;
   }
 };
-
-// Writer
 
 class writer {
 public:
@@ -653,19 +611,12 @@ private:
   static constexpr u32 kMaxPrecision = 64;
 
   void write_real(f64 v) {
-    // JSON cannot spell a non-finite number; null is what every other
-    // implementation emits and round-trips as valid text.
-    //
-    // std::isfinite rather than `v != v || v == infinity()`: where
-    // numeric_limits reports no infinity, infinity() is 0.0 and that form
-    // turns every zero into null. It also survives -ffinite-math-only.
+    // JSON cannot spell a non-finite number;
     if (!std::isfinite(v)) {
       m_out.append("null", nx::cast<usize>(4));
       return;
     }
 
-    // Worst case in fixed notation: sign, 309 integer digits, the point and
-    // kMaxPrecision fraction digits.
     char buf[400];
     std::to_chars_result r{};
     if (m_opts.real_precision > 0)
@@ -718,12 +669,9 @@ private:
         m_out.append(run, nx::cast<usize>(p - run));
 
       if (c >= 0x80) {
-        // Re-encode the whole code point as one or two \u escapes.
         char32_t cp = 0;
         usize read = 0;
         if (!utf8::decode_char(p, nx::cast<usize>(end - p), cp, read)) {
-          // Not decodable: emit the replacement character rather than
-          // producing invalid output.
           append_u_escape(0xFFFD);
           ++p;
         } else {
@@ -774,7 +722,7 @@ private:
       m_out.append("\\t", nx::cast<usize>(2));
       return;
     default:
-      append_u_escape(c); // any other control character
+      append_u_escape(c);
       return;
     }
   }
@@ -835,9 +783,7 @@ private:
   }
 };
 
-} // namespace
-
-// error
+}
 
 string_view to_string(error_code e) noexcept {
   switch (e) {
@@ -887,8 +833,6 @@ nx::string error::message() const {
   return out;
 }
 
-// value
-
 value::value(string_view s) : m_type(type::string) {
   std::construct_at(&m_u.string, s.data(), s.size());
 }
@@ -924,8 +868,6 @@ value value::make_object(object o) noexcept {
   return v;
 }
 
-// Listed exhaustively rather than with a default label so that adding an
-// alternative to `type` is a compiler warning here instead of a silent leak.
 void value::destroy() noexcept {
   switch (m_type) {
   case type::null:
@@ -933,7 +875,7 @@ void value::destroy() noexcept {
   case type::signed_integer:
   case type::unsigned_integer:
   case type::real:
-    break; // trivially destructible
+    break;
   case type::string:
     std::destroy_at(&m_u.string);
     break;
@@ -947,15 +889,12 @@ void value::destroy() noexcept {
   m_type = type::null;
 }
 
-// Every alternative is activated explicitly, scalars included. memcpy-ing the
-// union would be undefined twice over: `storage` holds a string and two
-// vectors, so it is not trivially copyable; and copying bytes never begins any
-// member's lifetime, leaving no active alternative to read back.
+// Assigning or copying bytes into an inactive union member is undefined behavior.
 void value::construct_from(const value &o) {
   m_type = o.m_type;
   switch (o.m_type) {
   case type::null:
-    break; // no active member
+    break;
   case type::boolean:
     std::construct_at(&m_u.boolean, o.m_u.boolean);
     break;
@@ -1017,7 +956,7 @@ value::value(value &&o) noexcept : m_type(type::null) {
 
 value &value::operator=(const value &o) {
   if (this != &o) {
-    value tmp(o); // build first, so a throwing copy leaves *this intact
+    value tmp(o);
     destroy();
     construct_from(std::move(tmp));
   }
@@ -1292,12 +1231,10 @@ void value::clear() noexcept {
 }
 
 bool operator==(const value &a, const value &b) noexcept {
-  // Numbers compare by mathematical value so that 1, 1u and 1.0 are equal.
   if (a.is_number() && b.is_number()) {
     if (a.is_double() || b.is_double())
       return a.get_double() == b.get_double();
     if (a.is_u64() || b.is_u64()) {
-      // One of them may be a negative signed value, which no u64 can equal.
       if ((a.is_i64() && a.as_i64() < 0) || (b.is_i64() && b.as_i64() < 0))
         return false;
       return a.get_u64() == b.get_u64();
@@ -1329,11 +1266,6 @@ bool operator==(const value &a, const value &b) noexcept {
     const object &y = b.as_object();
     if (x.size() != y.size())
       return false;
-    // Member order is not significant, so match by key.
-    //
-    // Spelled !(a == b) rather than a != b: this *is* operator==, and C++20
-    // rewrites `!=` back to it, which MSVC flags (C5232) as a call to the
-    // function we are inside. The recursion is intended - a value is a tree.
     for (const member &m : x) {
       const value *other = b.find(m.key.view());
       if (!other || !(m.val == *other))
@@ -1345,8 +1277,6 @@ bool operator==(const value &a, const value &b) noexcept {
     return false;
   }
 }
-
-// Entry points
 
 result<value> parse(string_view text, const parse_options &options) {
   parser p(text, options);
@@ -1364,4 +1294,4 @@ nx::string write(const value &v, const write_options &options) {
   return out;
 }
 
-} // namespace nx::json
+}

@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file fixed_vector.h
- * @brief Inline fixed-capacity vector (nx::fixed_vector).
- */
-
 #include <algorithm>
 #include <compare>
 #include <initializer_list>
@@ -18,17 +13,6 @@
 
 namespace nx {
 
-/**
- * @brief Vector with a compile-time capacity and no heap allocation.
- *
- * Stores up to @p N elements inline. The interface mirrors std::vector
- * (push_back, emplace_back, insert, erase, iterators, ...) but capacity is
- * fixed: growing past @p N is a programming error. Useful on hot paths and on
- * the stack.
- *
- * @tparam T Element type.
- * @tparam N Maximum number of elements.
- */
 template <typename T, usize N> class fixed_vector {
   static_assert(N > 0, "fixed_vector requires N > 0");
 
@@ -260,8 +244,6 @@ public:
       m_size += count;
       return p;
     } else {
-      // Append to end then rotate into position — avoids heap, handles unknown
-      // count.
       usize tail = m_size;
       for (; first != last; ++first)
         emplace_back(*first);
@@ -401,4 +383,4 @@ usize erase_if(fixed_vector<T, N> &c, Pred pred) {
   return n;
 }
 
-} // namespace nx
+}

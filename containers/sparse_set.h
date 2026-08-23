@@ -1,25 +1,5 @@
 #pragma once
 
-/**
- * @file sparse_set.h
- * @brief Sparse set / handle-keyed component store (nx::sparse_set).
- */
-
-/**
- * @brief Sparse set mapping externally owned handles to dense payloads.
- *
- * Maps a Handle (such as an entity id) to a value with O(1) insert, erase and
- * contains, while keeping the payload contiguous for bandwidth-bound iteration.
- * The sparse side is paged, so a few high handle ids cost one page each rather
- * than a flat array. With T = void it acts as a set of handles. Erase is
- * swap-and-pop, so addresses are not stable; refer to elements by handle.
- *
- * @tparam T        Mapped value type, or void for a plain set.
- * @tparam Handle   Handle type used as the key.
- * @tparam PageSize Elements per sparse page; must be a power of two.
- * @tparam Alloc    Allocator type.
- */
-
 #include <algorithm>
 #include <iterator>
 #include <span>
@@ -43,7 +23,7 @@ template <typename Ref> struct ss_arrow_proxy {
   Ref *operator->() noexcept { return std::addressof(ref); }
 };
 
-} // namespace detail
+}
 
 template <typename T = void, typename Handle = handle32, usize PageSize = 4096,
           typename Alloc = Allocator<Handle>>
@@ -61,8 +41,6 @@ class sparse_set {
   using page_type = vector<repr, repr_alloc>;
   using page_alloc = alloc_traits::template rebind_alloc<page_type>;
 
-  // value_t stays a real type when T is void so the dependent vector type is
-  // always well formed; the storage itself collapses to an empty member.
   using value_t = std::conditional_t<has_value, T, char>;
   using value_alloc = alloc_traits::template rebind_alloc<value_t>;
   using value_storage =
@@ -130,7 +108,6 @@ public:
     return pos != sentinel && m_dense[pos] == h;
   }
 
-  // Dense position of a live handle. Precondition: contains(h).
   [[nodiscard]] size_type index_of(Handle h) const noexcept {
     assert(contains(h));
     return sparse_lookup(h.index());
@@ -143,7 +120,6 @@ public:
 
   static constexpr repr no_index = sentinel;
 
-  // Handle currently occupying a dense position; pairs with begin()/values().
   [[nodiscard]] Handle handle_at(size_type dense_index) const noexcept {
     assert(dense_index < m_dense.size());
     return m_dense[dense_index];
@@ -405,8 +381,6 @@ public:
     }
   };
 
-  // Iterate (handle, value&) pairs in dense order, e.g.
-  //   for (auto [e, pos] : positions.each()) pos.x += 1;
   [[nodiscard]] each_range<false> each() noexcept
     requires has_value
   {
@@ -418,9 +392,6 @@ public:
     return each_range<true>{m_dense.data(), m_values.data(), m_dense.size()};
   }
 
-  // Reorder the dense arrays by value, keeping the sparse mapping consistent.
-  // Use after bulk changes to restore locality or to impose a draw/update
-  // order.
   template <typename Compare>
   void sort(Compare comp)
     requires has_value
@@ -526,4 +497,4 @@ private:
   vector<page_type, page_alloc> m_pages;
 };
 
-} // namespace nx
+}

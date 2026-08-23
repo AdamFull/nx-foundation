@@ -1,21 +1,9 @@
 #pragma once
 
-/**
- * @file result.h
- * @brief Error-or-value type nx::result and its error wrapper nx::err.
- */
 #include "core/foundation/core/foundation.h"
 
 namespace nx {
 
-/**
- * @brief Wraps a value as the error alternative when building a result.
- *
- * Returning err{e} from a function whose return type is result<T, E> constructs
- * the error state. The class template argument is deduced from the argument.
- *
- * @tparam E Error type being carried.
- */
 template <typename E> struct err {
   constexpr explicit err(const E &e) : m_error(e) {}
   constexpr explicit err(E &&e) : m_error(std::move(e)) {}
@@ -46,20 +34,8 @@ template <typename E> union storage<void, E> {
   constexpr ~storage() {}
 };
 
-} // namespace detail
+}
 
-/**
- * @brief Holds either a value of type @p T or an error of type @p E.
- *
- * A discriminated union for error handling without exceptions. Construct from a
- * T for the value state or from nx::err for the error state; test with
- * operator bool or has_value(). Access the value with operator*, operator->,
- * value() or value_or(), and the error with error(). Offers the monadic
- * combinators and_then, transform, or_else and transform_error for chaining.
- *
- * @tparam T Value type.
- * @tparam E Error type.
- */
 template <typename T, typename E> class result {
   static_assert(!std::is_reference_v<T>, "T must not be a reference");
   static_assert(!std::is_reference_v<E>, "E must not be a reference");
@@ -344,13 +320,6 @@ private:
   }
 };
 
-/**
- * @brief result specialization carrying no value, only success or an error.
- *
- * Models an operation that either succeeds or fails with an error of type @p E.
- *
- * @tparam E Error type.
- */
 template <typename E> class result<void, E> {
 public:
   using value_type = void;
@@ -550,4 +519,4 @@ private:
   }
 };
 
-} // namespace nx
+}

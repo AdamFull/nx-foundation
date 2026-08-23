@@ -1,11 +1,5 @@
 #pragma once
 
-/**
- * @file socket.h
- * @brief Raw sockets: a TCP listener/connection and a UDP socket, plus the
- * address types they speak (namespace nx::net).
- */
-
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/result.h"
@@ -27,9 +21,7 @@ public:
 
   [[nodiscard]] static Endpoint v4(const u8 (&addr)[4], u16 port) noexcept;
   [[nodiscard]] static Endpoint v6(const u8 (&addr)[16], u16 port) noexcept;
-  /// 127.0.0.1 or ::1, the dial-yourself address.
   [[nodiscard]] static Endpoint loopback(Family family, u16 port) noexcept;
-  /// 0.0.0.0 or ::, the "every interface" bind address. Not a dial target.
   [[nodiscard]] static Endpoint any(Family family, u16 port) noexcept;
 
   /// A numeric address and port: "1.2.3.4:80" or "[::1]:80". Not a resolver - a
@@ -57,22 +49,16 @@ private:
 enum class ResolveError : u8 {
   /// The host string is empty or otherwise malformed.
   Invalid,
-  /// The name resolved to nothing.
   NotFound,
-  /// A temporary failure; the same call may succeed on a retry.
   TryAgain,
-  /// Anything else, including no socket layer on this platform.
   Failed,
 };
 
-/// Every address a host has, in the order the resolver returned them, each
-/// carrying @p port. Blocking - it may hit the network - so a caller that
-/// cannot block hands it to thread_pool::async. A numeric literal resolves
-/// without touching the network.
+/// Blocking - it may hit the network - so a caller that cannot block hands it to
+/// thread_pool::async.
 [[nodiscard]] nx::result<nx::small_vector<Endpoint, 4>, ResolveError>
 resolve(nx::string_view host, u16 port);
 
-/// One accepted connection. Moves, never copies: the handle is owned.
 class Connection {
 public:
   Connection() = default;
@@ -83,8 +69,6 @@ public:
   Connection(const Connection &) = delete;
   Connection &operator=(const Connection &) = delete;
 
-  /// Dials a loopback listener. Present so a listener can be driven from
-  /// inside one process, which is what its suite does.
   [[nodiscard]] static Connection connect(u16 port);
 
   /// Dials a remote endpoint. Blocking for the connect itself - a caller that
@@ -106,12 +90,9 @@ private:
   friend class Listener;
   explicit Connection(u64 handle) noexcept : m_handle(handle) {}
 
-  /// The platform's socket, widened. ~0 is "none" rather than 0, because a
-  /// POSIX descriptor of 0 is valid.
   u64 m_handle = ~u64{0};
 };
 
-/// A listening socket on loopback.
 class Listener {
 public:
   Listener() = default;
@@ -122,18 +103,12 @@ public:
   Listener(const Listener &) = delete;
   Listener &operator=(const Listener &) = delete;
 
-  /// @p port 0 asks the OS for a free one, which port() then reports. Loopback
-  /// only, never a public interface - the safe default. Use the Endpoint
-  /// overload to bind anywhere else.
   [[nodiscard]] bool listen(u16 port);
-  /// Binds @p at, which may be any() to accept on every interface, or a v6
-  /// address. Same port(0)-picks-one rule.
   [[nodiscard]] bool listen(const Endpoint &at);
   [[nodiscard]] bool listening() const noexcept;
   [[nodiscard]] u16 port() const noexcept { return m_port; }
   void close();
 
-  /// A caller, or a closed Connection when nobody is waiting.
   [[nodiscard]] Connection accept();
 
 private:
@@ -141,9 +116,6 @@ private:
   u16 m_port = 0;
 };
 
-/// A bound, non-blocking UDP socket. Moves, never copies. Datagrams, so there
-/// is no connection and no stream: each send is one packet to one endpoint and
-/// each receive tells you who sent it.
 class UdpSocket {
 public:
   UdpSocket() = default;
@@ -154,13 +126,10 @@ public:
   UdpSocket(const UdpSocket &) = delete;
   UdpSocket &operator=(const UdpSocket &) = delete;
 
-  /// Binds a local address. any(family, 0) takes every interface and an
-  /// OS-assigned port, which local() then reports.
   [[nodiscard]] bool bind(const Endpoint &at);
   [[nodiscard]] bool open() const noexcept;
   void close();
 
-  /// The address actually bound, with the port filled in. Invalid before bind.
   [[nodiscard]] const Endpoint &local() const noexcept { return m_local; }
 
   /// Bytes sent, or -1 on error. A datagram is all-or-nothing: unlike a stream
@@ -176,4 +145,4 @@ private:
   Endpoint m_local;
 };
 
-} // namespace nx::net
+}

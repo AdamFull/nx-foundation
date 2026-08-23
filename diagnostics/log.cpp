@@ -30,8 +30,6 @@ constexpr usize MAX_CATEGORIES = 64;
 constexpr usize LOG_QUEUE_CAPACITY = 1024;
 constexpr usize LINE_CAPACITY = LOG_MESSAGE_CAPACITY + 160;
 
-// category registry
-
 struct Registry {
   CategoryState entries[MAX_CATEGORIES];
   std::atomic<u32> count{0};
@@ -43,22 +41,20 @@ Registry &registry() noexcept {
   return r;
 }
 
-// formatting
-
 const char *level_color(Level lvl) noexcept {
   switch (lvl) {
   case Level::Trace:
-    return "\x1b[90m"; // bright black
+    return "\x1b[90m";
   case Level::Debug:
-    return "\x1b[36m"; // cyan
+    return "\x1b[36m";
   case Level::Info:
-    return "\x1b[32m"; // green
+    return "\x1b[32m";
   case Level::Warn:
-    return "\x1b[33m"; // yellow
+    return "\x1b[33m";
   case Level::Error:
-    return "\x1b[31m"; // red
+    return "\x1b[31m";
   case Level::Critical:
-    return "\x1b[1;31m"; // bold red
+    return "\x1b[1;31m";
   default:
     return "";
   }
@@ -124,8 +120,6 @@ void enable_virtual_terminal() noexcept {
 }
 #endif
 
-// sinks
-
 class ConsoleSink final : public Sink {
 public:
   explicit ConsoleSink(bool color) : m_color(color && stderr_is_tty()) {
@@ -167,8 +161,6 @@ public:
 class AndroidSink final : public Sink {
 public:
   void write(const Record &r) override {
-    // logcat stamps its own time and shows the priority + tag columns, so we
-    // hand it the bare message and let the category be the tag.
     const char *tag = r.category ? r.category->name : "nx";
     __android_log_write(to_android_priority(r.level), tag, r.message);
   }
@@ -227,8 +219,6 @@ public:
   }
 
 private:
-  // engine.log -> engine.log.1 -> ... -> engine.log.<max_files>, oldest
-  // dropped.
   void rotate() noexcept {
     if (m_file) {
       fclose(m_file);
@@ -259,16 +249,14 @@ private:
   char m_path[248] = {};
 };
 
-// logger
-
 struct Logger {
   mpmc::Queue<Record, LOG_QUEUE_CAPACITY> *queue = nullptr;
   nx::thread worker;
 
   std::atomic<u32> signal{0};
   std::atomic<u32> sleeping{0};
-  std::atomic<u64> enqueued{0};  // records handed to the queue
-  std::atomic<u64> processed{0}; // records the worker has written to sinks
+  std::atomic<u64> enqueued{0};
+  std::atomic<u64> processed{0};
   std::atomic<bool> running{false};
   std::atomic<bool> stop{false};
 
@@ -282,8 +270,6 @@ Logger &logger() noexcept {
   return l;
 }
 
-// Serialized fan-out to every sink. Before init() (or if the user cleared all
-// sinks) it falls back to a colored stderr write so records are never lost.
 void write_record(Logger &l, const Record &r) noexcept {
   scoped_lock lock(l.sink_mutex);
   if (l.sinks.empty()) {
@@ -324,7 +310,7 @@ void worker_main(Logger &l) noexcept {
   }
 }
 
-} // namespace
+}
 
 const char *level_name(Level level) noexcept {
   switch (level) {
@@ -358,7 +344,7 @@ Category category(const string_view name) noexcept {
       return Category{&r.entries[i]};
 
   if (count >= MAX_CATEGORIES)
-    return Category{&r.entries[0]}; // registry full: fall back to first
+    return Category{&r.entries[0]};
 
   CategoryState &e = r.entries[count];
   memcpy(e.name, name.data(), length);
@@ -472,8 +458,6 @@ void shutdown() { shutdown_impl(logger()); }
 
 void flush() {
   Logger &l = logger();
-  // Wait until the worker has written every record enqueued so far, not just
-  // dequeued them: a popped record may not yet be in its sink.
   if (l.running.load(std::memory_order_acquire)) {
     const u64 target = l.enqueued.load(std::memory_order_acquire);
     while (l.processed.load(std::memory_order_acquire) < target)
@@ -512,11 +496,10 @@ void submit(Level level, Category category, const char *message) noexcept {
         futex::wake(&l.signal, 1);
       return;
     }
-    // Queue full: worker is behind, write synchronously rather than drop.
   }
   write_record(l, r);
 }
 
-} // namespace detail
+}
 
-} // namespace nx::log
+}

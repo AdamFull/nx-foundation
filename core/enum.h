@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file enum.h
- * @brief Enum utilities: nx::enums::flags, nx::enums::map, ranges and names.
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string_view.h"
 
@@ -18,15 +13,9 @@ concept has_count = std::is_enum_v<E> && requires {
 };
 
 template <typename E>
-/**
- * @brief Type-safe bitset over the enumerators of a scoped enum.
- *
- * Wraps the enum's underlying integer and offers the usual bit operations
- * (set, clear, toggle, has, has_any, has_all) plus the |, &, ^, ~ operators.
- * Use NX_ENUM_FLAGS_DEFINE to enable the operators directly on the enum type.
- *
- * @tparam E Scoped enum type whose enumerators are individual bits.
- */
+/// Wraps the enum's underlying integer and offers the usual bit operations (set, clear, toggle,
+/// has, has_any, has_all) plus the |, &, ^, ~ operators. @tparam E Scoped enum type whose
+/// enumerators are individual bits.
   requires std::is_enum_v<E>
 class flags {
 public:
@@ -148,17 +137,6 @@ private:
 };
 
 template <typename E, typename T, usize N = nx::cast<usize>(E::Count)>
-/**
- * @brief Fixed array indexed directly by enum value.
- *
- * A std::array sized to the enum and addressed with operator[](E). By default
- * the size is taken from the enum's Count enumerator. Zero overhead lookup with
- * no hashing.
- *
- * @tparam E Scoped enum used as the key.
- * @tparam T Mapped value type.
- * @tparam N Number of slots; defaults to E::Count.
- */
   requires std::is_enum_v<E>
 class map {
 public:
@@ -256,7 +234,7 @@ struct meta {
 template <typename E>
 concept has_meta = std::is_enum_v<E> && (meta<E>::entries.size() > 0);
 
-} // namespace nx::enums
+}
 
 namespace nx {
 template <enums::has_meta E>
@@ -275,7 +253,7 @@ constexpr std::optional<E> from_string(string_view name) noexcept {
       return key;
   return std::nullopt;
 }
-} // namespace nx
+}
 
 #define NX_ENUM_FLAGS_DEFINE(E, Name)                                          \
   using Name = ::nx::enums::flags<E>;                                          \

@@ -7,10 +7,8 @@
 namespace nx::reflect {
 namespace {
 
-// A field is a byte offset into a struct this code knows nothing about, so it is
-// reached through memcpy rather than a cast - it is not reliably aligned for its
-// type. The same scalar helpers reflect_json uses; kept file-local here so the
-// binary path has no dependency on the JSON one.
+// A field is a byte offset into a struct this code knows nothing about, so it is reached through
+// memcpy rather than a cast - it is not reliably aligned for its type.
 
 [[nodiscard]] const std::byte *at(const void *p, const usize offset) noexcept {
   return static_cast<const std::byte *>(p) + offset;
@@ -172,9 +170,6 @@ void write_one(const type_info &t, const void *p, nx::nva::Writer &w) {
     if (!r.ok())
       return false;
     seq.resize(p, n);
-    // A dynamic sequence now holds exactly n; a fixed array that no longer does
-    // is a struct that changed under a stale artifact - fail so the caller
-    // recooks rather than reading the stream out of step.
     if (seq.size(p) != n)
       return false;
     for (u32 i = 0; i < n; ++i)
@@ -188,7 +183,7 @@ void write_one(const type_info &t, const void *p, nx::nva::Writer &w) {
   return r.ok();
 }
 
-} // namespace
+}
 
 void write_binary(const type_info &type, const void *object,
                   nx::nva::Writer &w) {
@@ -199,4 +194,4 @@ bool read_binary(const type_info &type, nx::nva::Reader &r, void *object) {
   return read_one(type, r, object);
 }
 
-} // namespace nx::reflect
+}

@@ -12,9 +12,7 @@ struct pool_tls {
   u32 index = 0;
 };
 thread_local pool_tls t_worker;
-} // namespace
-
-// task_group
+}
 
 void task_group::wait() noexcept {
   for (;;) {
@@ -26,8 +24,6 @@ void task_group::wait() noexcept {
     futex::wait(&m_pending, pending, detail::WAIT_FOREVER);
   }
 }
-
-// thread_pool
 
 thread_pool::thread_pool(const config &cfg) {
   const cpu::topology_info &topo = cpu::topology();
@@ -91,8 +87,6 @@ void thread_pool::enqueue(detail::pool_task &&t) {
   if (t.group)
     t.group->m_pending.fetch_add(1, std::memory_order_relaxed);
 
-  // try_push leaves the argument untouched on failure, so falling through
-  // the tiers with the same task is safe.
   worker *self = t_worker.pool == this ? m_workers[t_worker.index] : nullptr;
   if (!(self && self->queue.try_push(std::move(t))) &&
       !m_shared_queue.try_push(std::move(t))) {
@@ -101,9 +95,6 @@ void thread_pool::enqueue(detail::pool_task &&t) {
     m_overflow_count.fetch_add(1, std::memory_order_release);
   }
 
-  // The bump is unconditional; a worker that read m_signal before it will
-  // see the mismatch when it tries to sleep. seq_cst pairs with the
-  // sleeper registration in worker_loop.
   m_signal.fetch_add(1, std::memory_order_seq_cst);
   if (m_sleepers.load(std::memory_order_seq_cst) > 0)
     futex::wake(&m_signal, 1);
@@ -148,9 +139,6 @@ void thread_pool::run_task(detail::pool_task &t) noexcept {
   if (t.fn)
     t.fn();
 
-  // Drop the closure before signaling completion: waiters may free state
-  // the closure points at (e.g. the parallel_for body on the caller's
-  // stack) as soon as the counters hit zero.
   t.fn = {};
 
   if (task_group *group = t.group) {
@@ -186,9 +174,6 @@ void thread_pool::worker_loop(worker &w) noexcept {
     if (m_stop.load(std::memory_order_acquire))
       break;
 
-    // m_signal was read before the queue check: any task pushed after the
-    // check also bumped m_signal afterwards, so the wait below returns
-    // immediately instead of missing it.
     m_sleepers.fetch_add(1, std::memory_order_seq_cst);
     futex::wait(&m_signal, signal, detail::WAIT_FOREVER);
     m_sleepers.fetch_sub(1, std::memory_order_relaxed);
@@ -212,4 +197,4 @@ void thread_pool::wait_idle() noexcept {
   }
 }
 
-} // namespace nx
+}

@@ -12,23 +12,8 @@ inline constexpr u32 FNV1A32_PRIME = 0x01000193u;
 inline constexpr u64 FNV1A64_BASIS = 0xcbf29ce484222325ull;
 inline constexpr u64 FNV1A64_PRIME = 0x100000001b3ull;
 
-/**
- * @brief Incremental FNV-1a. Use the fnv1a32 / fnv1a64 aliases.
- *
- * One step of FNV-1a is `hash = (hash ^ value) * prime`, and the classic
- * byte-wise form is just that applied to each octet - so this accumulator
- * expresses both uses, and hash_fnv1a32/64 below are thin wrappers rather than
- * a second copy of the algorithm.
- *
- * combine() folds a value whole; combine_bytes() folds a buffer an octet at a
- * time. The two are not interchangeable: hashing a u32 with one gives a
- * different answer from hashing its four bytes with the other. Fold values for
- * in-memory keys, bytes for anything whose byte sequence is the identity.
- *
- *   nx::fnv1a64 hash;
- *   hash.combine_all(desc.width, desc.height, desc.format);
- *   return hash.value();
- */
+/// Fold values for in-memory keys, bytes for anything whose byte sequence is the identity.
+/// nx::fnv1a64 hash; hash.combine_all(desc.width, desc.height, desc.format); return hash.value();
 template <typename T, T Basis, T Prime> class basic_fnv1a {
 public:
   using value_type = T;
@@ -86,8 +71,6 @@ hash_fnv1a64(const std::span<const std::byte> data) noexcept {
   return hash_fnv1a64(reinterpret_cast<const char *>(data.data()), data.size());
 }
 
-/// Hashing a name is common enough that every module that did it grew its own
-/// one-line wrapper for this.
 [[nodiscard]] constexpr u32 hash_fnv1a32(const std::string_view s) noexcept {
   return hash_fnv1a32(s.data(), s.size());
 }
@@ -96,7 +79,6 @@ hash_fnv1a64(const std::span<const std::byte> data) noexcept {
   return hash_fnv1a64(s.data(), s.size());
 }
 
-// https://gist.github.com/badboy/6267743
 [[nodiscard]] constexpr u32 hash_u32(u32 val) noexcept {
   val = (val ^ 61u) ^ (val >> 16);
   val = val + (val << 3);
@@ -124,7 +106,6 @@ hash_fnv1a64(const std::span<const std::byte> data) noexcept {
     return hash_u32(nx::cast<u32>(reinterpret_cast<uintptr_t>(ptr)));
 }
 
-// https://stackoverflow.com/questions/2590677/how-do-i-combine-hash-values-in-c0x
 [[nodiscard]] constexpr usize hash_comb(usize h1, const usize h2) noexcept {
   if constexpr (sizeof(usize) == 8)
     h1 ^= h2 + 0x9e3779b97f4a7c15ull + (h1 << 6) + (h1 >> 2);
@@ -132,4 +113,4 @@ hash_fnv1a64(const std::span<const std::byte> data) noexcept {
     h1 ^= h2 + 0x9e3779b9u + (h1 << 6) + (h1 >> 2);
   return h1;
 }
-} // namespace nx
+}

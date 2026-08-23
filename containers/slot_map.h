@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file slot_map.h
- * @brief Densely packed handle-keyed pool (nx::slot_map).
- */
-
 #include <iterator>
 #include <span>
 #include <stdexcept>
@@ -17,19 +12,7 @@
 
 namespace nx {
 
-/**
- * @brief Handle-keyed container that keeps live elements densely packed.
- *
- * insert() returns a versioned Handle that stays valid across moves; erase()
- * uses swap-and-pop, so element addresses are NOT stable and you should refer
- * to elements by handle, not by pointer. A stale handle (to a recycled slot)
- * reports as absent. Iteration and data() walk a contiguous array, so it is
- * cache-friendly.
- *
- * @tparam T      Element type.
- * @tparam Handle Handle type used as the key (carries index and version).
- * @tparam Alloc  Allocator type.
- */
+/// A stale handle (to a recycled slot) reports as absent.
 template <typename T, typename Handle = handle32, typename Alloc = Allocator<T>>
 class slot_map {
   using repr = Handle::repr_type;
@@ -40,7 +23,7 @@ class slot_map {
 
   struct sparse_slot {
     repr version;
-    repr dense; // index into m_dense when live; free_sentinel when not live
+    repr dense;
   };
   using sparse_alloc = alloc_traits::template rebind_alloc<sparse_slot>;
 
@@ -163,8 +146,6 @@ public:
     return m_dense[m_sparse[h.index()].dense];
   }
 
-  // Recover the handle for the element currently at a dense position. Useful
-  // when iterating values and needing to refer back to a stable handle.
   [[nodiscard]] Handle handle_at(usize dense_index) const noexcept {
     assert(dense_index < m_dense.size());
     const repr idx = m_dense_to_sparse[dense_index];
@@ -252,4 +233,4 @@ private:
   vector<repr, repr_alloc> m_free;
 };
 
-} // namespace nx
+}

@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file bit_array.h
- * @brief Fixed-capacity packed bit set (nx::bit_array).
- */
-
 #include <bit>
 #include <compare>
 
@@ -14,31 +9,8 @@
 
 namespace nx {
 
-/**
- * @brief Bit set with a compile-time size and no heap allocation.
- *
- * Stores @p N bits packed into 64-bit words, so 512 flags cost 64 bytes rather
- * than the 512 a `bool[]` would. The interface mirrors std::bitset (test, set,
- * reset, flip, count, all/any/none, the bitwise and shift operators) and adds
- * what a std::bitset cannot do efficiently: find_first() / find_next() scan
- * whole words at a time, so iterating the set bits of a sparse array costs one
- * instruction per word instead of one test per bit.
- *
- * @code
- * nx::bit_array<256> keys;
- * keys.set(42);
- * if (keys.test(42)) { ... }
- * for (usize i = keys.find_first(); i != keys.npos; i = keys.find_next(i))
- *   handle(i);
- * @endcode
- *
- * Bits past @p N in the final word are kept zero at all times, so count(),
- * any() and the comparison operators never observe padding.
- *
- * Not thread-safe: concurrent writes to bits sharing a word race.
- *
- * @tparam N Number of bits.
- */
+/// Stores @p N bits packed into 64-bit words, so 512 flags cost 64 bytes rather than the 512 a
+/// `bool[]` would. Not thread-safe: concurrent writes to bits sharing a word race.
 template <usize N> class bit_array {
   static_assert(N > 0, "bit_array requires N > 0");
 
@@ -56,12 +28,8 @@ public:
   /// Returned by find_first()/find_next() when no set bit remains.
   static constexpr usize npos = ~usize{0};
 
-  /**
-   * @brief Mutable proxy returned by operator[].
-   *
-   * A single bit has no address, so `array[i] = true` needs a proxy. Behaves
-   * like a bool otherwise.
-   */
+  /// Mutable proxy returned by operator[]. A single bit has no address, so `array[i] = true` needs
+  /// a proxy. Behaves like a bool otherwise.
   class reference {
   public:
     constexpr reference(bit_array &owner, const usize pos) noexcept
@@ -133,7 +101,6 @@ public:
     assert(pos < N && "bit_array: index out of range");
     const word_type bit = word_type{1} << (pos % BITS_PER_WORD);
     word_type &word = m_words[pos / BITS_PER_WORD];
-    // Branchless: the compiler emits a cmov/bts pair rather than a jump.
     word = value ? (word | bit) : (word & ~bit);
     return *this;
   }
@@ -307,7 +274,6 @@ public:
     return true;
   }
 
-  /// Raw word access, for backends that need to blit the storage.
   [[nodiscard]] constexpr const u64 *data() const noexcept { return m_words; }
   [[nodiscard]] static constexpr usize word_count() noexcept {
     return WORD_COUNT;
@@ -340,4 +306,4 @@ private:
   word_type m_words[WORD_COUNT] = {};
 };
 
-} // namespace nx
+}

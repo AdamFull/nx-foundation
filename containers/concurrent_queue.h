@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file concurrent_queue.h
- * @brief Lock-free bounded queues: nx::mpmc::Queue and nx::mpsc::Queue.
- */
-
 #include "core/foundation/core/foundation.h"
 
 #include <atomic>
@@ -14,17 +9,8 @@
 
 namespace nx {
 
-/**
- * @brief Bounded lock-free multi-producer / multi-consumer queue.
- *
- * Fixed-capacity ring buffer safe for any number of concurrent producers and
- * consumers. The try_* operations never block and report failure when the queue
- * is full or empty; the plain push/pop/emplace variants spin until they
- * succeed. Capacity is rounded up to a power of two.
- *
- * @tparam T        Element type (must be nothrow movable).
- * @tparam Capacity Requested capacity; rounded up to the next power of two.
- */
+/// Bounded lock-free multi-producer / multi-consumer queue. Capacity is rounded up to a power of
+/// two.
 namespace mpmc {
 template <typename T, usize Capacity> class Queue {
 public:
@@ -69,7 +55,7 @@ public:
           return true;
         }
       } else if (diff < 0) {
-        return false; // full
+        return false;
       } else {
         pos = m_enqueue_pos.load(std::memory_order_relaxed);
       }
@@ -103,7 +89,7 @@ public:
           return true;
         }
       } else if (diff < 0) {
-        return false; // empty
+        return false;
       } else {
         pos = m_dequeue_pos.load(std::memory_order_relaxed);
       }
@@ -143,8 +129,6 @@ public:
     slot->sequence.store(pos + CAPACITY, std::memory_order_release);
   }
 
-  // May be negative in blocking mode: consumers can advance m_dequeue_pos
-  // ahead of m_enqueue_pos while spinning.
   [[nodiscard]] isize size_approx() const noexcept {
     return nx::cast<isize>(m_enqueue_pos.load(std::memory_order_relaxed)) -
            nx::cast<isize>(m_dequeue_pos.load(std::memory_order_relaxed));
@@ -174,20 +158,12 @@ private:
   alignas(64) std::atomic<usize> m_dequeue_pos{0};
   Slot m_slots[CAPACITY];
 };
-} // namespace mpmc
+}
 
 static_assert(std::atomic<usize>::is_always_lock_free);
 
-/**
- * @brief Bounded lock-free multi-producer / single-consumer queue.
- *
- * Like nx::mpmc::Queue but the consumer side assumes a single thread, which
- * makes dequeue cheaper. Adds consume_all() and consume_batch() helpers that
- * drain elements through a callback. Only one thread may pop at a time.
- *
- * @tparam T        Element type (must be nothrow movable).
- * @tparam Capacity Requested capacity; rounded up to the next power of two.
- */
+/// Bounded lock-free multi-producer / single-consumer queue. @tparam Capacity Requested capacity;
+/// rounded up to the next power of two.
 namespace mpsc {
 template <typename T, usize Capacity> class Queue {
 public:
@@ -232,7 +208,7 @@ public:
           return true;
         }
       } else if (diff < 0) {
-        return false; // full
+        return false;
       } else {
         pos = m_enqueue_pos.load(std::memory_order_relaxed);
       }
@@ -353,6 +329,6 @@ private:
   alignas(64) std::atomic<usize> m_dequeue_pos{0};
   Slot m_slots[CAPACITY];
 };
-} // namespace mpsc
+}
 
-} // namespace nx
+}

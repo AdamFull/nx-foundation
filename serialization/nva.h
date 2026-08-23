@@ -1,20 +1,5 @@
 #pragma once
 
-/**
- * @file nva.h
- * @brief The cooked binary asset container (namespace nx::nva).
- *
- * A 16-byte header, a chunk table, then chunk payloads - little-endian and
- * 16-byte aligned so a reader views chunks in place over the file's bytes
- * (docs/asset-pipeline.md, design.md 10.3). A format layers its own meaning on
- * the chunks; the container knows only their four-character ids, offsets and
- * sizes. The small Writer/Reader helpers build and read a chunk's payload.
- *
- *   header: u32 magic | u32 format | u16 version | u16 flags | u32 chunk_count
- *   table:  chunk_count x { u32 id, u32 offset, u32 size }
- *   data:   each chunk's bytes, padded to a 16-byte boundary
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/strings/utf8_string.h"
 
@@ -146,7 +131,6 @@ private:
   bool m_ok = true;
 };
 
-/// Assembles a container from chunks.
 class ChunkWriter {
 public:
   ChunkWriter(const u32 format, const u16 version, const u16 flags = 0) noexcept
@@ -232,7 +216,6 @@ public:
   [[nodiscard]] u16 version() const noexcept { return m_version; }
   [[nodiscard]] u16 flags() const noexcept { return m_flags; }
 
-  /// The chunk with @p id, or an empty span when it is absent.
   [[nodiscard]] std::span<const u8> chunk(const u32 id) const {
     for (u32 i = 0; i < m_count; ++i) {
       const usize base = 16 + usize(i) * 12;
@@ -256,4 +239,4 @@ private:
   u32 m_count = 0;
 };
 
-} // namespace nx::nva
+}

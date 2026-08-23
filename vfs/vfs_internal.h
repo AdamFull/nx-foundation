@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file vfs_internal.h
- * @brief Bits shared by the device implementations. Not a public header.
- */
-
 #include "core/foundation/containers/hash_map.h"
 #include "core/foundation/vfs/vfs.h"
 
@@ -12,9 +7,6 @@
 
 namespace nx::vfs::detail {
 
-/// Canonical virtual path: always absolute, so a bare "shaders/x" means
-/// "/shaders/x". "" if it escapes the root, or is not a virtual path at all
-/// (a drive-rooted "C:/x" normalizes to itself, never under '/').
 [[nodiscard]] inline nx::string canon_vpath(const path_view v) {
   nx::string s = nx::fs::path::normalize(nx::fs::path::join("/", v.native()));
   if (!s.empty() && s.front() != '/')
@@ -22,7 +14,6 @@ namespace nx::vfs::detail {
   return s;
 }
 
-/// canon_vpath() with the leading '/' stripped: "" for the device root.
 [[nodiscard]] inline nx::string canon_rel(const path_view rel) {
   nx::string s = canon_vpath(rel);
   if (!s.empty() && s.front() == '/')
@@ -72,7 +63,6 @@ private:
 /// collision would silently drop a file, and listing is not a hot path.
 class ChildSet {
 public:
-  /// True the first time @p name is offered, false for every repeat.
   [[nodiscard]] bool insert(const nx::string_view name) {
     return m_seen.try_emplace(nx::string(name), u8{0}).second;
   }
@@ -81,4 +71,4 @@ private:
   nx::hash_map<nx::string, u8> m_seen;
 };
 
-} // namespace nx::vfs::detail
+}

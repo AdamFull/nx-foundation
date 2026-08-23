@@ -1,15 +1,5 @@
 #pragma once
 
-/**
- * @file sync.h
- * @brief Futex-based synchronization primitives.
- *
- * Every primitive here is a thin wrapper over a 32-bit futex word (nx::futex
- * in os.h): 4-8 bytes of state, lock-free fast paths, and a kernel wait only
- * under contention. None allocate and none throw. Timed waits take chrono
- * durations; zero or negative means "do not block".
- */
-
 #include "core/foundation/core/foundation.h"
 
 #include <atomic>
@@ -17,13 +7,8 @@
 
 namespace nx {
 
-/**
- * @brief Raw 32-bit futex: the wait/wake primitive everything here builds on.
- *
- * wait() blocks while @p addr still holds @p expected_value; a zero timeout
- * means wait forever. WaitOnAddress on Windows, SYS_futex on Linux/Android.
- * Spurious wakeups are possible: always re-check the word in a loop.
- */
+/// Raw 32-bit futex: the wait/wake primitive everything here builds on. wait() blocks while @p addr
+/// still holds @p expected_value; a zero timeout means wait forever.
 namespace futex {
 enum class Result { Success = 0, TimedOut = 1, Error = 2 };
 
@@ -31,19 +16,16 @@ Result wait(std::atomic<u32> *addr, u32 expected_value,
             std::chrono::nanoseconds timeout);
 i32 wake(std::atomic<u32> *addr, i32 count = 1);
 i32 wake_all(std::atomic<u32> *addr);
-} // namespace futex
+}
 
 namespace this_thread {
-/// OS thread id of the calling thread (cached; defined in thread.cpp).
 u64 id() noexcept;
-} // namespace this_thread
+}
 
 namespace detail {
 
-/// Iterations of cpu_relax() before falling back to a kernel wait.
 inline constexpr i32 SYNC_SPIN_COUNT = 64;
 
-/// nx::futex treats a zero timeout as "wait forever".
 inline constexpr std::chrono::nanoseconds WAIT_FOREVER =
     std::chrono::nanoseconds::zero();
 
@@ -55,8 +37,6 @@ to_ns(std::chrono::duration<Rep, Period> d) noexcept {
   return std::chrono::ceil<std::chrono::nanoseconds>(d);
 }
 
-/// Waits on @p addr while it holds @p expected, up to @p deadline.
-/// Returns false once the deadline has passed.
 inline bool futex_wait_until(std::atomic<u32> *addr, u32 expected,
                              sync_clock::time_point deadline) noexcept {
   const auto now = sync_clock::now();
@@ -65,11 +45,8 @@ inline bool futex_wait_until(std::atomic<u32> *addr, u32 expected,
   futex::wait(addr, expected, to_ns(deadline - now));
   return true;
 }
-} // namespace detail
+}
 
-/// Minimal test-and-set spin lock. Never enters the kernel, so contended
-/// waiters burn CPU: use only for critical sections of a few instructions
-/// where a sleeping lock's wake latency would dominate.
 class spin_lock {
 public:
   spin_lock() = default;
@@ -127,8 +104,6 @@ public:
     if (timeout <= timeout.zero())
       return false;
     const auto deadline = detail::sync_clock::now() + detail::to_ns(timeout);
-    // Once we announce ourselves with CONTENDED we may cause one spurious
-    // unlock() wake after timing out; that is harmless.
     while (m_state.exchange(CONTENDED, std::memory_order_acquire) != 0) {
       if (!detail::futex_wait_until(&m_state, CONTENDED, deadline))
         return false;
@@ -144,12 +119,10 @@ public:
 private:
   friend class cond_var;
 
-  static constexpr u32 LOCKED = 1;    // held, no waiters
-  static constexpr u32 CONTENDED = 2; // held, waiters may be sleeping
+  static constexpr u32 LOCKED = 1;
+  static constexpr u32 CONTENDED = 2;
 
   NX_NO_INLINE void lock_slow() noexcept {
-    // The owner usually releases within tens of cycles; spin before
-    // paying for a kernel transition.
     for (i32 i = 0; i < detail::SYNC_SPIN_COUNT; ++i) {
       u32 s = m_state.load(std::memory_order_relaxed);
       if (s == 0 &&
@@ -212,9 +185,6 @@ private:
   u32 m_depth = 0;
 };
 
-/// Condition variable for nx::mutex. Subject to spurious wakeups: always wait
-/// in a predicate loop, or use the predicate overloads. notify_* may be called
-/// with or without the mutex held.
 class cond_var {
 public:
   cond_var() = default;
@@ -231,7 +201,6 @@ public:
     futex::wake_all(&m_seq);
   }
 
-  /// Atomically releases @p m and sleeps; re-acquires @p m before returning.
   void wait(mutex &m) noexcept {
     const u32 seq = m_seq.load(std::memory_order_acquire);
     m.unlock();
@@ -244,7 +213,6 @@ public:
       wait(m);
   }
 
-  /// @return false if the wait timed out. The mutex is re-acquired either way.
   template <class Rep, class Period>
   bool wait_for(mutex &m, std::chrono::duration<Rep, Period> timeout) noexcept {
     if (timeout <= timeout.zero())
@@ -256,7 +224,6 @@ public:
     return r != futex::Result::TimedOut;
   }
 
-  /// @return the predicate's value on exit (false only on timeout).
   template <class Rep, class Period, typename Pred>
   bool wait_for(mutex &m, std::chrono::duration<Rep, Period> timeout,
                 Pred pred) noexcept {
@@ -318,9 +285,6 @@ public:
   }
 
   void unlock_shared() noexcept {
-    // seq_cst pairs with the seq_cst m_waiting_writers increment in lock():
-    // either we observe the waiting writer here, or it observes our
-    // decrement before sleeping. Anything weaker can lose the wake.
     const u32 prev = m_state.fetch_sub(1, std::memory_order_seq_cst);
     if (prev == 1 && m_waiting_writers.load(std::memory_order_seq_cst) != 0) {
       m_writer_gate.fetch_add(1, std::memory_order_release);
@@ -434,9 +398,6 @@ private:
   std::atomic<u32> m_count;
 };
 
-/// Win32-style event: a boolean flag threads can wait on. Manual-reset, set()
-/// releases every waiter until reset(); auto-reset, it releases exactly one
-/// and the flag clears itself.
 class event {
 public:
   explicit event(bool manual_reset = false, bool initially_set = false) noexcept
@@ -474,7 +435,6 @@ public:
     }
   }
 
-  /// @return false if the wait timed out before the event was set.
   template <class Rep, class Period>
   [[nodiscard]] bool
   wait_for(std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -505,14 +465,8 @@ private:
   const bool m_manual_reset;
 };
 
-/**
- * @brief Reusable thread barrier.
- *
- * arrive_and_wait() blocks until @p count threads have arrived, then releases
- * them and resets. Waiters sleep rather than spin: for the memory-bound phases
- * this backs, a spinning waiter contends with the still-working stragglers for
- * bandwidth and costs far more than the syscall it saves (measured).
- */
+/// Reusable thread barrier. arrive_and_wait() blocks until @p count threads have arrived, then
+/// releases them and resets.
 class barrier {
 public:
   explicit barrier(u32 count) noexcept : m_threshold(count) {
@@ -539,15 +493,12 @@ private:
   std::atomic<u32> m_generation{0};
 };
 
-/**
- * @brief One-time initialization flag for nx::call_once.
- */
 struct once_flag {
   once_flag() = default;
   once_flag(const once_flag &) = delete;
   once_flag &operator=(const once_flag &) = delete;
 
-  std::atomic<u32> state{0}; // 0 = idle, 1 = running, 2 = done
+  std::atomic<u32> state{0};
 };
 
 /// Runs @p fn exactly once across every thread sharing the flag; concurrent
@@ -569,9 +520,7 @@ void call_once(once_flag &flag, F &&fn, Args &&...args) {
     futex::wait(&flag.state, s, detail::WAIT_FOREVER);
 }
 
-/**
- * @brief RAII exclusive lock guard for any type with lock()/unlock().
- */
+/// RAII exclusive lock guard for any type with lock()/unlock().
 template <typename Mutex> class scoped_lock {
 public:
   explicit scoped_lock(Mutex &m) noexcept : m_mutex(m) { m_mutex.lock(); }
@@ -583,9 +532,6 @@ private:
   Mutex &m_mutex;
 };
 
-/**
- * @brief RAII shared (reader) lock guard for nx::rw_lock-like types.
- */
 template <typename Mutex> class scoped_shared_lock {
 public:
   explicit scoped_shared_lock(Mutex &m) noexcept : m_mutex(m) {
@@ -599,4 +545,4 @@ private:
   Mutex &m_mutex;
 };
 
-} // namespace nx
+}

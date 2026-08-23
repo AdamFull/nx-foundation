@@ -12,8 +12,6 @@ namespace nx::os {
 namespace {
 
 #if NX_HAS_WINDOWS_API
-/// The message for the code the last call left, trimmed of the newline
-/// FormatMessage puts on the end.
 [[nodiscard]] string windows_error() {
   const DWORD code = ::GetLastError();
   char *text = nullptr;
@@ -32,7 +30,7 @@ namespace {
 }
 #endif
 
-} // namespace
+}
 
 shared_library::~shared_library() { close(); }
 
@@ -53,8 +51,6 @@ shared_library &shared_library::operator=(shared_library &&other) noexcept {
 
 bool shared_library::supported() noexcept {
 #if NX_PLATFORM_IOS
-  // The OS refuses code that was not signed into the bundle, so there is no
-  // point in a caller finding out by failing.
   return false;
 #elif NX_HAS_WINDOWS_API || NX_PLATFORM_POSIX
   return true;
@@ -79,7 +75,6 @@ bool shared_library::open(const string_view path) {
   close();
   m_error.clear();
 
-  // Both APIs want a terminated string and a string_view is not one.
   const string terminated(path);
 
 #if NX_HAS_WINDOWS_API
@@ -87,8 +82,6 @@ bool shared_library::open(const string_view path) {
   if (m_handle == nullptr)
     m_error = windows_error();
 #elif NX_PLATFORM_POSIX
-  // NOW rather than LAZY: a missing symbol should be an answer here, not a
-  // crash on the first call to whatever needed it.
   ::dlerror();
   m_handle = ::dlopen(terminated.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (m_handle == nullptr)
@@ -129,4 +122,4 @@ void *shared_library::symbol(const string_view name) const noexcept {
 #endif
 }
 
-} // namespace nx::os
+}

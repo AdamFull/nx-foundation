@@ -8,11 +8,6 @@ namespace nx::vfs {
 
 namespace {
 
-/// Backed by a real directory: every operation joins the root with the request
-/// path and defers to nx::fs. The only writable device.
-///
-/// list() still leaves size and mtime at 0: the directory walk reports a type
-/// and would have to stat each entry to say more. stat() itself says both.
 class HostDevice final : public Device {
 public:
   explicit HostDevice(nx::string root) : m_root(std::move(root)) {}
@@ -60,16 +55,13 @@ public:
       if (auto r = nx::fs::create_directories(parent); !r)
         return r;
     }
-    // Write to a temp file and rename it into place, so a reader never sees a
-    // half-written file and a crash can't corrupt an existing one. The counter
-    // keeps two threads writing the same path off a shared temp file.
     static std::atomic<u64> temp_seq{0};
     const u64 seq = temp_seq.fetch_add(1, std::memory_order_relaxed);
     const nx::string tmp = nx::format("{}.{}.nxtmp", path.view(), seq);
     if (auto r = nx::fs::file_write(tmp.view(), data); !r)
       return r;
     if (auto r = nx::fs::rename(tmp.view(), path.view()); !r) {
-      (void)nx::fs::remove(tmp.view()); // best-effort cleanup
+      (void)nx::fs::remove(tmp.view());
       return r;
     }
     return {};
@@ -86,8 +78,6 @@ public:
   [[nodiscard]] const char *name() const noexcept override { return "host"; }
 
 private:
-  // path::join treats an empty tail as the root itself, and a non-absolute rel
-  // can never replace the root.
   [[nodiscard]] nx::string full(const path_view rel) const {
     return nx::fs::path::join(m_root.view(), rel.native());
   }
@@ -95,10 +85,10 @@ private:
   nx::string m_root;
 };
 
-} // namespace
+}
 
 Device *make_host_device(const path_view root) {
   return nx::allocate<HostDevice>(nx::string(root.native()));
 }
 
-} // namespace nx::vfs
+}

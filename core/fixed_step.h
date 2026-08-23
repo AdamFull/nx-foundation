@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file fixed_step.h
- * @brief Dividing frame time into whole simulation steps.
- */
-
 #include "core/foundation/core/foundation.h"
 
 namespace nx {
@@ -54,7 +49,6 @@ public:
 
   [[nodiscard]] f32 seconds() const noexcept { return m_step; }
 
-  /// Where a render frame sits between the last step and the next, in [0, 1).
   [[nodiscard]] f32 alpha() const noexcept {
     return m_step > 0.f ? clamp(m_accumulator / m_step, 0.f, 1.f) : 0.f;
   }
@@ -72,4 +66,4 @@ private:
   u64 m_dropped = 0;
 };
 
-} // namespace nx
+}

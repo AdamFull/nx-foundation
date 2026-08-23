@@ -15,7 +15,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #if defined(NX_PLATFORM_APPLE)
-#include <mach-o/dyld.h> // _NSGetExecutablePath
+#include <mach-o/dyld.h>
 #endif
 #else
 #error "nx::fs: unsupported platform"
@@ -255,7 +255,7 @@ i32 open_retry(const char *path, i32 flags, mode_t mode) noexcept {
 
 #endif
 
-} // namespace
+}
 
 #if defined(NX_PLATFORM_WINDOWS)
 
@@ -512,7 +512,6 @@ io_result<void> remove_node_w(string &path, i32 depth) {
   if (attr & FILE_ATTRIBUTE_READONLY)
     ::SetFileAttributesW(wp.ptr, attr & ~DWORD{FILE_ATTRIBUTE_READONLY});
 
-  // A reparse-point directory is unlinked, never recursed into.
   if ((attr & FILE_ATTRIBUTE_DIRECTORY) &&
       !(attr & FILE_ATTRIBUTE_REPARSE_POINT))
     return remove_dir_w(path, depth);
@@ -609,7 +608,7 @@ std::optional<file_error> list_dir_w(string &dir, vector<directory_entry> &out,
   return err;
 }
 
-} // namespace
+}
 
 io_result<void> copy_file(const path_view from, const path_view to,
                           const bool overwrite_existing) {
@@ -709,8 +708,6 @@ file_stat stat_file(const path_view path) {
                  : file_type::regular;
   out.size = (u64{d.nFileSizeHigh} << 32) | u64{d.nFileSizeLow};
 
-  // FILETIME counts 100ns ticks from 1601-01-01; the epoch is 11644473600
-  // seconds later.
   constexpr u64 TICKS_TO_EPOCH = 116444736000000000ull;
   const u64 ticks = (u64{d.ftLastWriteTime.dwHighDateTime} << 32) |
                     u64{d.ftLastWriteTime.dwLowDateTime};
@@ -1008,7 +1005,6 @@ std::optional<file_error> list_dir_posix(string &dir,
     dir.push_back(u8'/');
     dir.append(name);
 
-    // lstat, not stat: symlinks are reported as such and never followed.
     struct stat st;
     if (::lstat(dir.c_str(), &st) != 0)
       continue;
@@ -1027,7 +1023,7 @@ std::optional<file_error> list_dir_posix(string &dir,
   return err;
 }
 
-} // namespace
+}
 
 io_result<void> copy_file(path_view from, path_view to,
                           bool overwrite_existing) {
@@ -1189,8 +1185,6 @@ io_result<void> file_write_text(const path_view path, const string_view text) {
       path, std::span<const u8>(reinterpret_cast<const u8 *>(text.data()),
                                 text.size()));
 }
-
-// streams
 
 namespace {
 
@@ -1361,7 +1355,7 @@ private:
 
 #endif
 
-} // namespace
+}
 
 io_result<stream_ptr> open_memory(const void *data, const usize size) {
   if (!data && size)
@@ -1423,8 +1417,6 @@ io_result<stream_ptr> open_file(const path_view path) {
 
 io_result<string> executable_dir() {
 #if defined(NX_PLATFORM_APPLE)
-  // No /proc on Darwin. _NSGetExecutablePath can hand back a path containing
-  // symlinks or "..", so realpath() it into the canonical form callers expect.
   char raw[4096];
   u32 size = nx::cast<u32>(sizeof(raw));
   if (_NSGetExecutablePath(raw, &size) != 0)
@@ -1444,4 +1436,4 @@ io_result<string> executable_dir() {
 
 #endif
 
-} // namespace nx::fs
+}

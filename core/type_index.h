@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file type_index.h
- * @brief Process-wide sequential ids for types (nx::type_index).
- */
-
 #include "core/foundation/core/foundation.h"
 
 #include <atomic>
@@ -20,12 +15,11 @@ inline u32 next_type_index() noexcept {
   return counter.fetch_add(1, std::memory_order_relaxed);
 }
 
-} // namespace detail
+}
 
-/// The id of T. Cheap after the first call: a load of a function-local static.
 template <class T> [[nodiscard]] u32 type_index() noexcept {
   static const u32 id = detail::next_type_index();
   return id;
 }
 
-} // namespace nx
+}

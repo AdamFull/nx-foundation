@@ -1,28 +1,5 @@
 #pragma once
 
-/**
- * @file registry.h
- * @brief Entity-component-system registry (nx::ecs::registry /
- * nx::ecs::basic_registry).
- *
- * A low-level, allocator-aware ECS container. It knows nothing about scenes,
- * rendering or GPU types; other systems build on top of it. Component types
- * must be registered before use.
- *
- * @section reg_threading Thread safety
- * Not internally synchronized. Concurrent reads are safe only when no thread
- * is writing. Mutating the set of components of a type while a view or query
- * over that type is iterating is undefined; finish the iteration first.
- *
- * @section reg_invalidation Reference and iterator invalidation
- * Storages are swap-and-pop sparse sets, so a T& or T* from get()/try_get() is
- * invalidated by any add or remove on that same component type - it may refer
- * to a different element afterwards. Refer to components by entity, not by
- * stored pointer, across mutations. Entity handles stay valid until the entity
- * is destroyed; a recycled slot yields a new version, so old handles report as
- * not alive.
- */
-
 #include <cstring>
 #include <tuple>
 #include <type_traits>
@@ -43,24 +20,14 @@ namespace nx::ecs {
 
 template <typename Entity, typename Alloc> class basic_registry;
 
-/**
- * @brief Policy chosen when destroying an entity that has children.
- */
 enum class destroy_policy : u8 {
-  /// Destroy the entity and recursively destroy its whole subtree.
   destroy_descendants,
-  /// Destroy the entity; detach its direct children so they become roots.
   detach_children,
-  /// Destroy the entity; reattach its direct children to its former parent.
   reparent_to_grandparent,
 };
 
-/**
- * @brief Bit flags recorded in a component's metadata.
- */
 enum class component_flags : u32 {
   none = 0,
-  /// Type has no per-instance state (tag); recorded for tooling.
   empty = 1u << 0,
   /// Type cannot be copied; recorded for tooling and serialization layers.
   move_only = 1u << 1,
@@ -81,10 +48,8 @@ enum class component_flags : u32 {
 
 namespace detail {
 
-// Process-wide sequential component ids. The id of a type is stable for the
-// lifetime of the process and is used as the dense storage slot for that type.
-// Ids are shared across all registries; a registry that does not use a given
-// type simply leaves a hole in its storage table.
+// The id of a type is stable for the lifetime of the process and is used as the dense storage slot
+// for that type.
 using component_id = u32;
 
 inline component_id next_component_id() noexcept {
@@ -97,10 +62,8 @@ template <typename T> [[nodiscard]] component_id component_id_of() noexcept {
   return id;
 }
 
-// Type-erased lifecycle operations. Not used to run the lifetime - the
-// sparse_set already calls the real ctor/dtor - but recorded so reflection and
-// serialization layers can manipulate components generically. A null pointer
-// means the operation is not available for T.
+// Not used to run the lifetime - the sparse_set already calls the real ctor/dtor - but recorded so
+// reflection and serialization layers can manipulate components generically.
 struct component_lifecycle {
   void (*default_construct)(void *dst) = nullptr;
   void (*destroy)(void *obj) = nullptr;
@@ -125,14 +88,11 @@ template <typename T>
   return lc;
 }
 
-} // namespace detail
+}
 
-/// Immutable description supplied when registering a component type, e.g.
-/// `registry.register_component<Transform>({ .name = "Transform" })`.
 struct component_desc {
   /// Human-readable type name for debugging and statistics (not owned).
   string_view name = {};
-  /// Additional flags merged with the ones the registry derives from T.
   component_flags flags = component_flags::none;
 };
 
@@ -152,13 +112,8 @@ struct component_metadata {
 
 namespace detail {
 
-/// What dense_index reports for an entity a storage does not hold.
 inline constexpr u32 no_dense_index = ~u32{0};
 
-// Type-erased base for a component storage. It exposes only the operations the
-// registry needs without knowing T, so heterogeneous storages can live in one
-// table and components can be removed when an entity is destroyed. Hooks are
-// fired here (on_destroy) so they run on the type-erased remove path too.
 template <typename Entity, typename Alloc> class storage_base {
 public:
   using registry_type = basic_registry<Entity, Alloc>;
@@ -166,7 +121,6 @@ public:
   virtual ~storage_base() = default;
 
   [[nodiscard]] virtual bool contains(Entity e) const noexcept = 0;
-  // Remove e if present, firing on_destroy first. Returns true if removed.
   virtual bool remove(registry_type &reg, Entity e) = 0;
   virtual void clear(registry_type &reg) = 0;
   virtual void reserve(usize n) = 0;
@@ -181,17 +135,13 @@ public:
   [[nodiscard]] virtual u32 dense_index(Entity e) const noexcept = 0;
   [[nodiscard]] virtual void *emplace_default(registry_type &reg, Entity e) = 0;
 
-  // Destroy this object using the allocator it was constructed with.
   virtual void self_delete() noexcept = 0;
 };
 
-} // namespace detail
+}
 
 namespace detail {
 
-// A "sink" is the list of user callbacks for one lifecycle event. Callbacks
-// receive the registry and the affected entity, so they can look up component
-// data themselves; this keeps the sink type independent of the component type.
 template <typename Entity, typename Alloc> struct event_sink {
   using registry_type = basic_registry<Entity, Alloc>;
   using callback = nx::function<void(registry_type &, Entity)>;
@@ -210,9 +160,6 @@ template <typename Entity, typename Alloc> struct event_sink {
   }
 };
 
-// Typed component storage: wraps an nx::sparse_set<T, Entity> and owns the
-// lifecycle hooks for T. Even empty (tag) types are stored through the set so
-// that get<T>() can return a reference and views iterate uniformly.
 template <typename T, typename Entity, typename Alloc>
 class component_storage final : public storage_base<Entity, Alloc> {
 public:
@@ -255,7 +202,6 @@ public:
 
   void clear(registry_type &reg) override {
     if (!m_on_destroy.empty()) {
-      // Fire on_destroy for each element before tearing the storage down.
       for (Entity e : m_set.entities())
         m_on_destroy.fire(reg, e);
     }
@@ -336,12 +282,10 @@ private:
   NX_NO_UNIQUE_ADDRESS self_alloc m_alloc;
 };
 
-} // namespace detail
+}
 
 namespace detail {
 
-// Tuple element: the typed storage pointer for component Ti, const-qualified
-// when the view was created over a const registry.
 template <typename Reg, typename T>
 using view_storage_ptr = std::conditional_t<
     std::is_const_v<Reg>,
@@ -350,19 +294,10 @@ using view_storage_ptr = std::conditional_t<
     component_storage<T, typename Reg::entity_type,
                       typename Reg::allocator_type> *>;
 
-} // namespace detail
+}
 
-/**
- * @brief Transient, non-owning view over entities sharing components T... .
- *
- * Created by registry::view<T...>(). Cheap to construct and meant to be used
- * immediately; exclude<U...>() narrows it to entities that have none of U... .
- * Do not add or remove components of any T... (or excluded U...) on the
- * matched entities while iterating.
- *
- * @tparam Reg Registry type, possibly const-qualified.
- * @tparam T   Component types every matched entity must have.
- */
+/// Transient, non-owning view over entities sharing components T... . Do not add or remove
+/// components of any T... (or excluded U...) on the matched entities while iterating.
 template <typename Reg, typename... T> class basic_view {
 public:
   using entity_type = typename Reg::entity_type;
@@ -373,13 +308,11 @@ public:
              const allocator_type &alloc)
       : m_storages(storages), m_excludes(exclude_alloc(alloc)) {}
 
-  /// Restrict to entities that have none of the components U... .
   template <typename... U> basic_view &exclude(Reg &reg) {
     (m_excludes.push_back(reg.template raw_storage<U>()), ...);
     return *this;
   }
 
-  /// Number of entities in the leading (smallest) storage. Upper bound only.
   [[nodiscard]] usize size_hint() const noexcept {
     usize best = NO_LEAD;
     std::apply(
@@ -392,8 +325,6 @@ public:
 
   [[nodiscard]] bool empty() const noexcept { return size_hint() == 0; }
 
-  /// Invoke fn(entity, T&...) for every matched entity, iterating the smallest
-  /// storage.
   template <typename Fn> void each(Fn &&fn) const {
     if (!all_present())
       return;
@@ -435,9 +366,6 @@ private:
     (void)((I == lead ? (walk<I>(fn), true) : false) || ...);
   }
 
-  /// The lead's handles and values are two arrays at the same dense index, so
-  /// its entity and its component both come out of the index rather than a
-  /// lookup. Every other type costs exactly one.
   template <usize L, typename Fn> void walk(Fn &fn) const {
     const auto &lead = std::get<L>(m_storages)->set();
     for (usize i = 0, n = lead.size(); i < n; ++i) {
@@ -455,9 +383,6 @@ private:
     return false;
   }
 
-  /// Presence and value are one question, so they are one lookup: the fold
-  /// keeps each pointer it fetched, and stops at the first type the entity
-  /// does not have.
   template <usize L, typename Fn, usize... I>
   void call(Fn &fn, const entity_type e, const usize i,
             std::index_sequence<I...>) const {
@@ -481,10 +406,8 @@ private:
 
 namespace detail {
 
-// Per-cached-query state owned by the registry. The match list is rebuilt
-// lazily when any tracked component type changes generation (see registry
-// change counters). Hierarchy changes do not affect component generations and
-// so do not invalidate cached queries.
+// Per-cached-query state owned by the registry. Hierarchy changes do not affect component
+// generations and so do not invalidate cached queries.
 template <typename Entity, typename Alloc> struct query_cache {
   using id_alloc = typename std::allocator_traits<Alloc>::template rebind_alloc<
       component_id>;
@@ -519,47 +442,33 @@ template <typename Entity, typename Alloc> struct query_cache {
   }
 };
 
-} // namespace detail
+}
 
 template <typename Reg, typename... T> class cached_query;
 
-/**
- * @brief Snapshot of registry-wide counts; cheap to produce.
- */
 struct registry_statistics {
-  usize entity_count = 0;            ///< Alive entities.
-  usize entity_slot_count = 0;       ///< Allocated entity slots.
-  usize free_slot_count = 0;         ///< Recyclable (dead) slots.
-  usize component_type_count = 0;    ///< Registered component types.
-  usize component_storage_count = 0; ///< Non-null component storages.
-  usize relation_count = 0;          ///< Parent links currently set.
-  usize cached_query_count = 0;      ///< Live cached queries.
-  usize approx_memory_bytes = 0;     ///< Rough heap estimate; see docs.
+  usize entity_count = 0;
+  usize entity_slot_count = 0;
+  usize free_slot_count = 0;
+  usize component_type_count = 0;
+  usize component_storage_count = 0;
+  usize relation_count = 0;
+  usize cached_query_count = 0;
+  usize approx_memory_bytes = 0;
 };
 
-/**
- * @brief Per-type statistics; cheap to produce.
- */
 struct component_type_statistics {
   detail::component_id id = 0;
   string_view name = {};
   usize size = 0;
   usize alignment = 0;
-  usize count = 0;    ///< Live components of this type.
-  usize capacity = 0; ///< Storage capacity for this type.
+  usize count = 0;
+  usize capacity = 0;
   component_flags flags = component_flags::none;
 };
 
-/**
- * @brief Allocator-aware entity-component-system registry.
- *
- * Component types must be registered with register_component<T>() before use.
- * The default handle (handle32) packs 24 index bits and 8 version bits;
- * handle64 packs 32 and 32.
- *
- * @tparam Entity Versioned handle type used as the entity id.
- * @tparam Alloc  Allocator; rebound internally for every dynamic allocation.
- */
+/// Component types must be registered with register_component<T>() before use. The default handle
+/// (handle32) packs 24 index bits and 8 version bits; handle64 packs 32 and 32.
 template <typename Entity = handle32, typename Alloc = Allocator<std::byte>>
 class basic_registry {
 public:
@@ -582,9 +491,6 @@ private:
   struct hierarchy_node {
     Entity parent{};
     Entity first_child{};
-    /// So set_parent can append in O(1). Children keep the order they were
-    /// added, which for a transform hierarchy is merely tidy and for a UI is
-    /// the layout - a Row reversed is a visible bug.
     Entity last_child{};
     Entity prev_sibling{};
     Entity next_sibling{};
@@ -627,9 +533,6 @@ public:
     return m_alloc;
   }
 
-  // --- Entities -----------------------------------------------------------
-
-  /// Create a fresh entity, reusing a dead slot when one is available.
   [[nodiscard]] Entity create() {
     repr idx;
     if (!m_free.empty()) {
@@ -646,7 +549,6 @@ public:
     return Entity::from_parts(idx, m_slots[idx].version);
   }
 
-  /// True if the handle refers to a currently live entity (version-checked).
   [[nodiscard]] bool alive(Entity e) const noexcept {
     if (!e.valid())
       return false;
@@ -655,9 +557,6 @@ public:
            m_slots[idx].version == e.version();
   }
 
-  /// Destroy an entity and all its components; @p policy decides what happens
-  /// to its children (default: detached, so they become roots). Stale or null
-  /// handles are ignored.
   void destroy(Entity e,
                destroy_policy policy = destroy_policy::detach_children) {
     if (!alive(e))
@@ -678,9 +577,6 @@ public:
     --m_alive_count;
   }
 
-  /// Remove every entity, component, and relation; storages are kept
-  /// registered. Entity slots are retained and versioned so a handle from
-  /// before the clear can never become live again after the registry is reused.
   void clear() {
     for (base_storage *s : m_storages)
       if (s)
@@ -714,7 +610,6 @@ public:
     m_registered_count = 0;
   }
 
-  /// Reserve capacity for an expected number of entity slots.
   void reserve(size_type n) {
     m_slots.reserve(n);
     m_free.reserve(n);
@@ -723,13 +618,9 @@ public:
   [[nodiscard]] size_type size() const noexcept { return m_alive_count; }
   [[nodiscard]] bool empty() const noexcept { return m_alive_count == 0; }
 
-  // --- Component registration --------------------------------------------
-
-  /// Register a component type. Once per type, before any emplace/get/view/
-  /// query for it. Registering twice is a usage error (asserts in debug) and
-  /// leaves the first registration in place.
-  ///
-  /// @return Reference to the stored metadata for T.
+  /// Register a component type. Once per type, before any emplace/get/view/ query for it.
+  /// Registering twice is a usage error (asserts in debug) and leaves the first registration in
+  /// place. @return Reference to the stored metadata for T.
   template <typename C>
   const component_metadata &
   register_component(const component_desc &desc = {}) {
@@ -765,7 +656,6 @@ public:
     return m_metadata[id];
   }
 
-  /// True if T has been registered.
   template <typename C>
   [[nodiscard]] bool is_component_registered() const noexcept {
     const detail::component_id id =
@@ -773,9 +663,6 @@ public:
     return id < m_storages.size() && m_storages[id] != nullptr;
   }
 
-  /// Metadata for the component registered under @p name, or null. For a
-  /// caller that was given a name rather than a type - a script declaring what
-  /// it touches. Linear: this runs when a query is built, not when it runs.
   [[nodiscard]] const component_metadata *
   component_metadata_named(const string_view name) const noexcept {
     if (name.empty())
@@ -786,7 +673,6 @@ public:
     return nullptr;
   }
 
-  /// Metadata for a registered T. Precondition: is_component_registered<T>().
   template <typename C>
   [[nodiscard]] const component_metadata &
   component_metadata_of() const noexcept {
@@ -797,10 +683,6 @@ public:
     return m_metadata[id];
   }
 
-  // --- Components ---------------------------------------------------------
-
-  /// Construct a T in place on @p e. Precondition: e alive, T registered, e
-  /// has no T yet. Fires on_construct hooks. Returns the new component.
   template <typename C, typename... Args> C &emplace(Entity e, Args &&...args) {
     using T = std::remove_cv_t<C>;
     auto &store = assure<T>();
@@ -832,7 +714,6 @@ public:
     return ref;
   }
 
-  /// Alias for emplace_or_replace.
   template <typename C, typename... Args>
   C &insert_or_assign(Entity e, Args &&...args) {
     return emplace_or_replace<C>(e, std::forward<Args>(args)...);
@@ -845,7 +726,6 @@ public:
     return &emplace_or_replace<C>(e, std::forward<Args>(args)...);
   }
 
-  /// Overwrite an existing T. Precondition: e has T. Fires on_update hooks.
   template <typename C, typename... Args> C &replace(Entity e, Args &&...args) {
     using T = std::remove_cv_t<C>;
     auto &store = assure<T>();
@@ -857,7 +737,6 @@ public:
     return *p;
   }
 
-  /// Mutate an existing T through fn(T&), then fire on_update hooks.
   template <typename C, typename Fn> C &patch(Entity e, Fn &&fn) {
     using T = std::remove_cv_t<C>;
     auto &store = assure<T>();
@@ -869,8 +748,6 @@ public:
     return *p;
   }
 
-  /// Get T (or a tuple of components for multiple types). Precondition: each
-  /// requested type is registered and present on @p e.
   template <typename... C> [[nodiscard]] decltype(auto) get(Entity e) {
     static_assert(sizeof...(C) >= 1, "registry::get requires a type");
     if constexpr (sizeof...(C) == 1)
@@ -886,8 +763,6 @@ public:
       return std::forward_as_tuple(get_single<std::remove_cv_t<C>>(e)...);
   }
 
-  /// Pointer to T on @p e, or nullptr if T is unregistered or absent. Safe for
-  /// stale handles.
   template <typename C> [[nodiscard]] auto *try_get(Entity e) noexcept {
     using T = std::remove_cv_t<C>;
     auto *store = raw_storage<T>();
@@ -900,22 +775,17 @@ public:
     return store ? store->try_get(e) : static_cast<const T *>(nullptr);
   }
 
-  /// True if @p e has component T (false if T unregistered or e stale).
   template <typename C> [[nodiscard]] bool has(Entity e) const noexcept {
     const auto *store = raw_storage<std::remove_cv_t<C>>();
     return store && store->contains(e);
   }
-  /// True if @p e has all of C... .
   template <typename... C> [[nodiscard]] bool all_of(Entity e) const noexcept {
     return (has<C>(e) && ...);
   }
-  /// True if @p e has at least one of C... .
   template <typename... C> [[nodiscard]] bool any_of(Entity e) const noexcept {
     return (has<C>(e) || ...);
   }
 
-  /// Remove T from @p e if present. Fires on_destroy hooks. Returns true if a
-  /// component was removed. Safe for stale handles and unregistered types.
   template <typename C> bool remove(Entity e) {
     using T = std::remove_cv_t<C>;
     auto *store = raw_storage<T>();
@@ -928,17 +798,14 @@ public:
     return false;
   }
 
-  /// Remove T from @p e. Precondition: e has T. Fires on_destroy hooks.
   template <typename C> void erase(Entity e) {
     const bool removed = remove<C>(e);
     assert(removed && "registry::erase: entity does not have component");
     (void)removed;
   }
 
-  /// Remove every component from @p e. Fires on_destroy hooks.
   void remove_all(Entity e) { remove_all_components(e); }
 
-  /// Remove all components of type T. Fires on_destroy hooks per element.
   template <typename C> void clear() {
     using T = std::remove_cv_t<C>;
     auto *store = raw_storage<T>();
@@ -948,7 +815,6 @@ public:
     bump_generation(detail::component_id_of<T>());
   }
 
-  /// How many entities hold C. Zero for a type nothing has registered.
   template <typename C> [[nodiscard]] size_type count() const noexcept {
     const auto *store = raw_storage<std::remove_cv_t<C>>();
     return store != nullptr ? store->size() : 0;
@@ -972,27 +838,19 @@ public:
       fn(ents, store->set().values().data());
   }
 
-  // --- Hooks --------------------------------------------------------------
-
-  /// Append a callback fired after a T is constructed on an entity.
   template <typename C, typename Fn> void on_construct(Fn &&fn) {
     assure<std::remove_cv_t<C>>().m_on_construct.callbacks.emplace_back(
         std::forward<Fn>(fn));
   }
-  /// Append a callback fired before a T is removed from an entity.
   template <typename C, typename Fn> void on_destroy(Fn &&fn) {
     assure<std::remove_cv_t<C>>().m_on_destroy.callbacks.emplace_back(
         std::forward<Fn>(fn));
   }
-  /// Append a callback fired after a T is replaced or patched.
   template <typename C, typename Fn> void on_update(Fn &&fn) {
     assure<std::remove_cv_t<C>>().m_on_update.callbacks.emplace_back(
         std::forward<Fn>(fn));
   }
 
-  // --- Views and queries --------------------------------------------------
-
-  /// Transient view over entities having all of T... . See nx::ecs::basic_view.
   template <typename... C> [[nodiscard]] auto view() {
     (assert_registered<std::remove_cv_t<C>>(), ...);
     return basic_view<basic_registry, std::remove_cv_t<C>...>(
@@ -1004,19 +862,12 @@ public:
         std::make_tuple(raw_storage<std::remove_cv_t<C>>()...), m_alloc);
   }
 
-  /// Cached query over entities having all of T...; reused across calls and
-  /// rebuilt lazily when a tracked component type changes. See
-  /// nx::ecs::cached_query.
   template <typename... C> [[nodiscard]] auto query() {
     (assert_registered<std::remove_cv_t<C>>(), ...);
     qcache &c = assure_query<std::remove_cv_t<C>...>();
     return cached_query<basic_registry, std::remove_cv_t<C>...>(this, &c);
   }
 
-  // --- Hierarchy ----------------------------------------------------------
-
-  /// Make @p parent the parent of @p child, replacing any existing one. False
-  /// for null/stale handles, self-parenting, or a link that would cycle.
   bool set_parent(Entity child, Entity parent) {
     if (!alive(child) || !alive(parent))
       return false;
@@ -1027,8 +878,6 @@ public:
 
     detach_from_parent(child);
 
-    // Materialize both nodes first; emplace may reallocate the dense array,
-    // so references are taken only after no further insertion can happen.
     ensure_node(child);
     ensure_node(parent);
     hierarchy_node &cn = m_hierarchy.at(child);
@@ -1047,7 +896,6 @@ public:
     return true;
   }
 
-  /// Detach @p child from its parent (becomes a root). No-op if it had none.
   void remove_parent(Entity child) {
     if (!m_hierarchy.contains(child))
       return;
@@ -1055,25 +903,20 @@ public:
     maybe_erase_node(child);
   }
 
-  /// Parent of @p e, or null_entity if it has none.
   [[nodiscard]] Entity parent(Entity e) const noexcept {
     const hierarchy_node *n = m_hierarchy.try_get(e);
     return n ? n->parent : Entity{};
   }
 
-  /// True if @p e has a parent.
   [[nodiscard]] bool has_parent(Entity e) const noexcept {
     return parent(e).valid();
   }
 
-  /// Number of direct children of @p e.
   [[nodiscard]] usize child_count(Entity e) const noexcept {
     const hierarchy_node *n = m_hierarchy.try_get(e);
     return n ? n->child_count : 0;
   }
 
-  /// Invoke fn(child) for each direct child of @p e. Safe if fn destroys the
-  /// child currently being visited.
   template <typename Fn> void each_child(Entity e, Fn &&fn) const {
     const hierarchy_node *n = m_hierarchy.try_get(e);
     if (!n)
@@ -1086,8 +929,6 @@ public:
     }
   }
 
-  /// Depth-first pre-order traversal invoking fn(descendant) for the whole
-  /// subtree below @p e (excluding @p e itself).
   template <typename Fn> void each_descendant(Entity e, Fn &&fn) const {
     small_vector<Entity, 32, rebind<Entity>> stack{rebind<Entity>(m_alloc)};
     push_children(e, stack);
@@ -1099,7 +940,6 @@ public:
     }
   }
 
-  /// True if @p maybe_descendant lies anywhere below @p ancestor.
   [[nodiscard]] bool is_descendant_of(Entity maybe_descendant,
                                       Entity ancestor) const noexcept {
     Entity cur = parent(maybe_descendant);
@@ -1111,9 +951,6 @@ public:
     return false;
   }
 
-  // --- Statistics ---------------------------------------------------------
-
-  /// Registry-wide counts. Cheap to compute.
   [[nodiscard]] registry_statistics statistics() const noexcept {
     registry_statistics st{};
     st.entity_count = m_alive_count;
@@ -1143,7 +980,6 @@ public:
     return st;
   }
 
-  /// Per-type statistics for registered T. Precondition: T registered.
   template <typename C>
   [[nodiscard]] component_type_statistics
   component_statistics() const noexcept {
@@ -1162,15 +998,11 @@ public:
     return st;
   }
 
-  // Current change generation of a component type; bumped on add/remove. Used
-  // by cached queries to decide when to rebuild.
   [[nodiscard]] u64
   component_generation(detail::component_id id) const noexcept {
     return id < m_generations.size() ? m_generations[id] : 0;
   }
 
-  // Rebuild a cached query's entity list from scratch. Public so cached_query
-  // can drive it; not intended for direct user calls.
   void rebuild_query(qcache &c) {
     c.entities.clear();
     base_storage *lead = nullptr;
@@ -1205,10 +1037,8 @@ public:
   }
 
 private:
-  // exclude() needs the storage to test against, and takes it type-erased.
   template <typename Reg, typename... T> friend class basic_view;
 
-  /// Pointer to the typed storage for T, or nullptr if T is unregistered.
   template <typename C>
   [[nodiscard]] detail::component_storage<std::remove_cv_t<C>, Entity, Alloc> *
   raw_storage() noexcept {
@@ -1276,8 +1106,6 @@ private:
       }
     }
   }
-
-  // --- hierarchy helpers ---
 
   hierarchy_node &ensure_node(Entity e) {
     if (hierarchy_node *n = m_hierarchy.try_get(e))
@@ -1369,12 +1197,9 @@ private:
     }
   }
 
-  // --- query cache helpers ---
-
   template <typename... T> qcache &assure_query() {
     detail::component_id ids[] = {detail::component_id_of<T>()...};
     const usize n = sizeof...(T);
-    // Insertion sort the small id list so the key is order-independent.
     for (usize i = 1; i < n; ++i) {
       detail::component_id v = ids[i];
       usize j = i;
@@ -1466,27 +1291,9 @@ private:
   u64 m_hierarchy_version = 0;
 };
 
-/// Default registry: 32-bit entity handles, default nx allocator.
 using registry = basic_registry<handle32, Allocator<std::byte>>;
-/// Convenience registry over 64-bit entity handles.
 using registry64 = basic_registry<handle64, Allocator<std::byte>>;
 
-/**
- * @brief Cached query over entities sharing components T... .
- *
- * Obtained from registry::query<T...>(). Unlike a transient view, the match
- * list is kept between calls and rebuilt lazily, which is what makes it the
- * right choice for a component set iterated every frame.
- *
- * @section cq_invalidation Invalidation rules
- * A rebuild is triggered when a component of any T is added or removed, when
- * an entity carrying one is destroyed, or when the registry is cleared.
- * Parent-child changes do not affect cached queries. As with views, do not add
- * or remove components of any T while a query over T is iterating.
- *
- * @tparam Reg Registry type, possibly const-qualified.
- * @tparam T   Component types every matched entity has.
- */
 template <typename Reg, typename... T> class cached_query {
 public:
   using entity_type = typename Reg::entity_type;
@@ -1496,20 +1303,17 @@ public:
   cached_query(Reg *reg, cache_type *cache) noexcept
       : m_reg(reg), m_cache(cache) {}
 
-  /// Number of matched entities (rebuilds the cache if stale).
   [[nodiscard]] usize size() {
     ensure_built();
     return m_cache->entities.size();
   }
   [[nodiscard]] bool empty() { return size() == 0; }
 
-  /// Matched entities as a contiguous span (rebuilds the cache if stale).
   [[nodiscard]] std::span<const entity_type> entities() {
     ensure_built();
     return {m_cache->entities.data(), m_cache->entities.size()};
   }
 
-  /// Invoke fn(entity, T&...) for each matched entity.
   template <typename Fn> void each(Fn &&fn) {
     ensure_built();
     for (entity_type e : m_cache->entities)
@@ -1531,4 +1335,4 @@ private:
   cache_type *m_cache;
 };
 
-} // namespace nx::ecs
+}

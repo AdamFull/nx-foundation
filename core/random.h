@@ -8,13 +8,8 @@
 
 namespace nx {
 
-/**
- * @brief 128-bit globally unique identifier (UUID).
- *
- * Holds 16 raw bytes. Parses from and formats to the canonical
- * 8-4-4-4-12 hex string, is comparable and hashable. Generate one with
- * nx::Rng::guid().
- */
+/// 128-bit globally unique identifier (UUID). Holds 16 raw bytes. Parses from and formats to the
+/// canonical 8-4-4-4-12 hex string, is comparable and hashable. Generate one with nx::Rng::guid().
 struct Guid {
   std::array<u8, 16> bytes{};
 
@@ -118,7 +113,6 @@ struct Rng {
   [[nodiscard]] u32 next_u32();
   [[nodiscard]] u64 next_u64();
 
-  // Unbiased value in [0, bound).
   [[nodiscard]] u32 next_u32(u32 bound);
   [[nodiscard]] u64 next_u64(u64 bound);
 
@@ -126,7 +120,6 @@ struct Rng {
   [[nodiscard]] i32 range(i32 min, i32 max);
   [[nodiscard]] i64 range(i64 min, i64 max);
 
-  // Value in [0, 1).
   [[nodiscard]] f32 next_f32();
   [[nodiscard]] f64 next_f64();
 
@@ -140,7 +133,7 @@ struct Rng {
   [[nodiscard]] Guid guid();
 };
 
-} // namespace nx
+}
 
 template <> struct std::hash<nx::Guid> {
   std::size_t operator()(const nx::Guid &g) const noexcept {

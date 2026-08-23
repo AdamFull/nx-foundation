@@ -13,12 +13,10 @@ namespace {
 
 const nx::log::Category log_vfs = nx::log::category("vfs");
 
-// Whether the mount serves the path and, if so, the device-relative path (no
-// leading slash; "" for the mount root itself). Both arguments are normalized.
 bool match_mount(const nx::string_view prefix, const nx::string_view v,
                  nx::string &rel) {
   if (prefix == "/") {
-    rel.assign(v.substr(1)); // "/x/y" -> "x/y"; "/" -> ""
+    rel.assign(v.substr(1));
     return true;
   }
   if (v == prefix) {
@@ -35,25 +33,19 @@ bool match_mount(const nx::string_view prefix, const nx::string_view v,
 
 struct Mount {
   i32 priority = 0;
-  /// Tie-breaker: later mount wins. Explicit because slot_map erases by
-  /// swap-and-pop, so position in the table says nothing about mount order.
   u32 order = 0;
   nx::string prefix;
   Device *device = nullptr;
 };
 
-// A mount that could serve a lookup, with the device-relative path it would
-// use.
 struct Candidate {
   Device *device;
   nx::string rel;
   i32 priority;
   u32 order;
-  usize prefix_len; ///< Longer (more specific) prefix wins ties on priority.
+  usize prefix_len;
 };
 
-// Every lookup gathers candidates, and a process rarely mounts more than a
-// handful, so keep them inline and off the heap.
 using CandidateList = nx::small_vector<Candidate, 8>;
 
 struct State {
@@ -91,7 +83,6 @@ void gather(const State &s, nx::string_view v, CandidateList &out) {
   std::sort(out.begin(), out.end(), candidate_better);
 }
 
-// Runs @p op against the highest-priority writable mount serving @p vpath.
 template <typename Op>
 io_result<void> write_route(const path_view vpath, Op &&op) {
   const nx::string v = detail::canon_vpath(vpath);
@@ -109,7 +100,7 @@ io_result<void> write_route(const path_view vpath, Op &&op) {
   return err(file_error{io_error::PermissionDenied, 0});
 }
 
-} // namespace
+}
 
 // Lifetime
 
@@ -127,8 +118,6 @@ void shutdown() {
   unmount_all();
   s.initialized = false;
 }
-
-// Mount table
 
 MountId mount(const path_view virtual_prefix, Device *device, i32 priority) {
   State &s = state();
@@ -158,13 +147,13 @@ void unmount(const MountId id) {
   Device *victim = nullptr;
   {
     nx::scoped_lock lock(s.mounts_lock);
-    if (const Mount *m = s.mounts.try_get(id)) { // null or stale: absent
+    if (const Mount *m = s.mounts.try_get(id)) {
       victim = m->device;
       s.mounts.erase(id);
     }
   }
   if (victim)
-    nx::release(victim); // outside the lock: closing a device can be slow
+    nx::release(victim);
 }
 
 void unmount_all() {
@@ -180,8 +169,6 @@ void unmount_all() {
   for (Device *d : victims)
     nx::release(d);
 }
-
-// Reading
 
 io_result<nx::blob<u8>> read(path_view vpath) {
   NX_PROFILE_ZONE("vfs::read");
@@ -200,7 +187,7 @@ io_result<nx::blob<u8>> read(path_view vpath) {
     if (r)
       return r;
     if (r.error().kind != io_error::NotFound)
-      return r; // a real error in the winning mount is not masked
+      return r;
     last = r.error();
   }
   return err(last);
@@ -212,7 +199,7 @@ io_result<nx::string> read_text(path_view vpath) {
     return err(r.error());
   const nx::blob<u8> &b = r.value();
   if (b.empty())
-    return nx::string(); // an empty blob's data() may be null
+    return nx::string();
   return nx::string(reinterpret_cast<const char *>(b.data()), b.size());
 }
 
@@ -271,7 +258,7 @@ io_result<nx::vector<DirEntry>> list(path_view vdir) {
   gather(s, v.view(), cands);
 
   nx::vector<DirEntry> out;
-  detail::ChildSet seen; // first mount to report a name wins it
+  detail::ChildSet seen;
 
   bool any = false;
   file_error last{io_error::NotFound, 0};
@@ -293,8 +280,6 @@ io_result<nx::vector<DirEntry>> list(path_view vdir) {
     return err(last);
   return out;
 }
-
-// Writing
 
 io_result<void> write(const path_view vpath, const std::span<const u8> data) {
   NX_PROFILE_ZONE("vfs::write");
@@ -320,4 +305,4 @@ io_result<void> create_directories(const path_view vpath) {
   });
 }
 
-} // namespace nx::vfs
+}

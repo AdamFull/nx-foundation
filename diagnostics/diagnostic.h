@@ -97,13 +97,12 @@ template <typename... Args>
               nx::format_to(buf, fmt, std::forward<Args>(args)...));
 }
 
-} // namespace detail
-} // namespace nx
+}
+}
 
-// Runtime assertion. Active only in debug builds; compiled out (but still
-// type-checked) in release. Optional formatted message:
-//   NX_ASSERT(ptr != nullptr);
-//   NX_ASSERT(i < n, "index {} out of range {}", i, n);
+// Runtime assertion. Active only in debug builds; compiled out (but still type-checked) in release.
+// Optional formatted message: NX_ASSERT(ptr != nullptr); NX_ASSERT(i < n, "index {} out of range
+// {}", i, n);
 #if NX_DEBUG
 #define NX_ASSERT(cond, ...)                                                   \
   do {                                                                         \

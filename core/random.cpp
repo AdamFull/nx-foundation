@@ -55,7 +55,7 @@ u64 xoshiro256_next(Rng::Xoshiro256State &s) {
   return result;
 }
 
-} // namespace
+}
 
 void Rng::init(const Alg algorithm, const u64 seed_value) {
   alg = algorithm;
@@ -107,7 +107,6 @@ u32 Rng::next_u32(const u32 bound) {
   if (bound == 0)
     return 0;
 
-  // Lemire's method for unbiased bounded random numbers.
   const u32 threshold = (0u - bound) % bound;
   for (;;) {
     const u32 r = next_u32();
@@ -122,7 +121,7 @@ u32 Rng::next_u32(const u32 bound) {
 u64 Rng::next_u64(const u64 bound) {
   if (bound == 0)
     return 0;
-  const u64 threshold = (0ull - bound) % bound; // 2^64 mod bound
+  const u64 threshold = (0ull - bound) % bound;
   for (;;) {
     const u64 r = next_u64();
     if (r >= threshold)
@@ -134,7 +133,7 @@ i32 Rng::range(i32 min, i32 max) {
   if (min > max)
     std::swap(min, max);
   const u32 span = nx::cast<u32>(max) - nx::cast<u32>(min);
-  if (span == ~u32{0}) // the full range: every value is in bounds
+  if (span == ~u32{0})
     return nx::cast<i32>(next_u32());
   return nx::cast<i32>(nx::cast<u32>(min) + next_u32(span + 1));
 }
@@ -192,4 +191,4 @@ Guid Rng::guid() {
   return g;
 }
 
-} // namespace nx
+}

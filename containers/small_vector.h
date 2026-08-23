@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file small_vector.h
- * @brief Vector with small-buffer optimization (nx::small_vector).
- */
-
 #include <algorithm>
 #include <compare>
 #include <initializer_list>
@@ -19,17 +14,6 @@
 
 namespace nx {
 
-/**
- * @brief Dynamic vector that keeps its first @p N elements inline.
- *
- * Behaves like std::vector but avoids the heap while the size stays within @p
- * N; it spills to an allocation only when it grows beyond the inline buffer.
- * Good for collections that are usually small but occasionally large.
- *
- * @tparam T     Element type.
- * @tparam N     Number of elements kept inline before spilling to the heap.
- * @tparam Alloc Allocator used once the inline buffer is exceeded.
- */
 template <typename T, usize N, typename Alloc = Allocator<T>>
 class small_vector {
   static_assert(N > 0, "small_vector: N must be > 0");
@@ -562,4 +546,4 @@ usize erase_if(small_vector<T, N, A> &c, Pred pred) {
   return n;
 }
 
-} // namespace nx
+}

@@ -1,21 +1,5 @@
 #pragma once
 
-/**
- * @file thread_pool.h
- * @brief Work-stealing thread pool: nx::thread_pool, nx::task_group,
- * nx::future.
- *
- * Each worker owns a bounded lock-free queue and steals from its siblings when
- * idle; external submissions go to a shared queue with an unbounded overflow,
- * so submit() never fails and never blocks. Idle workers sleep on a futex.
- *
- * Waiting is cooperative: wait_idle(), task_group::wait() and future::get()
- * execute queued tasks while they wait, so a parallel_for caller contributes
- * instead of blocking and waiting inside a task cannot deadlock the pool.
- *
- * Tasks must not throw, and callables must be copy-constructible.
- */
-
 #include "core/foundation/containers/concurrent_queue.h"
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/callable.h"
@@ -38,7 +22,7 @@ struct pool_task {
 
 struct future_state_base {
   std::atomic<u32> ready{0};
-  std::atomic<u32> refs{2}; // one for the producing task, one for the future
+  std::atomic<u32> refs{2};
   thread_pool *pool = nullptr;
 };
 
@@ -59,7 +43,7 @@ template <typename T> void future_state_release(future_state<T> *st) noexcept {
   }
   release(st);
 }
-} // namespace detail
+}
 
 /// Completion counter for a batch of tasks: submit any number against a group,
 /// then wait(). Reusable afterwards. A group is bound to the first pool it is
@@ -78,8 +62,6 @@ public:
     return m_pending.load(std::memory_order_acquire) == 0;
   }
 
-  /// Blocks until all tasks in the group finished, executing queued pool
-  /// tasks (not necessarily this group's) while it waits.
   void wait() noexcept;
 
 private:
@@ -89,14 +71,7 @@ private:
   thread_pool *m_pool = nullptr;
 };
 
-/**
- * @brief One-shot result handle returned by thread_pool::async.
- *
- * Move-only. get() waits (helping the pool) and moves the result out; once per
- * valid future. Destroying one early is safe - the task still runs.
- *
- * @tparam T Result type of the task (may be void).
- */
+/// Move-only. get() waits (helping the pool) and moves the result out; once per valid future.
 template <typename T> class future {
 public:
   future() = default;
@@ -140,17 +115,11 @@ private:
   detail::future_state<T> *m_state = nullptr;
 };
 
-/// Fixed-size work-stealing thread pool. Workers are named and optionally
-/// pinned to physical cores. Submission from a worker goes to that worker's
-/// local queue; external submissions go to the shared one.
 class thread_pool {
 public:
   struct config {
-    /// Worker count; 0 = one per physical core, minus one for the caller.
     u32 thread_count = 0;
-    /// Worker thread name prefix ("<name>-<index>").
     const char *name = "nx-worker";
-    /// Pin each worker to one physical core (round-robin over the topology).
     bool pin_threads = false;
     thread_priority priority = thread_priority::Normal;
   };
@@ -169,13 +138,10 @@ public:
     return nx::cast<u32>(m_workers.size());
   }
 
-  /// True if the calling thread is one of this pool's workers.
   [[nodiscard]] bool is_worker_thread() const noexcept;
 
-  /// Queues a fire-and-forget task.
   void submit(function<void()> fn) { enqueue({std::move(fn), nullptr}); }
 
-  /// Queues a task tracked by @p group.
   void submit(task_group &group, function<void()> fn);
 
   template <typename F>
@@ -190,7 +156,6 @@ public:
     submit(group, function<void()>(std::forward<F>(fn)));
   }
 
-  /// Queues @p fn and returns a future for its result.
   template <typename F, typename R = std::invoke_result_t<std::decay_t<F>>>
   [[nodiscard]] future<R> async(F &&fn) {
     auto *st = allocate<detail::future_state<R>>();
@@ -208,13 +173,10 @@ public:
     return future<R>(st);
   }
 
-  /// Calls body(i) for every i in [begin, end) across the pool. Blocks
-  /// until complete; the calling thread executes chunks too.
   template <typename F> void parallel_for(usize begin, usize end, F &&body) {
     parallel_for(begin, end, 0, std::forward<F>(body));
   }
 
-  /// @param grain Indices per task; 0 picks worker_count * 4 chunks.
   template <typename F>
   void parallel_for(usize begin, usize end, usize grain, F &&body) {
     if (begin >= end)
@@ -228,8 +190,6 @@ public:
       return;
     }
 
-    // The body outlives every chunk because wait() below returns only
-    // after the last task finished, so capturing a pointer is safe.
     std::remove_reference_t<F> *bp = std::addressof(body);
     task_group group;
     for (usize chunk = begin; chunk < end; chunk += grain) {
@@ -255,8 +215,6 @@ public:
       return;
     }
 
-    // bp/bar outlive every task: group.wait() below returns only after the
-    // last body has finished, so a pointer into this frame is safe.
     std::remove_reference_t<F> *bp = std::addressof(body);
     task_group group;
     for (u32 i = 1; i < count; ++i)
@@ -265,14 +223,11 @@ public:
     group.wait();
   }
 
-  /// Blocks until the pool has no queued or running tasks, executing
-  /// queued tasks while it waits. Must not be called from inside a pool
-  /// task (the calling task itself would never count as finished); use a
-  /// task_group there instead.
+  /// Blocks until the pool has no queued or running tasks, executing queued tasks while it waits.
+  /// Must not be called from inside a pool task (the calling task itself would never count as
+  /// finished); use a task_group there instead.
   void wait_idle() noexcept;
 
-  /// Runs one queued task on the calling thread if any is available.
-  /// Safe to call from any thread; returns false when nothing ran.
   bool help_execute_one() noexcept;
 
 private:
@@ -302,8 +257,8 @@ private:
   usize m_overflow_head = 0;
   std::atomic<u32> m_overflow_count{0};
 
-  std::atomic<u32> m_unfinished{0}; // queued + running tasks
-  std::atomic<u32> m_signal{0};     // futex word idle workers sleep on
+  std::atomic<u32> m_unfinished{0};
+  std::atomic<u32> m_signal{0};
   std::atomic<u32> m_sleepers{0};
   std::atomic<u32> m_steal_seed{0};
   std::atomic<bool> m_stop{false};
@@ -343,7 +298,6 @@ void parallel_collect(thread_pool *pool, const usize count,
     return;
   }
 
-  // The caller's thread takes a chunk too rather than waiting on the others.
   const u32 team = pool->worker_count() + 1;
   if (bins.size() < team)
     bins.resize(team);
@@ -361,4 +315,4 @@ void parallel_collect(thread_pool *pool, const usize count,
       out.push_back(value);
 }
 
-} // namespace nx
+}

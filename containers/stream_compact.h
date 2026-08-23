@@ -1,11 +1,5 @@
 #pragma once
 
-/**
- * @file stream_compact.h
- * @brief Stable parallel stream compaction (filter): keep the elements a
- * predicate accepts, in order, packed into a contiguous output.
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/time.h"
 #include "core/foundation/threading/thread_pool.h"
@@ -39,7 +33,6 @@ public:
     return j;
   }
 
-  /// Serial below the crossover, parallel above it.
   template <class T, class Keep>
   usize compact(std::span<const T> in, std::span<T> out, Keep keep,
                 thread_pool &pool) {
@@ -48,8 +41,6 @@ public:
     return compact_parallel(in, out, keep, pool);
   }
 
-  /// Parallel path regardless of size. compact() calls this above the
-  /// crossover; exposed so tests exercise it at any size.
   template <class T, class Keep>
   usize compact_parallel(std::span<const T> in, std::span<T> out, Keep keep,
                          thread_pool &pool) {
@@ -60,7 +51,7 @@ public:
     if (n == 0 || workers == 0)
       return compact_serial(in, out, keep);
 
-    const u32 chunks = workers + 1; // the caller is a participant too
+    const u32 chunks = workers + 1;
     const usize per_chunk = (n + chunks - 1) / chunks;
     m_flags.resize(n);
     m_counts.resize(chunks);
@@ -75,7 +66,6 @@ public:
         begin = n;
       const usize end = nx::min(begin + per_chunk, n);
 
-      // Phase 1: run the predicate once, flag each element, count survivors.
       u32 kept = 0;
       for (usize i = begin; i < end; ++i) {
         const bool k = keep(src[i]);
@@ -85,13 +75,10 @@ public:
       counts[c] = kept;
       bar.arrive_and_wait();
 
-      // This chunk's output start is the survivors in all earlier chunks.
       usize out_pos = 0;
       for (u32 cc = 0; cc < c; ++cc)
         out_pos += counts[cc];
 
-      // Phase 2: scatter survivors into a range no other chunk touches, in
-      // order - so the whole result is a stable filter of the input.
       for (usize i = begin; i < end; ++i)
         if (flags[i])
           dst[out_pos++] = src[i];
@@ -103,11 +90,7 @@ public:
     return total;
   }
 
-  /// Produce-then-filter: for i in [0, count), @p produce(i, elem) fills elem
-  /// and returns whether to keep it; kept elements are packed (stable) into
-  /// @p out. Fuses a parallel build with the compaction, so the producer (e.g.
-  /// building a sprite instance and frustum-testing it) runs across workers.
-  /// Returns the survivor count. @p out holds at least @p count elements.
+  /// @p out holds at least @p count elements.
   template <class T, class Produce>
   static usize transform_compact_serial(usize count, std::span<T> out,
                                         Produce produce) {
@@ -115,13 +98,11 @@ public:
       return 0;
     usize j = 0;
     for (usize i = 0; i < count; ++i)
-      if (produce(i, out[j])) // reuses the slot when the element is dropped
+      if (produce(i, out[j]))
         ++j;
     return j;
   }
 
-  /// Serial below the crossover, parallel above it. @p scratch (>= count) holds
-  /// produced elements for the parallel path; the serial path ignores it.
   template <class T, class Produce>
   usize transform_compact(usize count, std::span<T> scratch, std::span<T> out,
                           Produce produce, thread_pool &pool) {
@@ -130,8 +111,6 @@ public:
     return transform_compact_parallel(count, scratch, out, produce, pool);
   }
 
-  /// Parallel path regardless of size. Each chunk produces its slice into
-  /// @p scratch, then compacts into a disjoint output range.
   template <class T, class Produce>
   usize transform_compact_parallel(usize count, std::span<T> scratch,
                                    std::span<T> out, Produce produce,
@@ -180,10 +159,6 @@ public:
     return total;
   }
 
-  /// Measures the serial/parallel compaction crossover for @p keep on this
-  /// machine and sets it. The crossover depends on the predicate's cost, so
-  /// callers pass a representative @p gen(i) -> T and their real predicate.
-  /// Probe ladder, first clear win, conservative - as radix_context does.
   template <class GenElem, class Keep>
   void calibrate(thread_pool &pool, GenElem gen, Keep keep) {
     using T = std::decay_t<decltype(gen(usize{0}))>;
@@ -233,4 +208,4 @@ private:
   nx::vector<u32> m_counts;
 };
 
-} // namespace nx
+}

@@ -10,7 +10,7 @@ enum class MemProtFlag : u32 {
   Exec = 1 << 3
 };
 NX_ENUM_FLAGS_DEFINE(MemProtFlag, MemProtFlags)
-} // namespace nx::vmem
+}
 
 namespace nx::vmem {
 usize get_page_size();
@@ -20,7 +20,7 @@ bool reserve(void **out_base, usize reserve_bytes);
 bool release(void *base, usize reserve_bytes);
 bool commit(void *addr, usize size);
 bool protect(void *addr, usize size, MemProtFlags prot);
-} // namespace nx::vmem
+}
 
 namespace nx::os {
 struct MemStats {
@@ -44,4 +44,4 @@ usize cpu_brand(char *out, usize capacity) noexcept;
 
 u32 process_id() noexcept;
 usize executable_path(char *out, usize capacity) noexcept;
-} // namespace nx::os
+}

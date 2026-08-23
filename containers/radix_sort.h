@@ -1,18 +1,5 @@
 #pragma once
 
-/**
- * @file radix_sort.h
- * @brief Stable LSD radix sort over unsigned 32- or 64-bit keys.
- *
- * Linear in n and stable by construction, so ties never reorder between runs.
- *
- * Digits are 11 bits: 2048 counters stay in L1 where a 16-bit digit's 65536
- * would not, and 11 needs fewer passes than 8. All histograms are built in one
- * read up front, so a digit whose values agree is skipped and the pass count
- * is fixed before any data moves - a u64 whose values fit in 32 bits costs the
- * same as a u32. Nothing is allocated; the caller supplies scratch.
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/time.h"
 #include "core/foundation/threading/thread_pool.h"
@@ -35,7 +22,7 @@ inline constexpr u32 RADIX_DIGIT_MASK = RADIX_BUCKETS - 1;
   return (bits + RADIX_DIGIT_BITS - 1) / RADIX_DIGIT_BITS;
 }
 
-} // namespace detail
+}
 
 /// Keys must be unsigned: the digit extraction is a shift and mask, and a
 /// signed key would sort negatives after positives.
@@ -43,11 +30,9 @@ template <typename T>
 concept radix_key =
     std::unsigned_integral<T> && (sizeof(T) == 4 || sizeof(T) == 8);
 
-/**
- * @brief Sorts @p keys ascending, permuting @p values alongside. Scratch
- * buffers must each be at least keys.size(). The payload is normally a 4-byte
- * index gathered once at the end, not the elements themselves.
- */
+/// Sorts @p keys ascending, permuting @p values alongside. Scratch buffers must each be at least
+/// keys.size(). The payload is normally a 4-byte index gathered once at the end, not the elements
+/// themselves.
 template <radix_key Key, typename Value>
 void radix_sort_pairs(const std::span<Key> keys, const std::span<Value> values,
                       const std::span<Key> key_scratch,
@@ -60,7 +45,6 @@ void radix_sort_pairs(const std::span<Key> keys, const std::span<Value> values,
   constexpr u32 PASSES =
       detail::radix_pass_count(nx::cast<u32>(sizeof(Key) * 8));
 
-  // All histograms in one read of the keys.
   u32 histogram[PASSES][detail::RADIX_BUCKETS] = {};
   for (usize i = 0; i < count; ++i) {
     const Key k = keys[i];
@@ -69,8 +53,6 @@ void radix_sort_pairs(const std::span<Key> keys, const std::span<Value> values,
                                    detail::RADIX_DIGIT_MASK)];
   }
 
-  // A digit where every key lands in one bucket is already sorted by that
-  // digit, so moving the data would be pure cost.
   bool active[PASSES] = {};
   u32 active_count = 0;
   for (u32 p = 0; p < PASSES; ++p) {
@@ -80,10 +62,8 @@ void radix_sort_pairs(const std::span<Key> keys, const std::span<Value> values,
     active_count += active[p] ? 1u : 0u;
   }
   if (active_count == 0)
-    return; // every key identical
+    return;
 
-  // With an odd number of moves the result ends up in scratch, so start there
-  // and let the ping-pong land it back in the caller's buffers for free.
   Key *keys_src = keys.data();
   Value *values_src = values.data();
   Key *keys_dst = key_scratch.data();
@@ -111,8 +91,6 @@ void radix_sort_pairs(const std::span<Key> keys, const std::span<Value> values,
     }
 
     const u32 shift = p * detail::RADIX_DIGIT_BITS;
-    // Ascending iteration is what makes this stable: equal keys leave in the
-    // order they arrived.
     for (usize i = 0; i < count; ++i) {
       const u32 digit =
           nx::cast<u32>((keys_src[i] >> shift) & detail::RADIX_DIGIT_MASK);
@@ -130,20 +108,9 @@ void radix_sort_pairs(const std::span<Key> keys, const std::span<Value> values,
   }
 }
 
-/**
- * @brief Parallel stable LSD radix sort.
- *
- * One chunk per pool worker plus the caller. Each builds local histograms,
- * converted into disjoint per-chunk offsets for a stable scatter with no
- * atomics. All passes run in one parallel_region with barriers between phases;
- * calibrate() finds where this beats the serial path on this machine.
- *
- * Reuses internal buffers between calls. Not thread-safe: one context per
- * caller, and never from a pool worker.
- */
+/// Not thread-safe: one context per caller, and never from a pool worker.
 class radix_context {
 public:
-  /// Default crossover until calibrate() runs: the measured desktop break-even.
   static constexpr usize DEFAULT_CROSSOVER = 128 * 1024;
   static constexpr usize MIN_CROSSOVER = 8 * 1024;
   static constexpr usize MAX_CROSSOVER = 4 * 1024 * 1024;
@@ -151,7 +118,6 @@ public:
   [[nodiscard]] usize crossover() const noexcept { return m_crossover; }
   void set_crossover(usize n) noexcept { m_crossover = n; }
 
-  /// Serial below the crossover, the parallel region above it.
   template <radix_key Key, typename Value>
   void sort(std::span<Key> keys, std::span<Value> values,
             std::span<Key> key_scratch, std::span<Value> value_scratch,
@@ -176,7 +142,7 @@ public:
 
   template <class KeyGen> void calibrate(thread_pool &pool, KeyGen key_gen) {
     if (pool.worker_count() == 0) {
-      m_crossover = ~usize{0}; // no team: never parallel
+      m_crossover = ~usize{0};
       return;
     }
 
@@ -214,10 +180,8 @@ public:
       return best;
     };
 
-    usize cross = MAX_CROSSOVER; // parallel never clearly wins -> stay serial
+    usize cross = MAX_CROSSOVER;
     for (usize n : probes) {
-      // Require a 10% margin so a near-tie (where the two are interchangeable)
-      // does not flip the switch on noise.
       if (best_us(n, true) < 0.9 * best_us(n, false)) {
         cross = n;
         break;
@@ -226,9 +190,6 @@ public:
     m_crossover = nx::min(nx::max(cross, MIN_CROSSOVER), MAX_CROSSOVER);
   }
 
-  /// The parallel region path regardless of size. sort() calls this above the
-  /// crossover; exposed directly so tests exercise it at any size. Falls back
-  /// to serial only when the pool has no workers.
   template <radix_key Key, typename Value>
   void sort_parallel(std::span<Key> keys, std::span<Value> values,
                      std::span<Key> key_scratch, std::span<Value> value_scratch,
@@ -247,7 +208,7 @@ public:
       return;
     }
 
-    const u32 chunks = workers + 1; // the caller is a participant too
+    const u32 chunks = workers + 1;
     const usize per_chunk = (count + chunks - 1) / chunks;
     m_histograms.resize(nx::cast<usize>(chunks) * PASSES *
                         detail::RADIX_BUCKETS);
@@ -268,7 +229,6 @@ public:
         begin = count;
       const usize end = nx::min(begin + per_chunk, count);
 
-      // Phase A: this chunk's histogram, every pass, in one read of its slice.
       for (u32 p = 0; p < PASSES; ++p)
         std::memset(hrow(c, p), 0, detail::RADIX_BUCKETS * sizeof(u32));
       for (usize i = begin; i < end; ++i) {
@@ -295,12 +255,10 @@ public:
         active_count += active[p] ? 1u : 0u;
       }
       if (active_count == 0)
-        return; // every key identical
+        return;
 
-      // Always scatter keys -> scratch; if an odd pass count leaves the result
-      // in scratch, copy it home at the end. Copying last, each chunk over its
-      // own output slice, avoids the barrier a copy-first scheme needs to stop
-      // one chunk clobbering input another still reads.
+      // Copying last, each chunk over its own output slice, avoids the barrier a copy-first scheme
+      // needs to stop one chunk clobbering input another still reads.
       Key *ks = keys.data();
       Value *vs = values.data();
       Key *kd = key_scratch.data();
@@ -312,7 +270,6 @@ public:
           continue;
         const u32 shift = p * detail::RADIX_DIGIT_BITS;
 
-        // Phase A matches the first active pass; later passes moved the data.
         if (!first) {
           std::memset(hrow(c, p), 0, detail::RADIX_BUCKETS * sizeof(u32));
           for (usize i = begin; i < end; ++i)
@@ -323,8 +280,6 @@ public:
         }
         first = false;
 
-        // Start offset for each bucket: all lower buckets, then this bucket's
-        // earlier chunks. Written only to this chunk's own row.
         u32 *off = orow(c);
         u32 running = 0;
         for (u32 b = 0; b < detail::RADIX_BUCKETS; ++b) {
@@ -336,7 +291,7 @@ public:
           }
         }
 
-        for (usize i = begin; i < end; ++i) { // ascending i keeps it stable
+        for (usize i = begin; i < end; ++i) {
           const u32 digit =
               nx::cast<u32>((ks[i] >> shift) & detail::RADIX_DIGIT_MASK);
           const u32 slot = off[digit]++;
@@ -353,7 +308,7 @@ public:
         vd = tv;
       }
 
-      if (ks != keys.data()) // odd pass count: the result is in scratch
+      if (ks != keys.data())
         for (usize i = begin; i < end; ++i) {
           keys[i] = ks[i];
           values[i] = vs[i];
@@ -369,9 +324,6 @@ private:
 
 /// Buffers sort_by_key reuses between calls. One per caller; not thread-safe.
 template <typename T> struct sort_scratch {
-  /// Naming a pool lets the sort go parallel once it is worth it (see
-  /// radix_context::crossover). Null keeps it serial, which is right for
-  /// anything short of six figures of elements.
   thread_pool *pool = nullptr;
   radix_context context;
 
@@ -381,9 +333,6 @@ template <typename T> struct sort_scratch {
 
 namespace detail {
 
-/// Builds the (key, index) pairs and sorts them. False when @p src was already
-/// ordered, in which case the indices are meaningless and no permutation is
-/// needed.
 template <typename T, typename KeyFn>
 [[nodiscard]] bool sort_permutation(const std::span<const T> src,
                                     sort_scratch<T> &s, KeyFn key) {
@@ -413,17 +362,10 @@ template <typename T, typename KeyFn>
   return true;
 }
 
-} // namespace detail
+}
 
-/**
- * @brief Sorts @p items in place, ascending by key(item).
- *
- * Stable, which is what callers layering one thing behind another depend on.
- *
- * The radix runs on (key, index) pairs and one gather applies the permutation,
- * so an element is copied once rather than once per pass. Already ordered
- * input costs the scan that discovers it and nothing else.
- */
+/// The radix runs on (key, index) pairs and one gather applies the permutation, so an element is
+/// copied once rather than once per pass.
 template <typename T, typename KeyFn>
 void sort_by_key(nx::vector<T> &items, sort_scratch<T> &scratch, KeyFn key) {
   const usize count = items.size();
@@ -439,8 +381,6 @@ void sort_by_key(nx::vector<T> &items, sort_scratch<T> &scratch, KeyFn key) {
   items.swap(scratch.gathered);
 }
 
-/// sort_by_key for a caller whose input and output are separate buffers.
-/// @p dst always ends up holding the whole result, ordered or not.
 template <typename T, typename KeyFn>
 void sort_by_key_into(const std::span<const T> src, nx::vector<T> &dst,
                       sort_scratch<T> &scratch, KeyFn key) {
@@ -462,4 +402,4 @@ void sort_by_key_into(const std::span<const T> src, nx::vector<T> &dst,
     dst[i] = src[scratch.indices[i]];
 }
 
-} // namespace nx
+}

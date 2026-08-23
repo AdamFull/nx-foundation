@@ -10,8 +10,6 @@
 #include <utility>
 #include <vector>
 
-// Platform detection
-
 #if defined(_WIN32) || defined(_WIN64) || defined(__WIN32__) ||                \
     defined(__WINDOWS__)
 #define NX_PLATFORM_WINDOWS 1
@@ -60,15 +58,13 @@
 #include <cstdlib>
 #include <cstring>
 #if defined(NX_PLATFORM_WINDOWS)
-#include <malloc.h> // _aligned_malloc, _aligned_realloc, _aligned_free
+#include <malloc.h>
 #elif defined(NX_PLATFORM_MACOS)
-#include <malloc/malloc.h> // malloc_size
+#include <malloc/malloc.h>
 #else
-#include <malloc.h> // malloc_usable_size
+#include <malloc.h>
 #endif
 #endif
-
-// Architecture detection
 
 #if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||          \
     defined(__amd64) || defined(_M_X64) || defined(_M_AMD64)
@@ -103,13 +99,9 @@
 #define NX_POINTER_SIZE 4
 #endif
 
-// Compiler detection
-
-// clang-cl is Clang behind cl's driver, and it defines _MSC_VER - so it has to
-// be recognised before MSVC or it reports itself as the compiler it emulates.
-// Both flags are set on purpose: it targets the MSVC ABI, which makes the
-// __declspec attributes and [[msvc::no_unique_address]] below the correct ones
-// for it, while Clang's builtins are available as well.
+// Both flags are set on purpose: it targets the MSVC ABI, which makes the __declspec attributes and
+// [[msvc::no_unique_address]] below the correct ones for it, while Clang's builtins are available
+// as well.
 #if defined(__clang__) && defined(_MSC_VER)
 #define NX_COMPILER_MSVC 1
 #define NX_COMPILER_CLANG 1
@@ -137,8 +129,6 @@
 #define NX_COMPILER_VERSION 0
 #endif
 
-// Build config
-
 #if defined(DEBUG) || defined(_DEBUG) || !defined(NDEBUG)
 #define NX_DEBUG 1
 #define NX_BUILD_CONFIG "Debug"
@@ -146,8 +136,6 @@
 #define NX_RELEASE 1
 #define NX_BUILD_CONFIG "Release"
 #endif
-
-// Attributes
 
 #if defined(NX_COMPILER_MSVC)
 #define NX_FORCE_INLINE __forceinline
@@ -197,10 +185,8 @@
 #define NX_NO_UNIQUE_ADDRESS [[no_unique_address]]
 #endif
 
-// Marks a parameter whose referenced storage may be reachable through the
-// return value, so a caller passing a temporary gets a dangling-reference
-// diagnostic instead of a use-after-free at run time. Use it on any parameter
-// that a function can hand back, directly or inside a view.
+// Marks a parameter whose referenced storage may be reachable through the return value, so a caller
+// passing a temporary gets a dangling-reference diagnostic instead of a use-after-free at run time.
 #if defined(__has_cpp_attribute)
 #if __has_cpp_attribute(msvc::lifetimebound)
 #define NX_LIFETIMEBOUND [[msvc::lifetimebound]]
@@ -221,8 +207,6 @@
 #endif
 #endif
 
-// Type aliases
-
 using i8 = int8_t;
 using u8 = uint8_t;
 using i16 = int16_t;
@@ -236,15 +220,10 @@ using f64 = double;
 using isize = ptrdiff_t;
 using usize = size_t;
 
-// Math utilities
-
 namespace nx {
 
 namespace detail {
 
-/// Hints the CPU that the caller is in a spin-wait loop (x86 PAUSE / ARM
-/// YIELD). Lowers power draw and frees pipeline resources for the sibling
-/// hyper-thread.
 NX_FORCE_INLINE void cpu_relax() noexcept {
 #if defined(NX_ARCH_X64)
 #if defined(NX_COMPILER_MSVC)
@@ -260,7 +239,7 @@ NX_FORCE_INLINE void cpu_relax() noexcept {
 #endif
 #endif
 }
-} // namespace detail
+}
 
 template <typename T>
 concept UnsignedArithmetic = std::is_unsigned_v<T> && std::is_arithmetic_v<T>;
@@ -357,10 +336,8 @@ template <typename To, typename From>
 #endif
 }
 
-// A thread with a deadline can declare that it must not allocate, and be held
-// to it in debug builds. The audio mixer's render callback is the case this
-// exists for: one allocation there is a dropout, and nothing about the symptom
-// points back at the line that caused it.
+// A thread with a deadline can declare that it must not allocate, and be held to it in debug
+// builds.
 #if !defined(NX_ALLOC_GUARD)
 #define NX_ALLOC_GUARD NX_DEBUG
 #endif
@@ -421,7 +398,6 @@ mem_realloc(void *ptr, usize newsize,
   return _aligned_realloc(ptr, newsize, align);
 #else
 
-  // POSIX has no aligned_realloc; get old size, alloc, copy, free.
   usize old_size = 0;
   if (ptr) {
 #if defined(NX_PLATFORM_MACOS)
@@ -482,8 +458,6 @@ void release(T *ptr) noexcept {
   mem_free(ptr);
 }
 
-// Typed array allocation: allocates n elements, default-constructs non-trivial
-// types.
 template <typename T, usize Align = alignof(T)>
   requires(!std::is_array_v<T> && Align >= alignof(T))
 [[nodiscard]] T *
@@ -612,7 +586,6 @@ void shared_destroy(void *object) noexcept {
   u8 *const base = static_cast<u8 *>(object) - shared_header(object)->back;
   static_cast<U *>(object)->~U();
 
-  // The allocator has to survive the deallocation of the block it lives in.
   if constexpr (Block::holds_allocator) {
     Held *const stored = reinterpret_cast<Held *>(base);
     Held source(std::move(*stored));
@@ -634,7 +607,7 @@ concept SharedRebindable =
 
 struct AdoptShared {};
 
-} // namespace detail
+}
 
 template <typename T> class shared_ptr {
 public:
@@ -759,8 +732,6 @@ template <typename T> void swap(shared_ptr<T> &a, shared_ptr<T> &b) noexcept {
   a.swap(b);
 }
 
-/// The object, the header and - when it has state worth keeping - a copy of
-/// @p alloc, in one allocation taken from @p alloc itself.
 template <typename T, typename Alloc, typename... Args>
   requires(!std::is_array_v<T>)
 [[nodiscard]] shared_ptr<T> allocate_shared(const Alloc &alloc,
@@ -804,8 +775,6 @@ template <typename T, typename Alloc, typename... Args>
 template <typename T, typename... Args>
   requires(!std::is_array_v<T>)
 [[nodiscard]] shared_ptr<T> make_shared(Args &&...args) {
-  // Qualified: an unqualified call drags in std::allocate_shared by ADL as
-  // soon as T is a std type, and the two overloads are then ambiguous.
   return nx::allocate_shared<T>(Allocator<T>{}, std::forward<Args>(args)...);
 }
 
@@ -827,8 +796,6 @@ private:
   shared_ptr<std::atomic<bool>> m_flag;
 };
 
-/// Held by the object whose life is being watched, as its last member so that
-/// it falls after everything a watcher might reach through.
 class life_token {
 public:
   life_token() : m_flag(make_shared<std::atomic<bool>>(true)) {}
@@ -874,4 +841,4 @@ template <typename T, typename... Args>
   return unique_ptr<T>(p);
 }
 
-} // namespace nx
+}

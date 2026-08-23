@@ -19,7 +19,7 @@ struct table {
   return t;
 }
 
-} // namespace
+}
 
 type_registry &type_registry::instance() {
   static type_registry registry;
@@ -31,8 +31,6 @@ void type_registry::add(const type_info &type) {
   const nx::scoped_lock lock(t.guard);
   const auto it = t.by_id.find(type.id);
   if (it != t.by_id.end()) {
-    // Two names hashing alike would make a document load the wrong component,
-    // which is worth a word rather than a silent replacement.
     if (it->second != &type)
       nx::loge(log_reflect, "'{}' and '{}' share an id; the second is ignored",
                it->second->name, type.name);
@@ -68,4 +66,4 @@ nx::vector<const type_info *> type_registry::all() const {
   return out;
 }
 
-} // namespace nx::reflect
+}

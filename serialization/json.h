@@ -1,33 +1,5 @@
 #pragma once
 
-/**
- * @file json.h
- * @brief JSON document model, parser and writer (namespace nx::json).
- *
- * DOM-style, built on the foundation throughout. It does not allocate beyond
- * the document itself: parsing is a single pass with no token stream, and
- * writing appends straight into the destination buffer.
- *
- * @code
- * auto doc = nx::json::parse(text);
- * if (!doc) return doc.error();
- * const nx::string out = nx::json::write(*doc, {.indent = 2});
- * @endcode
- *
- * @section json_numbers Numbers
- * Integers are kept exact - a number is recorded as signed, unsigned or double
- * depending on what the literal was, so a u64 identifier past 2^53 survives a
- * round trip, which a double-only model cannot do.
- *
- * @section json_custom Custom types
- * Conversion goes through nx::json::serializer<T>; see "Custom type
- * registration" below.
- *
- * @section json_threading Thread safety
- * A value is a plain object: concurrent reads are safe, mutation is not. The
- * parser and writer hold no shared state.
- */
-
 #include "core/foundation/containers/flat_map.h"
 #include "core/foundation/containers/hash_map.h"
 #include "core/foundation/containers/small_vector.h"
@@ -41,26 +13,24 @@
 
 namespace nx::json {
 
-/// What went wrong while parsing, or while converting to a user type.
 enum class error_code : u32 {
   none = 0,
-  unexpected_end,      ///< Input ended in the middle of a value.
+  unexpected_end,
   unexpected_token,    ///< A character that cannot start or continue a value.
-  invalid_number,      ///< Malformed numeric literal.
-  invalid_string,      ///< Unterminated string or a raw control character.
-  invalid_escape,      ///< Unknown \x escape, or a malformed \u sequence.
+  invalid_number,
+  invalid_string,
+  invalid_escape,
   invalid_utf8,        ///< Input was not well-formed UTF-8.
   invalid_surrogate,   ///< Unpaired or misordered UTF-16 surrogate.
-  depth_exceeded,      ///< Nesting deeper than parse_options::max_depth.
+  depth_exceeded,
   trailing_content,    ///< Non-whitespace bytes after the top-level value.
-  duplicate_key,       ///< Repeated object key (only when rejected by options).
-  number_out_of_range, ///< Literal does not fit the requested arithmetic type.
-  type_mismatch,       ///< Value is not the type a conversion required.
-  missing_field,       ///< Required object member was absent.
+  duplicate_key,
+  number_out_of_range,
+  type_mismatch,
+  missing_field,
   count,
 };
 
-/// Human-readable description of @p e; never empty.
 [[nodiscard]] string_view to_string(error_code e) noexcept;
 
 /// A parse or conversion failure. `offset` is a byte index into the input;
@@ -72,7 +42,6 @@ struct error {
   u32 line = 0;
   u32 column = 0;
 
-  /// "line:column: description" - suitable for logging directly.
   [[nodiscard]] string message() const;
 };
 
@@ -91,7 +60,6 @@ enum class type : u8 {
   object,
 };
 
-/// True when @p t is one of the three numeric representations.
 [[nodiscard]] constexpr bool is_number(type t) noexcept {
   return t == type::signed_integer || t == type::unsigned_integer ||
          t == type::real;
@@ -99,25 +67,14 @@ enum class type : u8 {
 
 class value;
 
-/// One key/value pair of an object. Members keep insertion order.
 struct member;
 
 using array = vector<value>;
 using object = vector<member>;
 
-/**
- * @brief A JSON value: null, boolean, number, string, array or object.
- *
- * Accessors come in three flavours:
- *
- *  - `as_*()`   - precondition-checked; asserts in debug, undefined otherwise.
- *  - `get_*()`  - returns a fallback when the type does not match.
- *  - `try_*()`  - returns a pointer, null when the type does not match.
- *
- * Subscripting an object with a missing key returns a shared immutable null
- * rather than inserting, so `doc["a"]["b"].get_i64(0)` is safe on any document.
- * Use `insert()` or the non-const `at()` to mutate.
- */
+/// Accessors come in three flavours: - `as_*()` - precondition-checked; asserts in debug, undefined
+/// otherwise. - `get_*()` - returns a fallback when the type does not match. - `try_*()` - returns
+/// a pointer, null when the type does not match.
 class value {
 public:
   value() noexcept : m_type(type::null), m_u{} {}
@@ -125,10 +82,6 @@ public:
 
   value(bool b) noexcept : m_type(type::boolean) { m_u.boolean = b; }
 
-  // Every integral type funnels into the signed or unsigned representation,
-  // and every floating-point type into the real one. Templates rather than
-  // overloads so that `value(0)`, `value(0u)` and `value(0.0)` are not
-  // ambiguous with the bool and pointer constructors.
   template <typename T>
     requires(std::is_integral_v<T> && !std::is_same_v<T, bool>)
   value(T v) noexcept {
@@ -152,7 +105,6 @@ public:
   value(const nx::string &s);
   value(nx::string &&s) noexcept;
 
-  /// Tagged constructors for the container kinds.
   static value make_array();
   static value make_object();
   static value make_array(array a) noexcept;
@@ -165,8 +117,6 @@ public:
   ~value();
 
   void swap(value &o) noexcept;
-
-  // Type inspection
 
   [[nodiscard]] type kind() const noexcept { return m_type; }
   [[nodiscard]] bool is_null() const noexcept { return m_type == type::null; }
@@ -191,12 +141,9 @@ public:
     return m_type == type::object;
   }
 
-  /// True when the value holds an integer exactly representable as T.
   template <typename T>
     requires std::is_integral_v<T>
   [[nodiscard]] bool fits() const noexcept;
-
-  // Checked access. Preconditions are asserted in debug builds.
 
   [[nodiscard]] bool as_bool() const noexcept;
   [[nodiscard]] i64 as_i64() const noexcept;
@@ -209,20 +156,14 @@ public:
   [[nodiscard]] const object &as_object() const noexcept;
   [[nodiscard]] object &as_object() noexcept;
 
-  // Forgiving access. Numbers convert between representations when the value
-  // is exactly representable; anything else yields the fallback.
-
   [[nodiscard]] bool get_bool(bool fallback = false) const noexcept;
   [[nodiscard]] i64 get_i64(i64 fallback = 0) const noexcept;
   [[nodiscard]] u64 get_u64(u64 fallback = 0) const noexcept;
   [[nodiscard]] f64 get_double(f64 fallback = 0.0) const noexcept;
 
-  /// Text of a string value, or @p fallback for any other kind.
-  ///
-  /// The result borrows - from this value's storage on the matching path, from
-  /// @p fallback otherwise - so any mutation invalidates it. @p fallback is
-  /// lifetimebound, making a temporary a compile-time diagnostic rather than a
-  /// use-after-free. Use as_string() when you need to own the text.
+  /// The result borrows - from this value's storage on the matching path, from @p fallback
+  /// otherwise - so any mutation invalidates it. @p fallback is lifetimebound, making a temporary a
+  /// compile-time diagnostic rather than a use-after-free.
   [[nodiscard]] string_view
   get_string(NX_LIFETIMEBOUND string_view fallback = {}) const noexcept;
 
@@ -233,47 +174,31 @@ public:
   [[nodiscard]] array *try_array() noexcept;
   [[nodiscard]] object *try_object() noexcept;
 
-  // Array and object shape
-
-  /// Elements of an array, members of an object, 0 for anything else.
   [[nodiscard]] usize size() const noexcept;
   [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
-  /// Element @p i of an array. Precondition: is_array() and i < size().
   [[nodiscard]] const value &operator[](usize i) const noexcept;
   [[nodiscard]] value &operator[](usize i) noexcept;
 
-  /// Member @p key of an object, or an immutable null when absent or when this
-  /// is not an object. Never inserts.
   [[nodiscard]] const value &operator[](string_view key) const noexcept;
 
-  /// Member @p key, inserting a null one if absent. Precondition: is_object()
-  /// or is_null() (a null value becomes an empty object).
   [[nodiscard]] value &operator[](string_view key);
 
   [[nodiscard]] bool contains(string_view key) const noexcept;
   [[nodiscard]] const value *find(string_view key) const noexcept;
   [[nodiscard]] value *find(string_view key) noexcept;
 
-  /// Reads member @p key into @p out through nx::json::serializer<T>.
-  /// @return false when the member is absent or has an incompatible type.
   template <typename T> bool get_to(string_view key, T &out) const;
-
-  // Mutation
 
   void push_back(value v);
   value &emplace_back(value v = {});
-  /// Inserts or overwrites member @p key.
   value &insert(string_view key, value v);
   bool erase(string_view key);
   void reserve(usize n);
   void clear() noexcept;
 
-  /// Deep structural and numeric equality. Numbers compare by mathematical
-  /// value across representations; object member order is not significant.
   friend bool operator==(const value &a, const value &b) noexcept;
 
-  /// The shared immutable null returned by failed lookups.
   [[nodiscard]] static const value &null_value() noexcept;
 
 private:
@@ -303,9 +228,6 @@ struct member {
   value val;
 };
 
-/// True when the value holds an integer that T can represent exactly. Reals
-/// never fit an integral T even when whole: a document that said 1.0 asked for
-/// a real, and narrowing silently would make 1.5 decode as 1.
 template <typename T>
   requires std::is_integral_v<T>
 bool value::fits() const noexcept {
@@ -343,64 +265,33 @@ static_assert(sizeof(value) <= sizeof(object) + sizeof(void *),
 static_assert(sizeof(object) == sizeof(array),
               "the array and object alternatives should share a layout");
 
-// Parsing
-
-/// Knobs for parse(). The defaults accept exactly RFC 8259 and nothing more.
 struct parse_options {
-  /// Maximum nesting of arrays and objects. Guards the parser's recursion
-  /// against adversarial input; exceeding it is a clean error, not a crash.
   u32 max_depth = 256;
-  /// Accept `,` before a closing `]` or `}` (JSON5-style convenience).
   bool allow_trailing_commas = false;
-  /// Accept `//` and `/* */` comments, treating them as whitespace.
   bool allow_comments = false;
-  /// Report duplicate_key instead of letting the last occurrence win.
   bool reject_duplicate_keys = false;
   /// Reject input that is not well-formed UTF-8. Off by default because the
   /// parser already rejects everything that would corrupt the document.
   bool validate_utf8 = false;
 };
 
-/// Parses a complete JSON document. @p text is not retained.
 [[nodiscard]] result<value> parse(string_view text,
                                   const parse_options &options = {});
 
-// Writing
-
-/// Knobs for write(). The default is the compact form.
 struct write_options {
-  /// Spaces of indentation per level; 0 writes the compact single-line form.
   u32 indent = 0;
-  /// Escape every non-ASCII code point as \uXXXX, so the output is pure ASCII.
   bool escape_non_ascii = false;
-  /// Escape '/' as '\/' (only ever needed when embedding JSON in HTML).
   bool escape_forward_slash = false;
   /// Digits after the decimal point; 0 uses the shortest round-trip form.
   u32 real_precision = 0;
 };
 
-/// Serializes @p v and returns the text.
 [[nodiscard]] nx::string write(const value &v,
                                const write_options &options = {});
 
-/// Appends the serialization of @p v to @p out, which is not cleared first.
 void write_to(nx::string &out, const value &v,
               const write_options &options = {});
 
-// Custom type registration
-//
-// Every conversion goes through serializer<T>. Either specialize the trait, or
-// write the two functions beside your own type where ADL finds them:
-//
-//     void to_json(nx::json::value &out, const Vec2 &v);
-//     bool from_json(const nx::json::value &in, Vec2 &out);
-//
-// Both are resolved at compile time and cost the same. Either way to_value<T>,
-// from_value<T>, parse_as<T>, write_as<T> and every container of T start
-// working. from_json returns false on a type mismatch; the top-level entry
-// points turn that into an nx::json::error.
-
-/// Primary template. Unspecialized types fall back to ADL to_json/from_json.
 template <typename T, typename Enable = void> struct serializer;
 
 namespace detail {
@@ -419,14 +310,12 @@ concept has_adl_from = requires(const value &v, T &t) {
   { from_json(v, t) } -> std::same_as<bool>;
 };
 
-} // namespace detail
+}
 
-/// True when T can be converted in both directions.
 template <typename T>
 concept convertible = (detail::has_trait_to<T> || detail::has_adl_to<T>) &&
                       (detail::has_trait_from<T> || detail::has_adl_from<T>);
 
-/// Encodes @p in into @p out.
 template <typename T> void assign(value &out, const T &in) {
   if constexpr (detail::has_trait_to<T>)
     serializer<T>::to_json(out, in);
@@ -438,7 +327,6 @@ template <typename T> void assign(value &out, const T &in) {
   }
 }
 
-/// Decodes @p in into @p out. @return false on a type mismatch.
 template <typename T> [[nodiscard]] bool extract(const value &in, T &out) {
   if constexpr (detail::has_trait_from<T>)
     return serializer<T>::from_json(in, out);
@@ -451,14 +339,12 @@ template <typename T> [[nodiscard]] bool extract(const value &in, T &out) {
   }
 }
 
-/// Builds a value from any registered type.
 template <typename T> [[nodiscard]] value to_value(const T &in) {
   value v;
   assign(v, in);
   return v;
 }
 
-/// Reads any registered type out of a value.
 template <typename T> [[nodiscard]] result<T> from_value(const value &in) {
   T out{};
   if (!extract(in, out))
@@ -466,7 +352,6 @@ template <typename T> [[nodiscard]] result<T> from_value(const value &in) {
   return out;
 }
 
-/// parse() followed by from_value<T>().
 template <typename T>
 [[nodiscard]] result<T> parse_as(string_view text,
                                  const parse_options &options = {}) {
@@ -476,7 +361,6 @@ template <typename T>
   return from_value<T>(*doc);
 }
 
-/// to_value<T>() followed by write().
 template <typename T>
 [[nodiscard]] nx::string write_as(const T &in,
                                   const write_options &options = {}) {
@@ -487,8 +371,6 @@ template <typename T> bool value::get_to(string_view key, T &out) const {
   const value *m = find(key);
   return m != nullptr && extract(*m, out);
 }
-
-// Built-in serializers
 
 template <> struct serializer<value> {
   static void to_json(value &out, const value &in) { out = in; }
@@ -526,7 +408,6 @@ struct serializer<
   }
 };
 
-/// Floating-point types. Any JSON number decodes, including integers.
 template <typename T>
 struct serializer<T, std::enable_if_t<std::is_floating_point_v<T>>> {
   static void to_json(value &out, T in) { out = in; }
@@ -588,7 +469,6 @@ template <typename T> struct serializer<std::optional<T>> {
 
 namespace detail {
 
-/// Shared implementation for any sequence that supports clear/push_back.
 template <typename Container, typename T> struct sequence_serializer {
   static void to_json(value &out, const Container &in) {
     out = value::make_array();
@@ -611,7 +491,6 @@ template <typename Container, typename T> struct sequence_serializer {
   }
 };
 
-/// Shared implementation for any string-keyed map.
 template <typename Map, typename T> struct map_serializer {
   static void to_json(value &out, const Map &in) {
     out = value::make_object();
@@ -635,7 +514,7 @@ template <typename Map, typename T> struct map_serializer {
   }
 };
 
-} // namespace detail
+}
 
 template <typename T, typename A>
 struct serializer<vector<T, A>> : detail::sequence_serializer<vector<T, A>, T> {
@@ -645,9 +524,6 @@ template <typename T, usize N, typename A>
 struct serializer<small_vector<T, N, A>>
     : detail::sequence_serializer<small_vector<T, N, A>, T> {};
 
-/// String-keyed maps become JSON objects. Both of the engine's map types are
-/// supported; any other map works the same way through a one-line derivation
-/// from detail::map_serializer.
 template <typename T, typename C, typename A, typename KC, typename MC>
 struct serializer<flat_map<nx::string, T, C, A, KC, MC>>
     : detail::map_serializer<flat_map<nx::string, T, C, A, KC, MC>, T> {};
@@ -656,7 +532,6 @@ template <typename T, typename H, typename E, typename A>
 struct serializer<flat_hash_map<nx::string, T, H, E, A>>
     : detail::map_serializer<flat_hash_map<nx::string, T, H, E, A>, T> {};
 
-/// Fixed-size arrays map to JSON arrays of exactly that length.
 template <typename T, usize N> struct serializer<T[N]> {
   static void to_json(value &out, const T (&in)[N]) {
     out = value::make_array();
@@ -675,4 +550,4 @@ template <typename T, usize N> struct serializer<T[N]> {
   }
 };
 
-} // namespace nx::json
+}

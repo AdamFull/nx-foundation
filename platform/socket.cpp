@@ -65,8 +65,6 @@ void shut(const u64 handle) {
   return ::ioctlsocket(s, FIONBIO, &on) == 0;
 }
 
-/// True when the call failed only because there was nothing to do, which is
-/// every idle frame and not an error.
 [[nodiscard]] bool would_block() {
   const int e = ::WSAGetLastError();
   return e == WSAEWOULDBLOCK;
@@ -112,17 +110,14 @@ void shut(u64) {}
 
 #endif
 
-} // namespace
+}
 
 namespace {
 
-/// The address family a socket() call wants for this endpoint.
 [[nodiscard]] int af_of(const Family family) {
   return family == Family::V4 ? AF_INET : AF_INET6;
 }
 
-/// Lays an endpoint into the sockaddr the platform calls take. @p len is set to
-/// the size of the variant actually written.
 void fill_sockaddr(const Endpoint &e, sockaddr_storage &ss, socklen_t &len) {
   std::memset(&ss, 0, sizeof(ss));
   if (e.family() == Family::V4) {
@@ -140,8 +135,6 @@ void fill_sockaddr(const Endpoint &e, sockaddr_storage &ss, socklen_t &len) {
   }
 }
 
-/// The reverse: what accept/recvfrom/getsockname handed back. An invalid
-/// Endpoint for a family this layer does not carry.
 [[nodiscard]] Endpoint endpoint_from(const sockaddr *sa) {
   if (sa->sa_family == AF_INET) {
     const auto *a = reinterpret_cast<const sockaddr_in *>(sa);
@@ -170,7 +163,7 @@ void fill_sockaddr(const Endpoint &e, sockaddr_storage &ss, socklen_t &len) {
   return static_cast<u16>(value);
 }
 
-} // namespace
+}
 
 Endpoint Endpoint::v4(const u8 (&addr)[4], const u16 port) noexcept {
   Endpoint e;
@@ -219,8 +212,6 @@ std::optional<Endpoint> Endpoint::parse(const nx::string_view text) {
   if (text.empty())
     return std::nullopt;
 
-  // A bracketed IPv6 literal, "[addr]:port": the brackets exist precisely so the
-  // address's own colons are not read as the port separator.
   if (text.front() == '[') {
     const usize rb = text.find(']');
     if (rb == nx::string_view::npos)
@@ -355,8 +346,6 @@ Connection Connection::connect(const u16 port) {
   address.sin_port = ::htons(port);
   address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
 
-  // Blocking for the connect, then not: a loopback connect completes or fails
-  // at once, and asking the caller to spin on EINPROGRESS buys nothing.
   if (::connect(s, reinterpret_cast<const sockaddr *>(&address),
                 sizeof(address)) != 0 ||
       !set_non_blocking(s)) {
@@ -378,9 +367,6 @@ Connection Connection::connect(const Endpoint &to) {
   socklen_t size = 0;
   fill_sockaddr(to, address, size);
 
-  // Blocking for the connect, then not, matching the loopback overload. A
-  // caller that cannot afford the wait to an unreachable host runs this on a
-  // pool thread; the layer stays simple rather than growing a connecting state.
   if (::connect(s, reinterpret_cast<const sockaddr *>(&address), size) != 0 ||
       !set_non_blocking(s)) {
     shut(widen(s));
@@ -409,7 +395,6 @@ isize Connection::read(const std::span<char> into) {
 #endif
   if (got > 0)
     return static_cast<isize>(got);
-  // Zero from recv is the peer closing, which is not "nothing waiting".
   if (got == 0)
     return -1;
   return would_block() ? 0 : -1;
@@ -482,7 +467,6 @@ bool Listener::listen(const u16 port) {
   sockaddr_in address{};
   address.sin_family = AF_INET;
   address.sin_port = ::htons(port);
-  // Loopback, never INADDR_ANY. See the file comment: this port runs code.
   address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
 
   if (::bind(s, reinterpret_cast<const sockaddr *>(&address),
@@ -493,7 +477,6 @@ bool Listener::listen(const u16 port) {
     return false;
   }
 
-  // What the OS actually gave us, which is the point of asking for port 0.
   sockaddr_in bound{};
 #if NX_HAS_WINDOWS_API
   int size = sizeof(bound);
@@ -557,8 +540,6 @@ Connection Listener::accept() {
     return {};
   }
 
-  // A debugger's messages are small and latency matters more than packing
-  // them, so Nagle is off.
   const int on = 1;
   (void)::setsockopt(taken, IPPROTO_TCP, TCP_NODELAY,
                      reinterpret_cast<const char *>(&on), sizeof(on));
@@ -676,8 +657,6 @@ isize UdpSocket::recv_from(const std::span<char> into, Endpoint &from) {
 #else
   const isize got = -1;
 #endif
-  // A datagram of length 0 is a real, delivered packet - not a closed peer the
-  // way a stream's 0 is - so anything non-negative reports its sender.
   if (got >= 0) {
     from = endpoint_from(reinterpret_cast<const sockaddr *>(&address));
     return static_cast<isize>(got);
@@ -685,4 +664,4 @@ isize UdpSocket::recv_from(const std::span<char> into, Endpoint &from) {
   return would_block() ? 0 : -1;
 }
 
-} // namespace nx::net
+}

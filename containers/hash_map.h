@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file hash_map.h
- * @brief Open-addressing hash map (nx::hash_map / nx::flat_hash_map).
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/hash.h"
 
@@ -30,9 +25,9 @@ namespace nx {
 namespace detail {
 
 enum class ctrl_t : i8 {
-  empty = -128,  // 0x80
-  deleted = -2,  // 0xFE
-  sentinel = -1, // 0xFF
+  empty = -128,
+  deleted = -2,
+  sentinel = -1,
 };
 
 constexpr bool ctrl_is_full(ctrl_t c) noexcept {
@@ -217,22 +212,9 @@ struct has_is_transparent<T, std::void_t<typename T::is_transparent>>
   return g;
 }
 
-} // namespace detail
+}
 
-/**
- * @brief SwissTable-style open-addressing hash map.
- *
- * A flat, cache-friendly unordered map with SIMD-accelerated probing. Provides
- * the usual unordered_map-like interface (operator[], insert, try_emplace,
- * find, erase, contains). Element order is unspecified and not stable across
- * rehash. Most users refer to it through the nx::hash_map alias.
- *
- * @tparam Key      Key type.
- * @tparam T        Mapped value type.
- * @tparam Hash     Hash functor for keys.
- * @tparam KeyEqual Equality comparison for keys.
- * @tparam Alloc    Allocator type.
- */
+/// Element order is unspecified and not stable across rehash.
 template <typename Key, typename T, typename Hash = std::hash<Key>,
           typename KeyEqual = std::equal_to<Key>,
           typename Alloc = Allocator<std::pair<const Key, T>>>
@@ -263,8 +245,6 @@ private:
   using ctrl_allocator = typename alloc_traits::template rebind_alloc<ctrl_t>;
   using ctrl_traits = std::allocator_traits<ctrl_allocator>;
 
-  // The second union member exists only so rehashing can move the key (the
-  // public key type is const). The two pair types are layout-compatible.
   union slot_type {
     value_type value;
     std::pair<Key, T> mutable_value;
@@ -1019,10 +999,9 @@ private:
   NX_NO_UNIQUE_ADDRESS KeyEqual m_eq{};
 };
 
-/// Default open-addressing hash map alias; see nx::flat_hash_map.
 template <typename Key, typename T, typename Hasher = std::hash<Key>,
           typename KeyEqual = std::equal_to<Key>,
           typename Alloc = Allocator<std::pair<const Key, T>>>
 using hash_map = flat_hash_map<Key, T, Hasher, KeyEqual, Alloc>;
 
-} // namespace nx
+}

@@ -25,10 +25,7 @@ struct ZipEntry {
   bool is_dir = false;
 };
 
-// Read-only device over a .zip (or an APK). The central directory is indexed
-// once at mount into a map that is immutable afterwards, so lookups need no
-// lock. minizip-ng reader handles are stateful, so concurrent reads draw from a
-// lock-free pool of handles rather than sharing (or locking) one.
+// Read-only device over a .zip (or an APK).
 class ZipDevice final : public Device {
 public:
   ZipDevice(nx::string zip_path, nx::string subdir)
@@ -40,7 +37,6 @@ public:
       mz_zip_reader_delete(&h);
   }
 
-  // Records every entry, relative to archive_subdir.
   bool build_index() {
     void *r = acquire();
     if (!r)
@@ -82,7 +78,7 @@ public:
     void *r = acquire();
     if (!r)
       return err(file_error{io_error::OpenFailed, 0});
-    defer { release(r); }; // every exit below returns the handle to the pool
+    defer { release(r); };
 
     if (mz_zip_reader_locate_entry(r, full.c_str(), 0) != MZ_OK ||
         mz_zip_reader_entry_open(r) != MZ_OK)
@@ -184,7 +180,6 @@ public:
 private:
   static constexpr usize READER_POOL = 8;
 
-  // Opens a new handle if the pool is empty.
   [[nodiscard]] void *acquire() {
     void *h = nullptr;
     if (m_readers.try_pop(h))
@@ -199,7 +194,6 @@ private:
     return h;
   }
 
-  // Deletes the handle if the pool is full, bounding the open-handle count.
   void release(void *h) {
     if (!h)
       return;
@@ -233,15 +227,15 @@ private:
 
   nx::string m_zip_path;
   nx::string m_subdir;
-  nx::hash_map<nx::string, ZipEntry> m_index; // immutable after mount
+  nx::hash_map<nx::string, ZipEntry> m_index;
   nx::mpmc::Queue<void *, READER_POOL> m_readers;
 };
 
-} // namespace
+}
 
 io_result<Device *> make_zip_device(path_view zip_path,
                                     const path_view archive_subdir) {
-  nx::string subdir = canon_rel(archive_subdir); // "" or "assets" etc.
+  nx::string subdir = canon_rel(archive_subdir);
   auto *dev =
       nx::allocate<ZipDevice>(nx::string(zip_path.native()), std::move(subdir));
   if (!dev)
@@ -253,8 +247,6 @@ io_result<Device *> make_zip_device(path_view zip_path,
   }
   return static_cast<Device *>(dev);
 }
-
-// ZipWriter
 
 ZipWriter::~ZipWriter() {
   if (m_handle) {
@@ -287,8 +279,6 @@ io_result<void> ZipWriter::add(const path_view rel, std::span<const u8> data,
   if (data.size() > nx::cast<usize>(0x7fffffff))
     return err(file_error{io_error::FileTooLarge, 0});
 
-  // Canonical names are what the ZIP format wants and what ZipDevice's index is
-  // keyed on: a raw "/foo.txt" would write an entry no reader could ever find.
   const nx::string name = canon_rel(rel);
   if (name.empty())
     return err(file_error{io_error::InvalidArgument, 0});
@@ -317,4 +307,4 @@ io_result<void> ZipWriter::close() {
   return {};
 }
 
-} // namespace nx::vfs
+}
