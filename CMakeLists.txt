@@ -43,6 +43,7 @@ set(NX_FOUNDATION_HEADERS
   strings/utf8_string_view.h
 
   serialization/json.h
+  serialization/json_binary.h
   serialization/json_util.h
   serialization/nva.h
   serialization/reflect_json.h
@@ -87,6 +88,7 @@ set(NX_FOUNDATION_SOURCES
   diagnostics/crash.cpp
   diagnostics/log.cpp
   serialization/json.cpp
+  serialization/json_binary.cpp
   reflection/layout.cpp
   reflection/registry.cpp
   serialization/reflect_json.cpp
