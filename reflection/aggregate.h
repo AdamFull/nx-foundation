@@ -58,7 +58,15 @@ template <class T, usize Total, usize Head> consteval usize count_fields() {
                         Head + slots_at<T, Total, Head, Total - Head - 1>()>();
 }
 
-template <class T> inline const T fake;
+template <class T> union fake_storage {
+  constexpr fake_storage() noexcept : empty{} {}
+  constexpr ~fake_storage() noexcept {}
+
+  char empty;
+  T value;
+};
+
+template <class T> inline const fake_storage<T> fake{};
 
 template <class T, usize I, auto P> consteval string_view signature() {
 #if defined(_MSC_VER) && !defined(__clang__)
@@ -791,7 +799,7 @@ constexpr decltype(auto) tie(T &object, Fn &&fn) {
 namespace detail {
 
 template <class T, usize I> consteval auto field_pointer() {
-  return tie(fake<T>, [](const auto &...fields) {
+  return tie(fake<T>.value, [](const auto &...fields) {
     return std::get<I>(std::make_tuple(&fields...));
   });
 }
