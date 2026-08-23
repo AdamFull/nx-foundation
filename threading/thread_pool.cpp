@@ -44,6 +44,7 @@ thread_pool::thread_pool(const config &cfg) {
     m_workers.push_back(w);
   }
 
+  bool start_failed = false;
   for (worker *w : m_workers) {
     thread_options opts;
     opts.name = w->name;
@@ -53,6 +54,23 @@ thread_pool::thread_pool(const config &cfg) {
       opts.affinity_mask = core.logical_mask;
     }
     w->th = thread([this, w] { worker_loop(*w); }, opts);
+    if (!w->th.joinable()) {
+      start_failed = true;
+      break;
+    }
+  }
+
+  if (start_failed) {
+    m_stop.store(true, std::memory_order_release);
+    m_signal.fetch_add(1, std::memory_order_seq_cst);
+    futex::wake_all(&m_signal);
+    for (worker *w : m_workers)
+      if (w->th.joinable())
+        w->th.join();
+    for (worker *w : m_workers)
+      release(w);
+    m_workers.clear();
+    m_stop.store(false, std::memory_order_relaxed);
   }
 }
 

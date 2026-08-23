@@ -423,9 +423,20 @@ void init(const Config &config) {
                             config.file_max_files));
 
   l.queue = allocate<mpmc::Queue<Record, LOG_QUEUE_CAPACITY>>();
+  if (l.queue == nullptr) {
+    l.running.store(true, std::memory_order_release);
+    return;
+  }
+
   l.stop.store(false, std::memory_order_relaxed);
-  l.running.store(true, std::memory_order_release);
   l.worker = nx::thread([&l] { worker_main(l); }, {.name = "nx-log"});
+  if (!l.worker.joinable()) {
+    release(l.queue);
+    l.queue = nullptr;
+    l.running.store(true, std::memory_order_release);
+    return;
+  }
+  l.running.store(true, std::memory_order_release);
 }
 
 void shutdown_impl(Logger &l) noexcept {
