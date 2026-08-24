@@ -30,7 +30,7 @@ constexpr bool is_dotdot(const string_view s) noexcept {
   return s.size() == 2 && s[0] == '.' && s[1] == '.';
 }
 
-}
+} // namespace detail
 
 constexpr bool is_separator(const char c) noexcept {
   return c == '/' || c == '\\';
@@ -109,8 +109,9 @@ constexpr bool has_extension(const string_view p) noexcept {
   return out;
 }
 
-// An absolute path stays absolute and keeps its root name ("C:"); a relative one stays relative,
-// keeping leading ".." that cannot be resolved without knowing the base.
+// An absolute path stays absolute and keeps its root name ("C:"); a relative
+// one stays relative, keeping leading ".." that cannot be resolved without
+// knowing the base.
 [[nodiscard]] inline string normalize(const string_view p) {
   const string_view root = root_name(p);
   const string_view rest = p.substr(root.size());
@@ -156,10 +157,10 @@ constexpr bool has_extension(const string_view p) noexcept {
   return out;
 }
 
-}
+} // namespace path
 
-/// Non-owning view over a UTF-8 filesystem path. It does not touch the filesystem and copies
-/// nothing; the referenced bytes must outlive the view.
+/// Non-owning view over a UTF-8 filesystem path. It does not touch the
+/// filesystem and copies nothing; the referenced bytes must outlive the view.
 class path_view {
 public:
   constexpr path_view() noexcept = default;
@@ -270,9 +271,42 @@ template <typename T> using io_result = result<T, file_error>;
 [[nodiscard]] io_result<blob<u8>> file_read(path_view path);
 [[nodiscard]] io_result<string> file_read_text(path_view path);
 
+/// Stages a file beside its destination and publishes it with one rename.
+///
+/// Write the complete output to temporary_path(), then call commit(). If the
+/// object is destroyed first, the temporary file is removed and any existing
+/// destination is left untouched. The destination's parent must already
+/// exist. Publication is atomic to readers on supported host filesystems, but
+/// does not imply crash-durable storage flushing.
+class [[nodiscard]] staged_file {
+public:
+  explicit staged_file(path_view destination);
+  ~staged_file();
+
+  staged_file(const staged_file &) = delete;
+  staged_file &operator=(const staged_file &) = delete;
+  staged_file(staged_file &&) = delete;
+  staged_file &operator=(staged_file &&) = delete;
+
+  [[nodiscard]] path_view temporary_path() const noexcept {
+    return m_temporary.view();
+  }
+  [[nodiscard]] io_result<void> commit();
+
+private:
+  string m_destination;
+  string m_temporary;
+};
+
 [[nodiscard]] io_result<void> file_write(path_view path,
                                          std::span<const u8> data);
 [[nodiscard]] io_result<void> file_write_text(path_view path, string_view text);
+/// Atomically replaces the destination after the complete payload is written.
+[[nodiscard]] io_result<void> file_write_atomic(path_view path,
+                                                std::span<const u8> data);
+/// Text equivalent of file_write_atomic().
+[[nodiscard]] io_result<void> file_write_text_atomic(path_view path,
+                                                     string_view text);
 
 [[nodiscard]] io_result<void> create_directories(path_view path);
 
@@ -317,6 +351,8 @@ recursive_directory_entries(path_view root);
 
 [[nodiscard]] io_result<void> copy_file(path_view from, path_view to,
                                         bool overwrite_existing = false);
+/// Copies to a staged sibling before atomically replacing @p to.
+[[nodiscard]] io_result<void> copy_file_atomic(path_view from, path_view to);
 
 [[nodiscard]] io_result<void> copy(path_view from, path_view to,
                                    bool overwrite_existing = false);
@@ -330,9 +366,10 @@ recursive_directory_entries(path_view root);
 
 enum class seek_origin : u8 { begin, current, end };
 
-/// Read-only sequential/seekable byte stream. A minimal cross-platform stream interface over a file
-/// (OS handle) or an in-memory buffer. Obtain one from open_file() / open_memory(); the returned
-/// stream_ptr owns it and closes it on destruction.
+/// Read-only sequential/seekable byte stream. A minimal cross-platform stream
+/// interface over a file (OS handle) or an in-memory buffer. Obtain one from
+/// open_file() / open_memory(); the returned stream_ptr owns it and closes it
+/// on destruction.
 struct stream {
   stream() = default;
   virtual ~stream() = default;
@@ -389,7 +426,7 @@ private:
 /// Wraps an existing read-only buffer (not copied; must outlive the stream).
 [[nodiscard]] io_result<stream_ptr> open_memory(const void *data, usize size);
 
-}
+} // namespace nx::fs
 
 // Formats a path_view as its UTF-8 string representation with no copy.
 template <>

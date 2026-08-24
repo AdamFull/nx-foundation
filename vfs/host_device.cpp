@@ -1,9 +1,5 @@
 #include "core/foundation/vfs/vfs.h"
 
-#include "core/foundation/strings/format.h"
-
-#include <atomic>
-
 namespace nx::vfs {
 
 namespace {
@@ -55,16 +51,7 @@ public:
       if (auto r = nx::fs::create_directories(parent); !r)
         return r;
     }
-    static std::atomic<u64> temp_seq{0};
-    const u64 seq = temp_seq.fetch_add(1, std::memory_order_relaxed);
-    const nx::string tmp = nx::format("{}.{}.nxtmp", path.view(), seq);
-    if (auto r = nx::fs::file_write(tmp.view(), data); !r)
-      return r;
-    if (auto r = nx::fs::rename(tmp.view(), path.view()); !r) {
-      (void)nx::fs::remove(tmp.view());
-      return r;
-    }
-    return {};
+    return nx::fs::file_write_atomic(path.view(), data);
   }
 
   io_result<void> remove(const path_view rel) override {
@@ -85,10 +72,10 @@ private:
   nx::string m_root;
 };
 
-}
+} // namespace
 
 Device *make_host_device(const path_view root) {
   return nx::allocate<HostDevice>(nx::string(root.native()));
 }
 
-}
+} // namespace nx::vfs

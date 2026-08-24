@@ -1,6 +1,9 @@
 #include "core/foundation/platform/filesystem.h"
 #include "core/foundation/core/scope_guard.h"
+#include "core/foundation/platform/os.h"
+#include "core/foundation/strings/format.h"
 
+#include <atomic>
 #include <optional>
 
 #if defined(NX_PLATFORM_WINDOWS)
@@ -26,6 +29,7 @@ namespace {
 
 constexpr usize kChunk = 1u << 16;
 constexpr i32 kMaxCopyDepth = 1024;
+std::atomic<u64> g_staged_file_sequence{0};
 
 struct byte_buf {
   using A = Allocator<u8>;
@@ -255,7 +259,7 @@ i32 open_retry(const char *path, i32 flags, mode_t mode) noexcept {
 
 #endif
 
-}
+} // namespace
 
 #if defined(NX_PLATFORM_WINDOWS)
 
@@ -608,7 +612,7 @@ std::optional<file_error> list_dir_w(string &dir, vector<directory_entry> &out,
   return err;
 }
 
-}
+} // namespace
 
 io_result<void> copy_file(const path_view from, const path_view to,
                           const bool overwrite_existing) {
@@ -1023,7 +1027,7 @@ std::optional<file_error> list_dir_posix(string &dir,
   return err;
 }
 
-}
+} // namespace
 
 io_result<void> copy_file(path_view from, path_view to,
                           bool overwrite_existing) {
@@ -1172,6 +1176,45 @@ io_result<vector<directory_entry>> recursive_directory_entries(path_view root) {
 
 #endif
 
+staged_file::staged_file(const path_view destination)
+    : m_destination(destination.native()) {
+  if (destination.empty())
+    return;
+  const u64 sequence =
+      g_staged_file_sequence.fetch_add(1, std::memory_order_relaxed);
+  m_temporary = nx::format("{}.{}.{}.{}.nxtmp", destination.native(),
+                           nx::os::process_id(), nx::os::ticks_ns(), sequence);
+}
+
+staged_file::~staged_file() {
+  if (!m_temporary.empty())
+    (void)remove(m_temporary.view());
+}
+
+io_result<void> staged_file::commit() {
+  if (m_temporary.empty() || m_destination.empty())
+    return err(file_error{io_error::InvalidArgument, 0});
+  auto published = rename(m_temporary.view(), m_destination.view());
+  if (published)
+    m_temporary.clear();
+  return published;
+}
+
+io_result<void> file_write_atomic(const path_view path,
+                                  const std::span<const u8> data) {
+  staged_file staged(path);
+  if (auto written = file_write(staged.temporary_path(), data); !written)
+    return written;
+  return staged.commit();
+}
+
+io_result<void> copy_file_atomic(const path_view from, const path_view to) {
+  staged_file staged(to);
+  if (auto copied = copy_file(from, staged.temporary_path()); !copied)
+    return copied;
+  return staged.commit();
+}
+
 io_result<string> file_read_text(const path_view path) {
   auto r = file_read(path);
   if (!r)
@@ -1182,6 +1225,13 @@ io_result<string> file_read_text(const path_view path) {
 
 io_result<void> file_write_text(const path_view path, const string_view text) {
   return file_write(
+      path, std::span<const u8>(reinterpret_cast<const u8 *>(text.data()),
+                                text.size()));
+}
+
+io_result<void> file_write_text_atomic(const path_view path,
+                                       const string_view text) {
+  return file_write_atomic(
       path, std::span<const u8>(reinterpret_cast<const u8 *>(text.data()),
                                 text.size()));
 }
@@ -1355,7 +1405,7 @@ private:
 
 #endif
 
-}
+} // namespace
 
 io_result<stream_ptr> open_memory(const void *data, const usize size) {
   if (!data && size)
@@ -1436,4 +1486,4 @@ io_result<string> executable_dir() {
 
 #endif
 
-}
+} // namespace nx::fs
