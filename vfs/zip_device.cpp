@@ -30,6 +30,8 @@ class ZipDevice final : public Device {
 public:
   ZipDevice(nx::string zip_path, nx::string subdir)
       : m_zip_path(std::move(zip_path)), m_subdir(std::move(subdir)) {}
+  ZipDevice(nx::blob<u8> zip_data, nx::string subdir)
+      : m_zip_data(std::move(zip_data)), m_subdir(std::move(subdir)) {}
 
   ~ZipDevice() override {
     void *h = nullptr;
@@ -187,7 +189,12 @@ private:
     h = mz_zip_reader_create();
     if (!h)
       return nullptr;
-    if (mz_zip_reader_open_file(h, m_zip_path.c_str()) != MZ_OK) {
+    const i32 opened = m_zip_data.empty()
+                           ? mz_zip_reader_open_file(h, m_zip_path.c_str())
+                           : mz_zip_reader_open_buffer(
+                                 h, m_zip_data.data(),
+                                 nx::cast<i32>(m_zip_data.size()), 0);
+    if (opened != MZ_OK) {
       mz_zip_reader_delete(&h);
       return nullptr;
     }
@@ -226,6 +233,7 @@ private:
   }
 
   nx::string m_zip_path;
+  nx::blob<u8> m_zip_data;
   nx::string m_subdir;
   nx::hash_map<nx::string, ZipEntry> m_index;
   nx::mpmc::Queue<void *, READER_POOL> m_readers;
@@ -242,6 +250,22 @@ io_result<Device *> make_zip_device(path_view zip_path,
     return err(file_error{io_error::OpenFailed, 0});
   if (!dev->build_index()) {
     nx::logw(log_vfs, "vfs: cannot open zip '{}'", zip_path);
+    nx::release(dev);
+    return err(file_error{io_error::OpenFailed, 0});
+  }
+  return static_cast<Device *>(dev);
+}
+
+io_result<Device *> make_zip_device(nx::blob<u8> zip_data,
+                                    const path_view archive_subdir) {
+  if (zip_data.empty() || zip_data.size() > nx::cast<usize>(0x7fffffff))
+    return err(file_error{io_error::InvalidArgument, 0});
+  nx::string subdir = canon_rel(archive_subdir);
+  auto *dev = nx::allocate<ZipDevice>(std::move(zip_data), std::move(subdir));
+  if (!dev)
+    return err(file_error{io_error::OpenFailed, 0});
+  if (!dev->build_index()) {
+    nx::logw(log_vfs, "vfs: cannot open zip from memory");
     nx::release(dev);
     return err(file_error{io_error::OpenFailed, 0});
   }

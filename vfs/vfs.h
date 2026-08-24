@@ -108,6 +108,8 @@ private:
 
 [[nodiscard]] io_result<Device *>
 make_zip_device(path_view zip_path, path_view archive_subdir = {});
+[[nodiscard]] io_result<Device *>
+make_zip_device(nx::blob<u8> zip_data, path_view archive_subdir = {});
 
 enum class ZipCompression : u16 { Store = 0, Deflate = 8, Zstd = 93 };
 
