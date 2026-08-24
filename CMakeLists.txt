@@ -39,6 +39,7 @@ set(NX_FOUNDATION_HEADERS
   serialization/json.h
   serialization/json_binary.h
   serialization/json_util.h
+  serialization/content_length.h
   serialization/nva.h
   serialization/reflect_json.h
   serialization/reflect_binary.h
@@ -81,6 +82,7 @@ set(NX_FOUNDATION_SOURCES
   diagnostics/log.cpp
   serialization/json.cpp
   serialization/json_binary.cpp
+  serialization/content_length.cpp
   reflection/layout.cpp
   reflection/registry.cpp
   serialization/reflect_json.cpp
