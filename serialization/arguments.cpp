@@ -428,19 +428,21 @@ nx::string Parser::help(const nx::string_view command_name) const {
   nx::vector<std::pair<nx::string, nx::string>> positional_rows;
   nx::vector<std::pair<nx::string, nx::string>> option_rows;
   for (const Command::Argument &argument : selected->m_arguments) {
-    nx::string description = argument.description;
+    nx::string argument_description = argument.description;
     if (!argument.choices.empty()) {
-      if (!description.empty())
-        description += ' ';
-      description += nx::format("(choices: {})", choices_text(argument));
+      if (!argument_description.empty())
+        argument_description += ' ';
+      argument_description +=
+          nx::format("(choices: {})", choices_text(argument));
     }
     if (argument.required && argument.kind != Command::Kind::Positional)
-      description += " (required)";
+      argument_description += " (required)";
     if (argument.kind == Command::Kind::Positional) {
       positional_rows.emplace_back(nx::format("  <{}>", argument.name),
-                                   std::move(description));
+                                   std::move(argument_description));
     } else {
-      option_rows.emplace_back(option_label(argument), std::move(description));
+      option_rows.emplace_back(option_label(argument),
+                               std::move(argument_description));
     }
   }
   if (!positional_rows.empty()) {

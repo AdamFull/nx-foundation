@@ -30,7 +30,8 @@ struct ValueOptions {
   char short_name = '\0';
   bool required = false;
   bool allow_empty = false;
-  std::initializer_list<nx::string_view> choices{};
+  std::initializer_list<nx::string_view> choices =
+      std::initializer_list<nx::string_view>();
 };
 
 /// Configuration for a boolean flag.
@@ -43,7 +44,8 @@ struct FlagOptions {
 struct PositionalOptions {
   bool required = true;
   bool allow_empty = false;
-  std::initializer_list<nx::string_view> choices{};
+  std::initializer_list<nx::string_view> choices =
+      std::initializer_list<nx::string_view>();
 };
 
 namespace detail {
