@@ -1,5 +1,6 @@
 #include "core/foundation/serialization/json_document.h"
 
+#include "core/foundation/serialization/asset_policy.h"
 #include "core/foundation/serialization/json_binary.h"
 #include "core/foundation/serialization/nva.h"
 #include "core/foundation/vfs/vfs.h"
@@ -46,9 +47,13 @@ nx::string document_cooked_path(const nx::string_view source) {
 
 bool load_document_file(const nx::string_view source, value &out) {
   const nx::string cooked_path = document_cooked_path(source);
-  if (const auto cooked = nx::vfs::read(cooked_path.view()))
-    if (decode_document({cooked->data(), cooked->size()}, out))
-      return true;
+  const nx::vfs::FileInfo cooked_info = nx::vfs::stat(cooked_path.view());
+  if (cooked_info.exists) {
+    const auto cooked = nx::vfs::read(cooked_path.view());
+    return cooked && decode_document({cooked->data(), cooked->size()}, out);
+  }
+  if (!nx::asset_policy::can_fallback_to_authored_source(cooked_info.exists))
+    return false;
 
   const auto text = nx::vfs::read_text(source);
   if (!text)

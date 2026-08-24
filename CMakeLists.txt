@@ -39,6 +39,7 @@ set(NX_FOUNDATION_HEADERS
 
   serialization/json.h
   serialization/arguments.h
+  serialization/asset_policy.h
   serialization/json_binary.h
   serialization/json_document.h
   serialization/json_util.h

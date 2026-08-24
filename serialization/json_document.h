@@ -19,10 +19,9 @@ namespace nx::json {
 /// part of the name so different authored formats cannot collide.
 [[nodiscard]] nx::string document_cooked_path(nx::string_view source);
 
-/// Loads the cooked sibling first, then the authored JSON as an editor/source
-/// fallback. A malformed cooked file may therefore be recovered from when the
-/// source is mounted, but a Shipping pack containing only the cooked file fails
-/// closed.
+/// Loads the cooked sibling first. Editor/development builds may use authored
+/// JSON only when the cooked sibling is absent. Shipping builds require the
+/// cooked asset, and a present but unreadable or malformed cook always fails.
 [[nodiscard]] bool load_document_file(nx::string_view source, value &out);
 
 } // namespace nx::json
