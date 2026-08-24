@@ -27,6 +27,7 @@ Most of it is header-only; the platform backends (`threading`, `platform`,
 | `threading/` | Threads, synchronization primitives, and the work-stealing thread pool. |
 | `platform/` | OS-facing services: filesystem, virtual memory, process/memory/time queries. |
 | `diagnostics/` | Logging, assertions, and profiler instrumentation. |
+| `serialization/` | Data interchange helpers, including declarative command-line parsing. |
 | `ecs/` | The entity-component-system registry. |
 
 ## Containers
@@ -87,6 +88,30 @@ auto child = world.create();
 world.set_parent(child, e);
 
 world.destroy(e); // detaches children by default; see destroy_policy
+```
+
+## Command-line parsing
+
+`serialization/arguments.h` provides `nx::cli::Parser`, a typed, declarative
+argument parser for engine executables and tools. It supports root arguments,
+subcommands, long and short options, strict scalar conversion, repeatable
+values, enumerated choices, `--` termination, generated help, and consistent
+diagnostics. Bound values must outlive the parser.
+
+```cpp
+#include "core/foundation/serialization/arguments.h"
+
+nx::string input;
+bool verbose = false;
+
+nx::cli::Parser arguments("tool", "Process an input file.");
+arguments.root()
+    .positional("input", input, "Input file.")
+    .flag("verbose", verbose, "Enable diagnostics.", {.short_name = 'v'});
+
+const nx::cli::ParseResult result = arguments.parse(argc, argv);
+if (result.status == nx::cli::ParseStatus::Help)
+  std::puts(arguments.help(result.command).c_str());
 ```
 
 ## Threading
