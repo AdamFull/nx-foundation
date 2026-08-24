@@ -22,6 +22,7 @@ set(NX_FOUNDATION_HEADERS
   containers/fixed_vector.h
   containers/flat_map.h
   containers/hash_map.h
+  containers/owned_blob_slice.h
   containers/ring_buffer.h
   containers/slot_map.h
   containers/radix_sort.h
