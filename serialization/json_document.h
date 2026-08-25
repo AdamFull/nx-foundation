@@ -6,6 +6,22 @@
 
 namespace nx::json {
 
+/// Parses an authored JSON asset. JSONC line/block comments and trailing
+/// commas are accepted for authoring convenience, then object members whose
+/// names begin with '_' (or equal "$comment") are removed recursively. Those
+/// names are reserved for editor notes and must never enter a cooked payload.
+[[nodiscard]] result<value> parse_asset_document(nx::string_view text);
+
+/// Removes the reserved authoring-only members from an already parsed tree.
+/// Array elements are retained, but objects nested inside them are cleaned.
+void strip_asset_comments(value &root);
+
+/// Parses and rewrites an authored JSON asset as compact strict JSON. Useful
+/// for typed cookers and resource bundles whose existing parsers own the
+/// runtime schema but whose embedded source must not retain comments.
+[[nodiscard]] result<nx::string>
+normalize_asset_document(nx::string_view text);
+
 /// Encodes an arbitrary JSON value tree in the engine's versioned NVA
 /// container. This is the common cooked representation for JSON-backed
 /// configuration assets whose runtime schema remains owned by their consumer.
