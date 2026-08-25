@@ -44,6 +44,7 @@ set(NX_FOUNDATION_HEADERS
   serialization/asset_policy.h
   serialization/json_binary.h
   serialization/json_document.h
+  serialization/resource_bundle.h
   serialization/json_util.h
   serialization/content_length.h
   serialization/nva.h
@@ -94,6 +95,7 @@ set(NX_FOUNDATION_SOURCES
   serialization/asset_contract.cpp
   serialization/json_binary.cpp
   serialization/json_document.cpp
+  serialization/resource_bundle.cpp
   serialization/content_length.cpp
   reflection/layout.cpp
   reflection/registry.cpp

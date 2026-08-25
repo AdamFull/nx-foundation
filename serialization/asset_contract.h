@@ -71,9 +71,10 @@ enum class RegistryError : u8 {
 /// deterministic longest-suffix order.
 class Registry {
 public:
-  [[nodiscard]] RegistryError add(string_view name,
-                                  std::span<const Format> formats,
-                                  Handler *handler = nullptr);
+  [[nodiscard]] RegistryError
+  add(string_view name, std::span<const Format> formats,
+      Handler *handler = nullptr,
+      std::span<const string_view> embedded_sources = {});
   void freeze();
 
   [[nodiscard]] bool frozen() const noexcept { return m_frozen; }
@@ -81,6 +82,9 @@ public:
     return m_handlers.size();
   }
   [[nodiscard]] usize format_count() const noexcept { return m_formats.size(); }
+  [[nodiscard]] usize embedded_source_count() const noexcept {
+    return m_embedded_sources.size();
+  }
   [[nodiscard]] string_view handler_name(Handler handler) const noexcept;
 
   [[nodiscard]] SourceMatch classify_source(string_view path) const noexcept;
@@ -100,8 +104,10 @@ private:
 
   nx::vector<HandlerRecord> m_handlers;
   nx::vector<RegisteredFormat> m_formats;
+  nx::vector<string_view> m_embedded_sources;
   nx::vector<usize> m_source_order;
   nx::vector<usize> m_published_order;
+  nx::vector<usize> m_embedded_order;
   bool m_frozen = false;
 };
 

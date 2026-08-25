@@ -22,7 +22,7 @@ namespace {
 }
 
 inline constexpr string_view AUTHORING_ONLY_SUFFIXES[] = {
-    ".meta", ".aseprite", ".slang", ".spv", ".metallib", ".refl.json"};
+    ".meta", ".aseprite", ".slang", ".spv", ".metallib", ".refl.json", ".md"};
 
 [[nodiscard]] constexpr bool
 reserved_source_suffix(const string_view suffix) noexcept {
@@ -64,9 +64,10 @@ string_view to_string(const RegistryError error) noexcept {
   return "unknown registry error";
 }
 
-RegistryError Registry::add(const string_view name,
-                            const std::span<const Format> formats,
-                            Handler *const handler) {
+RegistryError
+Registry::add(const string_view name, const std::span<const Format> formats,
+              Handler *const handler,
+              const std::span<const string_view> embedded_sources) {
   if (m_frozen)
     return RegistryError::Frozen;
   if (name.empty())
@@ -97,6 +98,9 @@ RegistryError Registry::add(const string_view name,
       if (registered.format.published_suffix == format.published_suffix)
         return RegistryError::DuplicatePublishedSuffix;
     }
+    for (const string_view registered : m_embedded_sources)
+      if (registered == format.source_suffix)
+        return RegistryError::DuplicateSourceSuffix;
     for (usize previous = 0; previous < i; ++previous) {
       if (formats[previous].source_suffix == format.source_suffix)
         return RegistryError::DuplicateSourceSuffix;
@@ -105,10 +109,30 @@ RegistryError Registry::add(const string_view name,
     }
   }
 
+  for (usize i = 0; i < embedded_sources.size(); ++i) {
+    const string_view suffix = embedded_sources[i];
+    if (!valid_suffix(suffix) || reserved_source_suffix(suffix))
+      return RegistryError::InvalidSourceSuffix;
+    for (const RegisteredFormat &registered : m_formats)
+      if (registered.format.source_suffix == suffix)
+        return RegistryError::DuplicateSourceSuffix;
+    for (const string_view registered : m_embedded_sources)
+      if (registered == suffix)
+        return RegistryError::DuplicateSourceSuffix;
+    for (const Format &format : formats)
+      if (format.source_suffix == suffix)
+        return RegistryError::DuplicateSourceSuffix;
+    for (usize previous = 0; previous < i; ++previous)
+      if (embedded_sources[previous] == suffix)
+        return RegistryError::DuplicateSourceSuffix;
+  }
+
   const Handler next = nx::cast<Handler>(m_handlers.size());
   m_handlers.push_back({name});
   for (const Format &format : formats)
     m_formats.push_back({format, next});
+  for (const string_view suffix : embedded_sources)
+    m_embedded_sources.push_back(suffix);
   if (handler != nullptr)
     *handler = next;
   return RegistryError::None;
@@ -119,10 +143,13 @@ void Registry::freeze() {
     return;
   m_source_order.resize(m_formats.size());
   m_published_order.resize(m_formats.size());
+  m_embedded_order.resize(m_embedded_sources.size());
   for (usize i = 0; i < m_formats.size(); ++i) {
     m_source_order[i] = i;
     m_published_order[i] = i;
   }
+  for (usize i = 0; i < m_embedded_sources.size(); ++i)
+    m_embedded_order[i] = i;
   std::sort(m_source_order.begin(), m_source_order.end(),
             [this](const usize lhs, const usize rhs) {
               const string_view a = m_formats[lhs].format.source_suffix;
@@ -133,6 +160,12 @@ void Registry::freeze() {
             [this](const usize lhs, const usize rhs) {
               const string_view a = m_formats[lhs].format.published_suffix;
               const string_view b = m_formats[rhs].format.published_suffix;
+              return a.size() != b.size() ? a.size() > b.size() : a < b;
+            });
+  std::sort(m_embedded_order.begin(), m_embedded_order.end(),
+            [this](const usize lhs, const usize rhs) {
+              const string_view a = m_embedded_sources[lhs];
+              const string_view b = m_embedded_sources[rhs];
               return a.size() != b.size() ? a.size() > b.size() : a < b;
             });
   m_frozen = true;
@@ -157,6 +190,9 @@ SourceMatch Registry::classify_source(const string_view path) const noexcept {
               .handler = registered.handler,
               .format = &registered.format};
   }
+  for (const usize index : m_embedded_order)
+    if (ends_with(path, m_embedded_sources[index]))
+      return {.kind = SourceKind::AuthoringOnly};
   return {};
 }
 
