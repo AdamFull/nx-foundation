@@ -108,6 +108,13 @@ private:
 
 [[nodiscard]] io_result<Device *>
 make_zip_device(path_view zip_path, path_view archive_subdir = {});
+
+using ZipStreamFactory = nx::function<io_result<stream_ptr>()>;
+[[nodiscard]] io_result<Device *>
+make_zip_device(ZipStreamFactory stream_factory, path_view archive_subdir = {});
+
+/// Creates a ZIP device that intentionally owns the complete archive in RAM.
+/// Prefer the path or stream-factory overload for production asset packs.
 [[nodiscard]] io_result<Device *>
 make_zip_device(nx::blob<u8> zip_data, path_view archive_subdir = {});
 
