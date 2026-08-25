@@ -38,6 +38,7 @@ set(NX_FOUNDATION_HEADERS
   strings/utf8_string_view.h
 
   serialization/json.h
+  serialization/number_parse.h
   serialization/arguments.h
   serialization/asset_contract.h
   serialization/asset_policy.h
@@ -88,6 +89,7 @@ set(NX_FOUNDATION_SOURCES
   diagnostics/crash.cpp
   diagnostics/log.cpp
   serialization/json.cpp
+  serialization/number_parse.cpp
   serialization/arguments.cpp
   serialization/asset_contract.cpp
   serialization/json_binary.cpp

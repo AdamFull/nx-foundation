@@ -2,51 +2,18 @@
 
 #include "core/foundation/containers/hash_map.h"
 #include "core/foundation/core/hash.h"
+#include "core/foundation/serialization/number_parse.h"
 
 #include <charconv>
 #include <cmath>
 #include <cstring>
 
-#if !defined(__cpp_lib_to_chars)
-// libc++ (so every Apple toolchain up to at least Xcode 16) still deletes the
-// floating-point overloads of std::from_chars, and only defines this macro
-// once they exist. The integer overloads are unaffected.
-#include <cerrno>
-#include <cstdlib>
-#include <xlocale.h>
-#endif
-
 namespace nx::json {
 namespace {
 
-#if defined(__cpp_lib_to_chars)
-using std::from_chars;
-#else
-std::from_chars_result from_chars(const char *first, const char *last,
-                                  f64 &out) noexcept {
-  char buf[512];
-  const usize len = nx::cast<usize>(last - first);
-  if (len == 0 || len >= sizeof(buf))
-    return {first, std::errc::invalid_argument};
-  std::memcpy(buf, first, len);
-  buf[len] = '\0';
-
-  errno = 0;
-  char *end = nullptr;
-  const double value = ::strtod_l(buf, &end, nullptr);
-  if (end == buf)
-    return {first, std::errc::invalid_argument};
-
-  // On overflow/underflow strtod stores the saturated value (+/-inf or 0),
-  // exactly as from_chars does alongside result_out_of_range.
-  out = nx::cast<f64>(value);
-  return {first + (end - buf),
-          errno == ERANGE ? std::errc::result_out_of_range : std::errc{}};
-}
-#endif
-
-// Character classification Table lookups rather than comparison chains: the scanner touches every
-// byte of the input at least once, so a single indexed load beats four branches.
+// Character classification Table lookups rather than comparison chains: the
+// scanner touches every byte of the input at least once, so a single indexed
+// load beats four branches.
 
 /// Bit 0: JSON whitespace. Bit 1: terminates a bare number literal.
 alignas(64) constexpr u8 kCharClass[256] = {
@@ -549,7 +516,7 @@ private:
     }
 
     f64 d = 0.0;
-    const auto r = from_chars(start, m_cur, d);
+    const auto r = nx::number::parse_f64(start, m_cur, d);
     if (r.ptr != m_cur ||
         (r.ec != std::errc{} && r.ec != std::errc::result_out_of_range))
       return set(error_code::invalid_number, start);
