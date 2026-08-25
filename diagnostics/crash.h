@@ -33,7 +33,7 @@ void clear_note(string_view key);
 
 struct Fatal {
   string_view reason;
-  string_view detail;
+  string_view detail = {};
   string_view kind = "fatal";
 };
 
