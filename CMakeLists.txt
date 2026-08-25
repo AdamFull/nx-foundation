@@ -105,7 +105,7 @@ set(NX_FOUNDATION_SOURCES
 add_library(nx_foundation STATIC ${NX_FOUNDATION_SOURCES} ${NX_FOUNDATION_HEADERS})
 add_library(nx::foundation ALIAS nx_foundation)
 
-target_include_directories(nx_foundation PUBLIC "${CMAKE_SOURCE_DIR}/engine")
+target_include_directories(nx_foundation PUBLIC "${NX_ENGINE_ROOT}/engine")
 
 target_link_libraries(nx_foundation
   PUBLIC nx::mimalloc Tracy::TracyClient
