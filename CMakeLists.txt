@@ -89,6 +89,7 @@ set(NX_FOUNDATION_SOURCES
   diagnostics/log.cpp
   serialization/json.cpp
   serialization/arguments.cpp
+  serialization/asset_contract.cpp
   serialization/json_binary.cpp
   serialization/json_document.cpp
   serialization/content_length.cpp

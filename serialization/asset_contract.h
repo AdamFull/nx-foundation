@@ -1,124 +1,184 @@
 #pragma once
 
+#include "core/foundation/core/foundation.h"
 #include "core/foundation/serialization/nva.h"
-#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/strings/utf8_string_view.h"
 
 #include <optional>
+#include <span>
 
 namespace nx::asset_contract {
 
-/// The production representations understood by the core cooker. A source
-/// path that is Unsupported may remain available in development, but must not
-/// pass a Shipping cook until its owning system supplies a real binary format.
-enum class Kind : u8 {
-  Physics,
-  Atlas,
-  Effect,
-  Tilemap,
-  Tileset,
-  Animation,
-  Graph,
-  Bank,
-  Ui,
-  Scene,
-  JsonDocument,
-  Luau,
-  Audio,
-  Font,
-  Texture,
+using Handler = u32;
+inline constexpr Handler INVALID_HANDLER = ~Handler{0};
+
+enum class SourceKind : u8 {
+  Cookable,
   PreCooked,
   AuthoringOnly,
   Unsupported,
 };
 
+/// One source suffix and the exact versioned container it may publish. The
+/// descriptor and its strings must outlive the Registry they are added to.
 struct Format {
-  Kind kind;
   string_view source_suffix;
   string_view published_suffix;
-  u32 nva_format;
+  u32 nva_format = 0;
+  bool identity_bearing = false;
 };
 
-inline constexpr Format formats[] = {
-    {Kind::Physics, ".nxphysics", ".nxphysics.nxb",
-     nva::fourcc('P', 'H', 'Y', 'S')},
-    {Kind::Atlas, ".nxatlas", ".nxatlas.nxb", nva::fourcc('A', 'T', 'L', 'S')},
-    {Kind::Effect, ".nxfx", ".nxfx.nxb", nva::fourcc('N', 'X', 'F', 'X')},
-    {Kind::Tilemap, ".nxtilemap", ".nxtilemap.nxb",
-     nva::fourcc('N', 'X', 'T', 'M')},
-    {Kind::Tileset, ".nxtileset", ".nxtileset.nxb",
-     nva::fourcc('N', 'X', 'T', 'S')},
-    {Kind::Animation, ".nxanim", ".nxanim.nxb",
-     nva::fourcc('N', 'X', 'A', 'N')},
-    {Kind::Graph, ".nxgraph", ".nxgraph.nxb", nva::fourcc('N', 'X', 'A', 'G')},
-    {Kind::Bank, ".nxbank", ".nxbank.nxb", nva::fourcc('N', 'X', 'B', 'K')},
-    {Kind::Ui, ".nxui", ".nxui.nxb", nva::fourcc('N', 'X', 'U', 'I')},
-    {Kind::Scene, ".nxscene", ".nxscene.nxb", nva::fourcc('N', 'X', 'S', 'C')},
-    {Kind::JsonDocument, ".nxframe", ".nxframe.nxb",
-     nva::fourcc('N', 'X', 'J', 'D')},
-    {Kind::JsonDocument, ".nxschedule", ".nxschedule.nxb",
-     nva::fourcc('N', 'X', 'J', 'D')},
-    {Kind::JsonDocument, ".nxactions", ".nxactions.nxb",
-     nva::fourcc('N', 'X', 'J', 'D')},
-    {Kind::JsonDocument, ".nxloc", ".nxloc.nxb",
-     nva::fourcc('N', 'X', 'J', 'D')},
-    {Kind::JsonDocument, ".nxstyle", ".nxstyle.nxb",
-     nva::fourcc('N', 'X', 'J', 'D')},
-    {Kind::JsonDocument, ".nxmat", ".nxmat.nxb",
-     nva::fourcc('N', 'X', 'J', 'D')},
-    {Kind::Luau, ".luau", ".luau.nxb", nva::fourcc('N', 'X', 'L', 'U')},
-    {Kind::Audio, ".wav", ".wav.nxb", nva::fourcc('N', 'X', 'A', 'U')},
-    {Kind::Audio, ".ogg", ".ogg.nxb", nva::fourcc('N', 'X', 'A', 'U')},
-    {Kind::Audio, ".flac", ".flac.nxb", nva::fourcc('N', 'X', 'A', 'U')},
-    {Kind::Audio, ".opus", ".opus.nxb", nva::fourcc('N', 'X', 'A', 'U')},
-    {Kind::Font, ".ttf", ".ttf.nxb", nva::fourcc('N', 'X', 'F', 'T')},
-    {Kind::Font, ".otf", ".otf.nxb", nva::fourcc('N', 'X', 'F', 'T')},
-    {Kind::Font, ".ttc", ".ttc.nxb", nva::fourcc('N', 'X', 'F', 'T')},
-    {Kind::Font, ".otc", ".otc.nxb", nva::fourcc('N', 'X', 'F', 'T')},
-    {Kind::Texture, ".png", ".png.nxb", nva::fourcc('T', 'E', 'X', ' ')},
-    {Kind::Texture, ".hdr", ".hdr.nxb", nva::fourcc('T', 'E', 'X', ' ')},
+struct Family {
+  string_view name;
+  std::span<const Format> formats;
 };
 
-[[nodiscard]] constexpr bool ends_with(const string_view value,
-                                       const string_view suffix) noexcept {
-  return value.size() >= suffix.size() &&
-         value.substr(value.size() - suffix.size()) == suffix;
-}
+struct SourceMatch {
+  SourceKind kind = SourceKind::Unsupported;
+  Handler handler = INVALID_HANDLER;
+  const Format *format = nullptr;
 
-[[nodiscard]] constexpr bool starts_with(const string_view value,
-                                         const string_view prefix) noexcept {
-  return value.size() >= prefix.size() &&
-         value.substr(0, prefix.size()) == prefix;
-}
+  [[nodiscard]] constexpr bool cookable() const noexcept {
+    return kind == SourceKind::Cookable && handler != INVALID_HANDLER &&
+           format != nullptr;
+  }
+};
 
-[[nodiscard]] constexpr Kind classify_source(const string_view path) noexcept {
-  for (const Format &format : formats)
-    if (ends_with(path, format.source_suffix))
-      return format.kind;
+struct PublishedMatch {
+  Handler handler = INVALID_HANDLER;
+  const Format *format = nullptr;
+};
 
-  if (ends_with(path, ".nxb"))
-    return Kind::PreCooked;
+enum class RegistryError : u8 {
+  None,
+  Frozen,
+  EmptyName,
+  EmptyFormats,
+  EmptySuffix,
+  InvalidSourceSuffix,
+  InvalidPublishedSuffix,
+  InvalidFormat,
+  DuplicateName,
+  DuplicateSourceSuffix,
+  DuplicatePublishedSuffix,
+};
 
-  constexpr string_view authoring_only[] = {".meta", ".aseprite", ".slang",
-                                            ".spv",  ".metallib", ".refl.json"};
-  for (const string_view suffix : authoring_only)
-    if (ends_with(path, suffix))
-      return Kind::AuthoringOnly;
-  return Kind::Unsupported;
-}
+[[nodiscard]] string_view to_string(RegistryError error) noexcept;
 
-/// Returns the exact container format allowed at a published relative path.
-/// Shader outputs are the one core format whose source extension is replaced
-/// by the shader compiler rather than retained before `.nxb`.
-[[nodiscard]] constexpr std::optional<u32>
-published_format(const string_view path) noexcept {
-  const bool shader =
-      starts_with(path, "shaders/") || starts_with(path, "shaders\\");
-  if (shader && ends_with(path, ".nxb"))
-    return nva::fourcc('S', 'H', 'D', 'R');
-  for (const Format &format : formats)
-    if (ends_with(path, format.published_suffix))
-      return format.nva_format;
-  return std::nullopt;
-}
+/// Composes the core and optional-module publication contracts before asset
+/// processing starts. Validation failures do not change the registry;
+/// freeze() makes returned Format pointers stable and switches lookup to
+/// deterministic longest-suffix order.
+class Registry {
+public:
+  [[nodiscard]] RegistryError add(string_view name,
+                                  std::span<const Format> formats,
+                                  Handler *handler = nullptr);
+  void freeze();
+
+  [[nodiscard]] bool frozen() const noexcept { return m_frozen; }
+  [[nodiscard]] usize handler_count() const noexcept {
+    return m_handlers.size();
+  }
+  [[nodiscard]] usize format_count() const noexcept { return m_formats.size(); }
+  [[nodiscard]] string_view handler_name(Handler handler) const noexcept;
+
+  [[nodiscard]] SourceMatch classify_source(string_view path) const noexcept;
+  [[nodiscard]] std::optional<PublishedMatch>
+  find_published(string_view path) const noexcept;
+  [[nodiscard]] std::optional<u32>
+  published_format(string_view path) const noexcept;
+
+private:
+  struct HandlerRecord {
+    string_view name;
+  };
+  struct RegisteredFormat {
+    Format format;
+    Handler handler = INVALID_HANDLER;
+  };
+
+  nx::vector<HandlerRecord> m_handlers;
+  nx::vector<RegisteredFormat> m_formats;
+  nx::vector<usize> m_source_order;
+  nx::vector<usize> m_published_order;
+  bool m_frozen = false;
+};
+
+inline constexpr Format physics_formats[] = {
+    {".nxphysics", ".nxphysics.nxb", nva::fourcc('P', 'H', 'Y', 'S'), true},
+};
+inline constexpr Format atlas_formats[] = {
+    {".nxatlas", ".nxatlas.nxb", nva::fourcc('A', 'T', 'L', 'S'), true},
+};
+inline constexpr Format effect_formats[] = {
+    {".nxfx", ".nxfx.nxb", nva::fourcc('N', 'X', 'F', 'X'), true},
+};
+inline constexpr Format tilemap_formats[] = {
+    {".nxtilemap", ".nxtilemap.nxb", nva::fourcc('N', 'X', 'T', 'M'), true},
+};
+inline constexpr Format tileset_formats[] = {
+    {".nxtileset", ".nxtileset.nxb", nva::fourcc('N', 'X', 'T', 'S'), true},
+};
+inline constexpr Format animation_formats[] = {
+    {".nxanim", ".nxanim.nxb", nva::fourcc('N', 'X', 'A', 'N'), true},
+};
+inline constexpr Format graph_formats[] = {
+    {".nxgraph", ".nxgraph.nxb", nva::fourcc('N', 'X', 'A', 'G'), true},
+};
+inline constexpr Format bank_formats[] = {
+    {".nxbank", ".nxbank.nxb", nva::fourcc('N', 'X', 'B', 'K'), true},
+};
+inline constexpr Format ui_formats[] = {
+    {".nxui", ".nxui.nxb", nva::fourcc('N', 'X', 'U', 'I'), true},
+};
+inline constexpr Format scene_formats[] = {
+    {".nxscene", ".nxscene.nxb", nva::fourcc('N', 'X', 'S', 'C'), true},
+};
+inline constexpr Format json_document_formats[] = {
+    {".nxframe", ".nxframe.nxb", nva::fourcc('N', 'X', 'J', 'D')},
+    {".nxschedule", ".nxschedule.nxb", nva::fourcc('N', 'X', 'J', 'D')},
+    {".nxactions", ".nxactions.nxb", nva::fourcc('N', 'X', 'J', 'D')},
+    {".nxloc", ".nxloc.nxb", nva::fourcc('N', 'X', 'J', 'D')},
+    {".nxstyle", ".nxstyle.nxb", nva::fourcc('N', 'X', 'J', 'D')},
+    {".nxmat", ".nxmat.nxb", nva::fourcc('N', 'X', 'J', 'D'), true},
+};
+inline constexpr Format luau_formats[] = {
+    {".luau", ".luau.nxb", nva::fourcc('N', 'X', 'L', 'U')},
+};
+inline constexpr Format audio_formats[] = {
+    {".wav", ".wav.nxb", nva::fourcc('N', 'X', 'A', 'U'), true},
+    {".ogg", ".ogg.nxb", nva::fourcc('N', 'X', 'A', 'U'), true},
+    {".flac", ".flac.nxb", nva::fourcc('N', 'X', 'A', 'U'), true},
+    {".opus", ".opus.nxb", nva::fourcc('N', 'X', 'A', 'U'), true},
+};
+inline constexpr Format font_formats[] = {
+    {".ttf", ".ttf.nxb", nva::fourcc('N', 'X', 'F', 'T'), true},
+    {".otf", ".otf.nxb", nva::fourcc('N', 'X', 'F', 'T'), true},
+    {".ttc", ".ttc.nxb", nva::fourcc('N', 'X', 'F', 'T'), true},
+    {".otc", ".otc.nxb", nva::fourcc('N', 'X', 'F', 'T'), true},
+};
+inline constexpr Format texture_formats[] = {
+    {".png", ".png.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
+    {".hdr", ".hdr.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
+};
+
+inline constexpr Family core_families[] = {
+    {"physics", physics_formats},
+    {"atlas", atlas_formats},
+    {"effect", effect_formats},
+    {"tilemap", tilemap_formats},
+    {"tileset", tileset_formats},
+    {"animation", animation_formats},
+    {"graph", graph_formats},
+    {"bank", bank_formats},
+    {"ui", ui_formats},
+    {"scene", scene_formats},
+    {"json-document", json_document_formats},
+    {"luau", luau_formats},
+    {"audio", audio_formats},
+    {"font", font_formats},
+    {"texture", texture_formats},
+};
 
 } // namespace nx::asset_contract
