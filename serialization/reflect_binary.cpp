@@ -1,5 +1,7 @@
 #include "core/foundation/serialization/reflect_binary.h"
 
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/core/hash.h"
 #include "core/foundation/strings/utf8_string.h"
 
 #include <cstring>
@@ -9,6 +11,78 @@ namespace {
 
 inline constexpr u32 MAX_READ_DEPTH = 128;
 inline constexpr u32 MAX_ZERO_WIDTH_SEQUENCE_ITEMS = 4096;
+
+void fold_text(nx::fnv1a64 &hash, const nx::string_view text) noexcept {
+  hash.combine_bytes(text.data(), text.size());
+  hash.combine(u8{0});
+}
+
+void fold_schema(nx::fnv1a64 &hash, const type_info &type,
+                 nx::small_vector<const type_info *, 16> &stack) noexcept {
+  hash.combine(nx::cast<u8>(type.kind));
+
+  for (usize i = 0; i < stack.size(); ++i) {
+    if (stack[i] != &type)
+      continue;
+    hash.combine(u8{0xff});
+    hash.combine(nx::cast<u32>(i));
+    return;
+  }
+
+  switch (type.kind) {
+  case type_kind::integer:
+  case type_kind::unsigned_integer:
+  case type_kind::floating:
+    hash.combine(type.size);
+    break;
+  case type_kind::floats:
+    hash.combine(type.components());
+    break;
+  case type_kind::enumeration:
+    if (type.enumeration == nullptr)
+      break;
+    hash.combine(type.enumeration->is_signed);
+    hash.combine(nx::cast<u32>(type.enumeration->entries.size()));
+    for (const enum_spelling &entry : type.enumeration->entries) {
+      hash.combine(entry.value);
+      fold_text(hash, entry.name);
+    }
+    break;
+  case type_kind::aggregate: {
+    stack.push_back(&type);
+    u32 fields = 0;
+    for (const field_info &field : type.fields)
+      if (field.serialised() && field.type != nullptr &&
+          field.type->kind != type_kind::opaque)
+        ++fields;
+    hash.combine(fields);
+    for (const field_info &field : type.fields) {
+      if (!field.serialised() || field.type == nullptr ||
+          field.type->kind == type_kind::opaque)
+        continue;
+      fold_text(hash, field.name);
+      fold_schema(hash, *field.type, stack);
+    }
+    stack.pop_back();
+    break;
+  }
+  case type_kind::sequence:
+    if (type.sequence == nullptr || type.sequence->element == nullptr)
+      break;
+    hash.combine(type.sequence->fixed);
+    if (type.sequence->fixed && type.sequence->element->size != 0)
+      hash.combine(type.size / type.sequence->element->size);
+    stack.push_back(&type);
+    fold_schema(hash, *type.sequence->element, stack);
+    stack.pop_back();
+    break;
+  case type_kind::opaque:
+  case type_kind::boolean:
+  case type_kind::string:
+  case type_kind::id:
+    break;
+  }
+}
 
 // A field is a byte offset into a struct this code knows nothing about, so it
 // is reached through memcpy rather than a cast - it is not reliably aligned for
@@ -238,6 +312,14 @@ void write_one(const type_info &t, const void *p, nx::nva::Writer &w) {
 }
 
 } // namespace
+
+u64 binary_schema_digest(const type_info &type) noexcept {
+  nx::fnv1a64 hash;
+  fold_text(hash, "nx.reflect.binary.v1");
+  nx::small_vector<const type_info *, 16> stack;
+  fold_schema(hash, type, stack);
+  return hash.value();
+}
 
 void write_binary(const type_info &type, const void *object,
                   nx::nva::Writer &w) {

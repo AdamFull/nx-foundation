@@ -5,7 +5,16 @@
 
 namespace nx::reflect {
 
-void write_binary(const type_info &type, const void *object, nx::nva::Writer &w);
+/// Identifies the serialised fields without depending on native offsets or
+/// container sizes, so a host cooker and a target runtime agree.
+[[nodiscard]] u64 binary_schema_digest(const type_info &type) noexcept;
+
+template <class T> [[nodiscard]] u64 binary_schema_digest() noexcept {
+  return binary_schema_digest(type_of<std::remove_cv_t<T>>());
+}
+
+void write_binary(const type_info &type, const void *object,
+                  nx::nva::Writer &w);
 [[nodiscard]] bool read_binary(const type_info &type, nx::nva::Reader &r,
                                void *object);
 
@@ -17,4 +26,4 @@ template <class T>
   return read_binary(type_of<T>(), r, &object);
 }
 
-}
+} // namespace nx::reflect
