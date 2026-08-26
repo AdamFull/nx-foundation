@@ -42,6 +42,7 @@ public:
   }
 
   [[nodiscard]] bool writable() const noexcept override { return true; }
+  [[nodiscard]] bool watchable() const noexcept override { return true; }
 
   io_result<void> write(const path_view rel,
                         const std::span<const u8> data) override {

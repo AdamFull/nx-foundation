@@ -49,6 +49,9 @@ public:
                                              const ListFn &cb) = 0;
 
   [[nodiscard]] virtual bool writable() const noexcept { return false; }
+  /// Whether stat().mtime_ns can be polled to discover source changes. This is
+  /// a capability declaration, not a promise of push notifications.
+  [[nodiscard]] virtual bool watchable() const noexcept { return false; }
   virtual io_result<void> write(const path_view rel,
                                 const std::span<const u8> data) {
     (void)rel;
@@ -84,6 +87,7 @@ public:
                                      const ListFn &cb) override;
 
   [[nodiscard]] bool writable() const noexcept override { return true; }
+  [[nodiscard]] bool watchable() const noexcept override { return true; }
   io_result<void> write(path_view rel, std::span<const u8> data) override;
   io_result<void> remove(path_view rel) override;
   io_result<void> create_directories(path_view /*rel*/) override { return {}; }
@@ -141,6 +145,18 @@ private:
 bool initialize();
 void shutdown();
 [[nodiscard]] bool initialized() noexcept;
+
+/// Provider-agnostic metadata for editor/tool discovery. Host backing paths
+/// stay private: a remote client addresses resources only by virtual path.
+struct MountInfo {
+  i32 priority = 0;
+  nx::string prefix;
+  nx::string provider;
+  bool writable = false;
+  bool watchable = false;
+};
+
+[[nodiscard]] nx::vector<MountInfo> mounts();
 
 /// Mounts @p device at @p virtual_prefix; higher @p priority wins. Takes
 /// ownership even when the call fails, so a factory result can be passed

@@ -111,6 +111,26 @@ bool initialize() {
 
 bool initialized() noexcept { return state().initialized; }
 
+nx::vector<MountInfo> mounts() {
+  State &s = state();
+  nx::scoped_shared_lock lock(s.mounts_lock);
+  nx::vector<MountInfo> out;
+  out.reserve(s.mounts.size());
+  for (const Mount &mount : s.mounts) {
+    out.push_back(MountInfo{.priority = mount.priority,
+                            .prefix = mount.prefix,
+                            .provider = nx::string(mount.device->name()),
+                            .writable = mount.device->writable(),
+                            .watchable = mount.device->watchable()});
+  }
+  std::sort(out.begin(), out.end(), [](const MountInfo &a, const MountInfo &b) {
+    if (a.priority != b.priority)
+      return a.priority > b.priority;
+    return a.prefix < b.prefix;
+  });
+  return out;
+}
+
 void shutdown() {
   State &s = state();
   if (!s.initialized)
