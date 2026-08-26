@@ -16,11 +16,14 @@ namespace nx::json {
 /// Array elements are retained, but objects nested inside them are cleaned.
 void strip_asset_comments(value &root);
 
-/// Parses and rewrites an authored JSON asset as compact strict JSON. Useful
-/// for typed cookers and resource bundles whose existing parsers own the
-/// runtime schema but whose embedded source must not retain comments.
+/// Parses and rewrites an authored JSON asset as strict JSON, compact by
+/// default. Useful for typed cookers and resource bundles whose existing
+/// parsers own the runtime schema but whose embedded source must not retain
+/// comments. Callers integrating a restricted third-party parser may request
+/// formatted output without duplicating the asset-cleaning policy.
 [[nodiscard]] result<nx::string>
-normalize_asset_document(nx::string_view text);
+normalize_asset_document(nx::string_view text,
+                         const write_options &options = {});
 
 /// Encodes an arbitrary JSON value tree in the engine's versioned NVA
 /// container. This is the common cooked representation for JSON-backed

@@ -51,11 +51,12 @@ result<value> parse_asset_document(const nx::string_view text) {
   return parsed;
 }
 
-result<nx::string> normalize_asset_document(const nx::string_view text) {
+result<nx::string> normalize_asset_document(const nx::string_view text,
+                                            const write_options &options) {
   result<value> parsed = parse_asset_document(text);
   if (!parsed)
     return nx::err(parsed.error());
-  return write(parsed.value());
+  return write(parsed.value(), options);
 }
 
 nx::vector<u8> encode_document(const value &root) {
