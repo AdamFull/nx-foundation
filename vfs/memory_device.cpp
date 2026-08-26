@@ -13,7 +13,10 @@ void MemoryDevice::add(const path_view rel, nx::blob<u8> bytes) {
   if (key.empty())
     return;
   nx::scoped_lock lock(m_lock);
-  m_files[std::move(key)] = Entry{std::move(bytes), nx::os::ticks_ns()};
+  const auto old = m_files.find(key);
+  const u64 previous = old != m_files.end() ? old->second.mtime_ns : 0;
+  m_files[std::move(key)] =
+      Entry{std::move(bytes), nx::max(nx::os::ticks_ns(), previous + 1u)};
 }
 
 io_result<nx::blob<u8>> MemoryDevice::read(const path_view rel) {
@@ -105,7 +108,10 @@ io_result<void> MemoryDevice::write(const path_view rel,
     return err(file_error{io_error::InvalidArgument, 0});
   nx::blob<u8> bytes(data);
   nx::scoped_lock lock(m_lock);
-  m_files[std::move(key)] = Entry{std::move(bytes), nx::os::ticks_ns()};
+  const auto old = m_files.find(key);
+  const u64 previous = old != m_files.end() ? old->second.mtime_ns : 0;
+  m_files[std::move(key)] =
+      Entry{std::move(bytes), nx::max(nx::os::ticks_ns(), previous + 1u)};
   return {};
 }
 
