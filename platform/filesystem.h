@@ -363,6 +363,9 @@ recursive_directory_entries(path_view root);
 [[nodiscard]] io_result<void> remove_all(path_view path);
 
 [[nodiscard]] io_result<string> executable_dir();
+/// Returns the platform-standard per-user data directory for an nx2d
+/// application. The directory is not created by this function.
+[[nodiscard]] io_result<string> application_data_dir(string_view application);
 
 enum class seek_origin : u8 { begin, current, end };
 

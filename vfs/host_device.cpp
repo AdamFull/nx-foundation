@@ -6,7 +6,8 @@ namespace {
 
 class HostDevice final : public Device {
 public:
-  explicit HostDevice(nx::string root) : m_root(std::move(root)) {}
+  HostDevice(nx::string root, const HostDeviceAccess access)
+      : m_root(std::move(root)), m_access(access) {}
 
   [[nodiscard]] io_result<nx::blob<u8>> read(const path_view rel) override {
     return nx::fs::file_read(full(rel));
@@ -41,7 +42,9 @@ public:
     return {};
   }
 
-  [[nodiscard]] bool writable() const noexcept override { return true; }
+  [[nodiscard]] bool writable() const noexcept override {
+    return m_access == HostDeviceAccess::ReadWrite;
+  }
   [[nodiscard]] bool watchable() const noexcept override { return true; }
 
   io_result<void> write(const path_view rel,
@@ -71,12 +74,13 @@ private:
   }
 
   nx::string m_root;
+  HostDeviceAccess m_access = HostDeviceAccess::ReadWrite;
 };
 
 } // namespace
 
-Device *make_host_device(const path_view root) {
-  return nx::allocate<HostDevice>(nx::string(root.native()));
+Device *make_host_device(const path_view root, const HostDeviceAccess access) {
+  return nx::allocate<HostDevice>(nx::string(root.native()), access);
 }
 
 } // namespace nx::vfs

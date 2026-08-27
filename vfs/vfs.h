@@ -106,7 +106,11 @@ private:
 
 // Device factories (ownership passes to mount())
 
-[[nodiscard]] Device *make_host_device(path_view root);
+enum class HostDeviceAccess : u8 { ReadOnly, ReadWrite };
+
+[[nodiscard]] Device *
+make_host_device(path_view root,
+                 HostDeviceAccess access = HostDeviceAccess::ReadWrite);
 
 [[nodiscard]] MemoryDevice *make_memory_device();
 

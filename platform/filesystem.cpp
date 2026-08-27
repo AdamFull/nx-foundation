@@ -7,6 +7,7 @@
 #include <optional>
 
 #if defined(NX_PLATFORM_WINDOWS)
+#include <shlobj.h>
 #include <windows.h>
 #elif defined(NX_PLATFORM_POSIX)
 #include <cerrno>
@@ -1449,6 +1450,31 @@ io_result<string> executable_dir() {
   return string(path::parent_path(full.view()));
 }
 
+io_result<string> application_data_dir(const string_view application) {
+  if (application.empty() || application == "." || application == "..")
+    return err(file_error{io_error::InvalidArgument, 0});
+  for (const char value : application) {
+    const u8 c = nx::cast<u8>(value);
+    if (c < 0x20u || c == '/' || c == '\\' || c == ':')
+      return err(file_error{io_error::InvalidArgument, 0});
+  }
+
+  PWSTR known = nullptr;
+  const HRESULT result = ::SHGetKnownFolderPath(
+      FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &known);
+  if (FAILED(result) || known == nullptr)
+    return err(file_error{io_error::Unknown, nx::cast<i32>(result)});
+
+  string base;
+  const bool converted =
+      append_wide_utf8(base, known, nx::cast<i32>(::lstrlenW(known)));
+  ::CoTaskMemFree(known);
+  if (!converted || base.empty())
+    return err(file_error{io_error::Unknown, 0});
+
+  return path::join(path::join(base.view(), "nx2d"), application);
+}
+
 #elif defined(NX_PLATFORM_POSIX)
 
 io_result<stream_ptr> open_file(const path_view path) {
@@ -1482,6 +1508,35 @@ io_result<string> executable_dir() {
     return err(map_errno(io_error::Unknown));
   return string(path::parent_path(string_view(buf, nx::cast<usize>(n))));
 #endif
+}
+
+io_result<string> application_data_dir(const string_view application) {
+  if (application.empty() || application == "." || application == "..")
+    return err(file_error{io_error::InvalidArgument, 0});
+  for (const char value : application) {
+    const u8 c = nx::cast<u8>(value);
+    if (c < 0x20u || c == '/' || c == '\\' || c == ':')
+      return err(file_error{io_error::InvalidArgument, 0});
+  }
+
+#if defined(NX_PLATFORM_LINUX)
+  if (const char *const xdg = ::getenv("XDG_DATA_HOME");
+      xdg != nullptr && xdg[0] != '\0' && path::is_absolute(xdg))
+    return path::join(path::join(xdg, "nx2d"), application);
+#endif
+
+  const char *const home = ::getenv("HOME");
+  if (home == nullptr || home[0] == '\0' || !path::is_absolute(home))
+    return err(file_error{io_error::NotFound, 0});
+
+#if defined(NX_PLATFORM_MACOS)
+  const string base = path::join(home, "Library/Application Support");
+#elif defined(NX_PLATFORM_LINUX)
+  const string base = path::join(home, ".local/share");
+#else
+  const string base(home);
+#endif
+  return path::join(path::join(base.view(), "nx2d"), application);
 }
 
 #endif

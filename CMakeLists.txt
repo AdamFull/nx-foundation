@@ -112,7 +112,8 @@ target_link_libraries(nx_foundation
   PRIVATE nx::compile_options nx::minizip)
 
 if(WIN32)
-  target_link_libraries(nx_foundation PRIVATE Synchronization Psapi ws2_32 Dbghelp)
+  target_link_libraries(nx_foundation PRIVATE
+    Synchronization Psapi ws2_32 Dbghelp Shell32 Ole32)
 elseif(ANDROID)
   target_link_libraries(nx_foundation PRIVATE log)
 elseif(UNIX)
