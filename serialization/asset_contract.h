@@ -142,6 +142,7 @@ inline constexpr Format scene_formats[] = {
     {".nxscene", ".nxscene.nxb", nva::fourcc('N', 'X', 'S', 'C'), true},
 };
 inline constexpr Format json_document_formats[] = {
+    {".nxdoc", ".nxdoc.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxframe", ".nxframe.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxschedule", ".nxschedule.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxactions", ".nxactions.nxb", nva::fourcc('N', 'X', 'J', 'D')},
