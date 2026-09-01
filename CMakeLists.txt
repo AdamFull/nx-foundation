@@ -9,6 +9,7 @@ set(NX_FOUNDATION_HEADERS
   core/result.h
   core/scope_guard.h
   core/time.h
+  core/tween.h
   core/type_index.h
 
   reflection/aggregate.h
