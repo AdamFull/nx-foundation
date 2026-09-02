@@ -1,6 +1,7 @@
 #include "core/foundation/vfs/vfs_internal.h"
 
 #include "core/foundation/containers/slot_map.h"
+#include "core/foundation/core/hash.h"
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"
@@ -265,6 +266,24 @@ FileInfo stat(const path_view vpath) {
 }
 
 bool exists(const path_view vpath) { return stat(vpath).exists; }
+
+u64 file_generation(const path_view vpath, const FileInfo &info) noexcept {
+  return nx::fnv1a64()
+      .combine_all(nx::hash_fnv1a64(vpath.native()), info.mtime_ns, info.size,
+                   info.exists ? 1u : 0u, info.is_directory ? 1u : 0u)
+      .value();
+}
+
+u64 file_generation(const path_view vpath) noexcept {
+  return file_generation(vpath, stat(vpath));
+}
+
+u64 files_generation(const std::span<const nx::string> vpaths) noexcept {
+  nx::fnv1a64 hash;
+  for (const nx::string &path : vpaths)
+    hash.combine(file_generation(path.view()));
+  return hash.value();
+}
 
 io_result<nx::vector<DirEntry>> list(path_view vdir) {
   NX_PROFILE_ZONE("vfs::list");

@@ -176,6 +176,15 @@ void unmount_all();
 [[nodiscard]] bool exists(path_view vpath);
 [[nodiscard]] io_result<nx::vector<DirEntry>> list(path_view vdir);
 
+/// Stable hot-reload generation from a virtual path and its observable file
+/// metadata. Centralising this avoids each subsystem growing its own hash
+/// constants and subtly different missing-file handling.
+[[nodiscard]] u64 file_generation(path_view vpath,
+                                  const FileInfo &info) noexcept;
+[[nodiscard]] u64 file_generation(path_view vpath) noexcept;
+[[nodiscard]] u64
+files_generation(std::span<const nx::string> vpaths) noexcept;
+
 io_result<void> write(path_view vpath, std::span<const u8> data);
 io_result<void> write_text(path_view vpath, nx::string_view text);
 io_result<void> remove(path_view vpath);
