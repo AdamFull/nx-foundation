@@ -117,6 +117,10 @@ inline constexpr Format physics_formats[] = {
 inline constexpr Format atlas_formats[] = {
     {".nxatlas", ".nxatlas.nxb", nva::fourcc('A', 'T', 'L', 'S'), true},
 };
+inline constexpr Format generated_atlas_formats[] = {
+    {".nxatlaspack", ".nxatlaspack.nxb",
+     nva::fourcc('A', 'T', 'L', 'S'), true},
+};
 inline constexpr Format effect_formats[] = {
     {".nxfx", ".nxfx.nxb", nva::fourcc('N', 'X', 'F', 'X'), true},
 };
@@ -177,6 +181,7 @@ inline constexpr Format texture_formats[] = {
 inline constexpr Family core_families[] = {
     {"physics", physics_formats},
     {"atlas", atlas_formats},
+    {"generated-atlas", generated_atlas_formats},
     {"effect", effect_formats},
     {"tilemap", tilemap_formats},
     {"tileset", tileset_formats},
