@@ -141,6 +141,9 @@ inline constexpr Format ui_formats[] = {
 inline constexpr Format scene_formats[] = {
     {".nxscene", ".nxscene.nxb", nva::fourcc('N', 'X', 'S', 'C'), true},
 };
+inline constexpr Format paper_doll_formats[] = {
+    {".nxpdoll", ".nxpdoll.nxb", nva::fourcc('N', 'X', 'J', 'D'), true},
+};
 inline constexpr Format json_document_formats[] = {
     {".nxdoc", ".nxdoc.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxframe", ".nxframe.nxb", nva::fourcc('N', 'X', 'J', 'D')},
@@ -148,7 +151,6 @@ inline constexpr Format json_document_formats[] = {
     {".nxactions", ".nxactions.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxloc", ".nxloc.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxstyle", ".nxstyle.nxb", nva::fourcc('N', 'X', 'J', 'D')},
-    {".nxpdoll", ".nxpdoll.nxb", nva::fourcc('N', 'X', 'J', 'D'), true},
     {".nxmat", ".nxmat.nxb", nva::fourcc('N', 'X', 'J', 'D'), true},
 };
 inline constexpr Format luau_formats[] = {
@@ -183,6 +185,7 @@ inline constexpr Family core_families[] = {
     {"bank", bank_formats},
     {"ui", ui_formats},
     {"scene", scene_formats},
+    {"paper-doll", paper_doll_formats},
     {"json-document", json_document_formats},
     {"luau", luau_formats},
     {"audio", audio_formats},

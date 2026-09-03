@@ -96,6 +96,16 @@ constexpr bool has_extension(const string_view p) noexcept {
   return !extension(p).empty();
 }
 
+/// Returns true when a normalized path is the normalized root itself or a
+/// descendant separated by a complete path component. This deliberately does
+/// not treat `root-other` as a child of `root`.
+constexpr bool is_within(const string_view p,
+                         const string_view root) noexcept {
+  return !root.empty() && p.size() >= root.size() &&
+         p.substr(0, root.size()) == root &&
+         (p.size() == root.size() || is_separator(p[root.size()]));
+}
+
 [[nodiscard]] inline string join(const string_view base,
                                  const string_view tail) {
   if (tail.empty())
