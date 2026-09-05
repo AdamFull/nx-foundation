@@ -158,7 +158,7 @@ MountId mount(const path_view virtual_prefix, Device *device, i32 priority) {
                                            .order = s.mount_order++,
                                            .prefix = std::move(prefix),
                                            .device = device});
-  nx::logi(log_vfs, "vfs: mounted {} at '{}' (priority {})", device->name(),
+  nx::logd(log_vfs, "vfs: mounted {} at '{}' (priority {})", device->name(),
            s.mounts[id].prefix.view(), priority);
   return id;
 }
