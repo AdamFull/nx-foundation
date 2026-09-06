@@ -19,6 +19,14 @@ enum class Level : u8 {
   Off = 6,
 };
 
+/// Shipping starts quiet unless an application explicitly opts into a more
+/// verbose level. Warnings, errors and critical failures still pass.
+#if defined(NX_BUILD_SHIPPING)
+inline constexpr Level DEFAULT_LEVEL = Level::Warn;
+#else
+inline constexpr Level DEFAULT_LEVEL = Level::Info;
+#endif
+
 /// Max bytes of a single formatted message (longer messages are truncated).
 inline constexpr usize LOG_MESSAGE_CAPACITY = 1024;
 
@@ -81,7 +89,7 @@ void set_level(Category category, Level level);
 const char *level_name(Level level) noexcept;
 
 struct Config {
-  Level level = Level::Info;
+  Level level = DEFAULT_LEVEL;
   bool console = true;
   bool console_color = true;
   bool debugger = true;
@@ -109,7 +117,7 @@ Sink *make_file_sink(string_view path, u64 max_bytes = 8ull << 20,
 Sink *make_android_sink();
 
 namespace detail {
-inline std::atomic<u8> g_global_level{nx::cast<u8>(Level::Info)};
+inline std::atomic<u8> g_global_level{nx::cast<u8>(DEFAULT_LEVEL)};
 
 /// Copies a preformatted, null-terminated message into a Record and enqueues
 /// it (or writes synchronously on overflow / before init()).
