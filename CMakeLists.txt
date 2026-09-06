@@ -66,6 +66,7 @@ set(NX_FOUNDATION_HEADERS
 
   vfs/vfs.h
   vfs/vfs_internal.h
+  vfs/async_io.h
   vfs/pack_manifest.h
 
   diagnostics/crash.h
@@ -86,6 +87,7 @@ set(NX_FOUNDATION_SOURCES
   platform/shared_library.cpp
   platform/socket.cpp
   vfs/vfs.cpp
+  vfs/async_io.cpp
   vfs/pack_manifest.cpp
   vfs/host_device.cpp
   vfs/memory_device.cpp
