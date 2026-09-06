@@ -189,6 +189,139 @@ NX_FORCE_INLINE auto make_inplace_function(R (*fn)(Args...)) {
   return inplace_function<R(Args...), ActualSize>(fn);
 }
 
+template <typename, usize InlineSize = 24> class unique_function;
+
+/// Move-only callable with a small inline buffer. Unlike function, the common
+/// small-lambda path does not allocate; oversized or over-aligned callables
+/// transparently fall back to the engine allocator. This is the ownership
+/// shape needed by queues, where copying a pending operation is both wasteful
+/// and semantically surprising.
+template <typename R, typename... Args, usize InlineSize>
+class unique_function<R(Args...), InlineSize> {
+  static_assert(InlineSize >= sizeof(void *));
+
+  struct Ops {
+    R (*invoke)(void *, Args...);
+    void (*destroy)(void *) noexcept;
+    void (*move)(void *, void *) noexcept;
+  };
+
+  template <typename F> static F *&heap_ptr(void *storage) noexcept {
+    return *std::launder(reinterpret_cast<F **>(storage));
+  }
+
+  template <typename F> static const Ops &inline_ops() noexcept {
+    static const Ops ops{
+        [](void *storage, Args... args) -> R {
+          return (*std::launder(reinterpret_cast<F *>(storage)))(
+              std::forward<Args>(args)...);
+        },
+        [](void *storage) noexcept {
+          std::launder(reinterpret_cast<F *>(storage))->~F();
+        },
+        [](void *dst, void *src) noexcept {
+          F *const from = std::launder(reinterpret_cast<F *>(src));
+          ::new (dst) F(std::move(*from));
+          from->~F();
+        }};
+    return ops;
+  }
+
+  template <typename F> static const Ops &heap_ops() noexcept {
+    static const Ops ops{[](void *storage, Args... args) -> R {
+                           return (*heap_ptr<F>(storage))(
+                               std::forward<Args>(args)...);
+                         },
+                         [](void *storage) noexcept {
+                           if (F *const ptr = heap_ptr<F>(storage)) {
+                             release(ptr);
+                             heap_ptr<F>(storage) = nullptr;
+                           }
+                         },
+                         [](void *dst, void *src) noexcept {
+                           ::new (dst) F *(heap_ptr<F>(src));
+                           heap_ptr<F>(src) = nullptr;
+                         }};
+    return ops;
+  }
+
+public:
+  unique_function() = default;
+
+  template <typename F>
+    requires(!std::is_same_v<std::decay_t<F>, unique_function>)
+  NX_FORCE_INLINE explicit unique_function(F &&fn) {
+    using FType = std::decay_t<F>;
+    static_assert(std::is_invocable_r_v<R, FType &, Args...>);
+
+    constexpr bool fits = sizeof(FType) <= InlineSize &&
+                          alignof(FType) <= alignof(std::max_align_t) &&
+                          std::is_nothrow_move_constructible_v<FType>;
+    if constexpr (fits) {
+      ::new (raw()) FType(std::forward<F>(fn));
+      m_ops = &inline_ops<FType>();
+    } else {
+      FType *const allocated = allocate<FType>(std::forward<F>(fn));
+      if (allocated != nullptr) {
+        ::new (raw()) FType *(allocated);
+        m_ops = &heap_ops<FType>();
+      }
+    }
+  }
+
+  ~unique_function() { reset(); }
+
+  unique_function(const unique_function &) = delete;
+  unique_function &operator=(const unique_function &) = delete;
+
+  NX_FORCE_INLINE unique_function(unique_function &&other) noexcept {
+    move_from(std::move(other));
+  }
+
+  NX_FORCE_INLINE
+  unique_function &operator=(unique_function &&other) noexcept {
+    if (this != &other) {
+      reset();
+      move_from(std::move(other));
+    }
+    return *this;
+  }
+
+  NX_FORCE_INLINE R operator()(Args... args) const {
+    return m_ops->invoke(raw(), std::forward<Args>(args)...);
+  }
+
+  [[nodiscard]] NX_FORCE_INLINE explicit operator bool() const noexcept {
+    return m_ops != nullptr;
+  }
+
+  NX_FORCE_INLINE void reset() noexcept {
+    if (m_ops != nullptr) {
+      m_ops->destroy(raw());
+      m_ops = nullptr;
+    }
+  }
+
+private:
+  NX_FORCE_INLINE void move_from(unique_function &&other) noexcept {
+    if (other.m_ops == nullptr)
+      return;
+    other.m_ops->move(raw(), other.raw());
+    m_ops = other.m_ops;
+    other.m_ops = nullptr;
+  }
+
+  [[nodiscard]] NX_FORCE_INLINE void *raw() const noexcept {
+    return const_cast<std::byte *>(m_storage);
+  }
+
+  // Storage first keeps unique_function<void()> at 32 bytes with the default
+  // 24-byte payload on 64-bit platforms. A pool task plus its group pointer
+  // therefore still fits in one 64-byte queue cell.
+  alignas(std::max_align_t) mutable std::byte m_storage[InlineSize]{};
+  const Ops *m_ops = nullptr;
+};
+
 template <typename> class function;
 
 /// Prefer nx::inplace_function when allocation must be avoided.
