@@ -62,10 +62,57 @@ public:
 
 private:
   template <typename, typename> friend class StagedAssetPipeline;
+  friend class AssetFenceSource;
 
   explicit AssetFence(nx::shared_ptr<detail::AssetFenceState> state) noexcept
       : m_state(std::move(state)) {}
 
+  nx::shared_ptr<detail::AssetFenceState> m_state;
+};
+
+/// Owner-side completion source for dependency work which spans more than one
+/// typed pipeline. The produced fence is immutable to consumers and may be
+/// completed exactly once. This is useful for registry publication plus
+/// follow-up dependencies, where no single worker operation represents the
+/// complete readiness contract.
+class AssetFenceSource {
+public:
+  AssetFenceSource() : m_state(nx::make_shared<detail::AssetFenceState>()) {}
+
+  AssetFenceSource(const AssetFenceSource &) = delete;
+  AssetFenceSource &operator=(const AssetFenceSource &) = delete;
+  AssetFenceSource(AssetFenceSource &&) noexcept = default;
+  AssetFenceSource &operator=(AssetFenceSource &&) noexcept = default;
+
+  [[nodiscard]] bool valid() const noexcept { return m_state != nullptr; }
+  [[nodiscard]] AssetFenceStatus status() const noexcept {
+    return m_state != nullptr
+               ? static_cast<AssetFenceStatus>(
+                     m_state->status.load(std::memory_order_acquire))
+               : AssetFenceStatus::Failed;
+  }
+  [[nodiscard]] bool ready() const noexcept {
+    return status() == AssetFenceStatus::Ready;
+  }
+  [[nodiscard]] bool terminal() const noexcept {
+    return status() != AssetFenceStatus::Pending;
+  }
+  [[nodiscard]] AssetFence fence() const noexcept {
+    return AssetFence(m_state);
+  }
+
+  /// Resolves the pending generation. Pending is not a terminal result and is
+  /// therefore rejected. A second resolver cannot overwrite the first result.
+  [[nodiscard]] bool resolve(const AssetFenceStatus status) noexcept {
+    if (m_state == nullptr || status == AssetFenceStatus::Pending)
+      return false;
+    u32 expected = static_cast<u32>(AssetFenceStatus::Pending);
+    return m_state->status.compare_exchange_strong(
+        expected, static_cast<u32>(status), std::memory_order_acq_rel,
+        std::memory_order_acquire);
+  }
+
+private:
   nx::shared_ptr<detail::AssetFenceState> m_state;
 };
 
