@@ -52,6 +52,7 @@ set(NX_FOUNDATION_HEADERS
   serialization/reflect_json.h
   serialization/reflect_binary.h
 
+  threading/cancellation.h
   threading/sync.h
   threading/thread.h
   threading/thread_pool.h

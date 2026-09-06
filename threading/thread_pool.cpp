@@ -2,6 +2,7 @@
 
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"
+#include "core/foundation/platform/os.h"
 
 #include <cstdio>
 #include <exception>
@@ -14,6 +15,7 @@ struct pool_tls {
   u32 index = 0;
   u32 dispatches = 0;
   u32 steal_cursor = 0;
+  u32 background_depth = 0;
 };
 thread_local pool_tls t_worker;
 } // namespace
@@ -28,7 +30,7 @@ future_continuation *closed_continuations() noexcept {
 
 void future_state_finish(future_state_base *state, const u32 status) noexcept {
   assert(state != nullptr);
-  assert((status == 1 || status == 2) && "invalid future completion status");
+  assert((status >= 1 && status <= 3) && "invalid future completion status");
 
   state->ready.store(status, std::memory_order_release);
   futex::wake_all(&state->ready);
@@ -93,6 +95,8 @@ void task_group::wait() noexcept {
 
 thread_pool::thread_pool(const config &cfg) {
   const cpu::topology_info &topo = cpu::topology();
+  m_collect_statistics = cfg.collect_statistics || cfg.collect_timings;
+  m_collect_timings = cfg.collect_timings;
 
   u32 count = cfg.thread_count;
   if (count == 0)
@@ -139,6 +143,15 @@ thread_pool::thread_pool(const config &cfg) {
     m_workers.clear();
     m_stop.store(false, std::memory_order_relaxed);
   }
+
+  const u32 workers = nx::cast<u32>(m_workers.size());
+  if (workers == 0) {
+    m_background_limit = 0;
+  } else if (cfg.max_background_concurrency == 0) {
+    m_background_limit = workers > 1 ? workers - 1 : 1;
+  } else {
+    m_background_limit = nx::min(cfg.max_background_concurrency, workers);
+  }
 }
 
 thread_pool::~thread_pool() {
@@ -157,7 +170,101 @@ thread_pool::~thread_pool() {
 }
 
 bool thread_pool::is_worker_thread() const noexcept {
+  return t_worker.pool == this && t_worker.index != INVALID_WORKER;
+}
+
+bool thread_pool::is_execution_context() const noexcept {
   return t_worker.pool == this;
+}
+
+namespace {
+template <typename T>
+void update_peak(std::atomic<T> &peak, const T value) noexcept {
+  T observed = peak.load(std::memory_order_relaxed);
+  while (observed < value &&
+         !peak.compare_exchange_weak(observed, value, std::memory_order_relaxed,
+                                     std::memory_order_relaxed)) {
+  }
+}
+} // namespace
+
+thread_pool_statistics thread_pool::statistics() const noexcept {
+  thread_pool_statistics out;
+  out.workers = worker_count();
+  out.background_limit = m_background_limit;
+  out.background_active = m_background_active.load(std::memory_order_relaxed);
+  out.enabled = m_collect_statistics;
+  out.timings_enabled = m_collect_timings;
+  if (!m_collect_statistics)
+    return out;
+
+  for (usize i = 0; i < task_priority_index(task_priority::Count); ++i) {
+    const lane_counters &source = m_counters[i];
+    task_lane_statistics &lane = out.lanes[i];
+    lane.submitted = source.submitted.load(std::memory_order_relaxed);
+    lane.started = source.started.load(std::memory_order_relaxed);
+    lane.completed = source.completed.load(std::memory_order_relaxed);
+    lane.stolen = source.stolen.load(std::memory_order_relaxed);
+    lane.overflowed = source.overflowed.load(std::memory_order_relaxed);
+    lane.execution_ns = source.execution_ns.load(std::memory_order_relaxed);
+    lane.queued = source.queued.load(std::memory_order_relaxed);
+    lane.peak_queued = source.peak_queued.load(std::memory_order_relaxed);
+    lane.active = source.active.load(std::memory_order_relaxed);
+    lane.peak_active = source.peak_active.load(std::memory_order_relaxed);
+  }
+  return out;
+}
+
+void thread_pool::reset_statistics() noexcept {
+  assert(m_unfinished.load(std::memory_order_acquire) == 0 &&
+         "thread-pool statistics may only be reset while idle");
+  if (!m_collect_statistics)
+    return;
+  for (lane_counters &lane : m_counters) {
+    lane.submitted.store(0, std::memory_order_relaxed);
+    lane.started.store(0, std::memory_order_relaxed);
+    lane.completed.store(0, std::memory_order_relaxed);
+    lane.stolen.store(0, std::memory_order_relaxed);
+    lane.overflowed.store(0, std::memory_order_relaxed);
+    lane.execution_ns.store(0, std::memory_order_relaxed);
+    lane.queued.store(0, std::memory_order_relaxed);
+    lane.peak_queued.store(0, std::memory_order_relaxed);
+    lane.active.store(0, std::memory_order_relaxed);
+    lane.peak_active.store(0, std::memory_order_relaxed);
+  }
+}
+
+void thread_pool::record_enqueued(const task_priority priority) noexcept {
+  if (!m_collect_statistics)
+    return;
+  lane_counters &lane = m_counters[task_priority_index(priority)];
+  lane.submitted.fetch_add(1, std::memory_order_relaxed);
+  const u32 queued = lane.queued.fetch_add(1, std::memory_order_relaxed) + 1;
+  update_peak(lane.peak_queued, queued);
+}
+
+void thread_pool::record_started(const task_priority priority,
+                                 const bool stolen) noexcept {
+  if (!m_collect_statistics)
+    return;
+  lane_counters &lane = m_counters[task_priority_index(priority)];
+  lane.queued.fetch_sub(1, std::memory_order_relaxed);
+  lane.started.fetch_add(1, std::memory_order_relaxed);
+  if (stolen)
+    lane.stolen.fetch_add(1, std::memory_order_relaxed);
+  const u32 active = lane.active.fetch_add(1, std::memory_order_relaxed) + 1;
+  update_peak(lane.peak_active, active);
+}
+
+void thread_pool::record_completed(const task_priority priority,
+                                   const u64 execution_ns) noexcept {
+  if (!m_collect_statistics)
+    return;
+  lane_counters &lane = m_counters[task_priority_index(priority)];
+  lane.completed.fetch_add(1, std::memory_order_relaxed);
+  lane.active.fetch_sub(1, std::memory_order_relaxed);
+  if (m_collect_timings)
+    lane.execution_ns.fetch_add(execution_ns, std::memory_order_relaxed);
 }
 
 void thread_pool::submit(task_group &group, detail::task_fn fn) {
@@ -173,31 +280,42 @@ void thread_pool::submit(task_group &group, const task_priority priority,
 }
 
 void thread_pool::enqueue(detail::pool_task &&t) {
-  m_unfinished.fetch_add(1, std::memory_order_relaxed);
-  if (t.group)
-    t.group->m_pending.fetch_add(1, std::memory_order_relaxed);
-
-  // Construction can legitimately end with no workers when the platform
-  // refuses a thread or the worker allocation fails. Running inline is slower,
-  // but it preserves async progress instead of leaving futures pending forever.
-  if (m_workers.empty()) {
-    run_task(t);
-    return;
-  }
-
-  worker *self = t_worker.pool == this ? m_workers[t_worker.index] : nullptr;
   usize priority = static_cast<usize>(t.priority);
   if (priority >= static_cast<usize>(task_priority::Count)) {
     assert(false && "invalid thread-pool task priority");
     t.priority = task_priority::Normal;
     priority = static_cast<usize>(t.priority);
   }
+
+  m_unfinished.fetch_add(1, std::memory_order_relaxed);
+  if (t.group)
+    t.group->m_pending.fetch_add(1, std::memory_order_relaxed);
+  if (t.priority == task_priority::Background)
+    m_background_queued.fetch_add(1, std::memory_order_release);
+  record_enqueued(t.priority);
+
+  // Construction can legitimately end with no workers when the platform
+  // refuses a thread or the worker allocation fails. Running inline is slower,
+  // but it preserves async progress instead of leaving futures pending forever.
+  if (m_workers.empty()) {
+    if (t.priority == task_priority::Background)
+      m_background_queued.fetch_sub(1, std::memory_order_relaxed);
+    record_started(t.priority, false);
+    run_task(t);
+    return;
+  }
+
+  worker *self = t_worker.pool == this && t_worker.index != INVALID_WORKER
+                     ? m_workers[t_worker.index]
+                     : nullptr;
   if (!(self && self->queues[priority].try_push(std::move(t))) &&
       !m_shared_queues[priority].try_push(std::move(t))) {
     overflow_queue &overflow = m_overflow[priority];
     scoped_lock lock(overflow.lock);
     overflow.tasks.push_back(std::move(t));
     overflow.count.fetch_add(1, std::memory_order_release);
+    if (m_collect_statistics)
+      m_counters[priority].overflowed.fetch_add(1, std::memory_order_relaxed);
   }
 
   m_signal.fetch_add(1, std::memory_order_seq_cst);
@@ -205,19 +323,48 @@ void thread_pool::enqueue(detail::pool_task &&t) {
     futex::wake(&m_signal, 1);
 }
 
+bool thread_pool::try_reserve_background() noexcept {
+  u32 active = m_background_active.load(std::memory_order_relaxed);
+  while (active < m_background_limit) {
+    if (m_background_active.compare_exchange_weak(active, active + 1,
+                                                  std::memory_order_acquire,
+                                                  std::memory_order_relaxed))
+      return true;
+  }
+  return false;
+}
+
+void thread_pool::release_background() noexcept {
+  m_background_active.fetch_sub(1, std::memory_order_release);
+  if (m_background_queued.load(std::memory_order_acquire) == 0)
+    return;
+  m_signal.fetch_add(1, std::memory_order_seq_cst);
+  if (m_sleepers.load(std::memory_order_seq_cst) > 0)
+    futex::wake(&m_signal, 1);
+}
+
 bool thread_pool::try_get_priority(detail::pool_task &out, const u32 self_index,
                                    const task_priority priority,
-                                   u32 &steal_cursor) noexcept {
+                                   u32 &steal_cursor, bool &stolen) noexcept {
+  const bool background = priority == task_priority::Background;
+  if (background && m_background_queued.load(std::memory_order_acquire) == 0)
+    return false;
+  const bool nested_background =
+      background && t_worker.pool == this && t_worker.background_depth != 0;
+  if (background && !nested_background && !try_reserve_background())
+    return false;
+
+  bool found = false;
   const usize p = static_cast<usize>(priority);
   if (self_index != INVALID_WORKER &&
-      m_workers[self_index]->queues[p].try_pop(out))
-    return true;
-
-  if (m_shared_queues[p].try_pop(out))
-    return true;
+      m_workers[self_index]->queues[p].try_pop(out)) {
+    found = true;
+  } else if (m_shared_queues[p].try_pop(out)) {
+    found = true;
+  }
 
   overflow_queue &overflow = m_overflow[p];
-  if (overflow.count.load(std::memory_order_acquire) > 0) {
+  if (!found && overflow.count.load(std::memory_order_acquire) > 0) {
     scoped_lock lock(overflow.lock);
     if (overflow.head < overflow.tasks.size()) {
       out = std::move(overflow.tasks[overflow.head++]);
@@ -226,23 +373,34 @@ bool thread_pool::try_get_priority(detail::pool_task &out, const u32 self_index,
         overflow.tasks.clear();
         overflow.head = 0;
       }
-      return true;
+      found = true;
     }
   }
 
   const u32 n = nx::cast<u32>(m_workers.size());
-  if (n != 0) {
+  if (!found && n != 0) {
     const u32 start = steal_cursor++;
     for (u32 i = 0; i < n; ++i) {
       const u32 victim = (start + i) % n;
       if (victim == self_index)
         continue;
-      if (m_workers[victim]->queues[p].try_pop(out))
-        return true;
+      if (m_workers[victim]->queues[p].try_pop(out)) {
+        stolen = true;
+        found = true;
+        break;
+      }
     }
   }
 
-  return false;
+  if (!found) {
+    if (background && !nested_background)
+      m_background_active.fetch_sub(1, std::memory_order_release);
+    return false;
+  }
+  if (background)
+    m_background_queued.fetch_sub(1, std::memory_order_relaxed);
+  out.holds_background_slot = background && !nested_background;
+  return true;
 }
 
 bool thread_pool::try_get_task(detail::pool_task &out, const u32 self_index,
@@ -264,15 +422,33 @@ bool thread_pool::try_get_task(detail::pool_task &out, const u32 self_index,
     order[1] = task_priority::Normal;
     order[2] = task_priority::Background;
   }
-  for (const task_priority priority : order)
-    if (try_get_priority(out, self_index, priority, steal_cursor)) {
+  for (const task_priority priority : order) {
+    bool stolen = false;
+    if (try_get_priority(out, self_index, priority, steal_cursor, stolen)) {
       ++dispatches;
+      record_started(priority, stolen);
       return true;
     }
+  }
   return false;
 }
 
 void thread_pool::run_task(detail::pool_task &t) noexcept {
+  // Waiters may execute work on a non-worker thread. Install an execution
+  // context while the callable runs so nested submissions/waits observe the
+  // correct pool without pretending the helper owns a worker-local queue.
+  thread_pool *const previous_pool = t_worker.pool;
+  const u32 previous_index = t_worker.index;
+  const u32 previous_background_depth = t_worker.background_depth;
+  if (previous_pool != this) {
+    t_worker.pool = this;
+    t_worker.index = INVALID_WORKER;
+    t_worker.background_depth = 0;
+  }
+  if (t.priority == task_priority::Background)
+    ++t_worker.background_depth;
+
+  const u64 started_ns = m_collect_timings ? os::ticks_ns() : 0;
   if (t.fn) {
     try {
       switch (t.priority) {
@@ -292,6 +468,8 @@ void thread_pool::run_task(detail::pool_task &t) noexcept {
         break;
       }
       }
+    } catch (const task_cancelled &) {
+      // Cancellation is an expected terminal state for cooperative work.
     } catch (const std::exception &e) {
       nx::loge("thread pool: unhandled task exception: {}", e.what());
     } catch (...) {
@@ -299,7 +477,23 @@ void thread_pool::run_task(detail::pool_task &t) noexcept {
     }
   }
 
+  const u64 execution_ns = m_collect_timings ? os::ticks_ns() - started_ns : 0;
+
   t.fn = {};
+
+  record_completed(t.priority, execution_ns);
+  if (t.priority == task_priority::Background)
+    --t_worker.background_depth;
+  if (t.holds_background_slot) {
+    t.holds_background_slot = false;
+    release_background();
+  }
+
+  if (previous_pool != this) {
+    t_worker.pool = previous_pool;
+    t_worker.index = previous_index;
+    t_worker.background_depth = previous_background_depth;
+  }
 
   if (task_group *group = t.group) {
     t.group = nullptr;
@@ -311,7 +505,8 @@ void thread_pool::run_task(detail::pool_task &t) noexcept {
 }
 
 bool thread_pool::help_execute_one() noexcept {
-  const bool own_worker = t_worker.pool == this;
+  const bool own_worker =
+      t_worker.pool == this && t_worker.index != INVALID_WORKER;
   const u32 self = own_worker ? t_worker.index : INVALID_WORKER;
   detail::pool_task t;
   u32 &dispatches =
@@ -329,6 +524,7 @@ void thread_pool::worker_loop(worker &w) noexcept {
   t_worker.index = w.index;
   t_worker.dispatches = 0;
   t_worker.steal_cursor = w.steal_cursor;
+  t_worker.background_depth = 0;
   NX_PROFILE_SET_THREAD_NAME(w.name);
 
   detail::pool_task t;
@@ -350,10 +546,11 @@ void thread_pool::worker_loop(worker &w) noexcept {
   t_worker.index = 0;
   t_worker.dispatches = 0;
   t_worker.steal_cursor = 0;
+  t_worker.background_depth = 0;
 }
 
 void thread_pool::wait_idle() noexcept {
-  assert(!is_worker_thread() &&
+  assert(!is_execution_context() &&
          "wait_idle from inside a pool task can never finish; wait on a "
          "task_group instead");
   for (;;) {
@@ -366,4 +563,4 @@ void thread_pool::wait_idle() noexcept {
   }
 }
 
-}
+} // namespace nx

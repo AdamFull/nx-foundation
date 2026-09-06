@@ -120,7 +120,8 @@ if (result.status == nx::cli::ParseStatus::Help)
 | --- | --- | --- |
 | `nx::thread` | `threading/thread.h` | A cross-platform OS thread with name, stack size, affinity and priority set at creation. Joins on destruction. Also `nx::this_thread` (id, yield, sleep, name, affinity, priority). |
 | `nx::cpu` | `threading/thread.h` | CPU topology queries: logical/physical core counts, SMT layout, hybrid P/E efficiency classes, cache hierarchy, NUMA node count. |
-| `nx::thread_pool` | `threading/thread_pool.h` | A work-stealing thread pool with `task_group` batches, `future`-returning `async()`, blocking `parallel_for`, and cooperative waiting (waiters execute queued tasks). |
+| `nx::thread_pool` | `threading/thread_pool.h` | A priority-aware work-stealing pool with bounded background concurrency, `task_group` batches, cancellable futures and continuations, `when_all`/`when_any`, cooperative waiting, and opt-in statistics/timing. |
+| `nx::cancellation_source` / `nx::cancellation_token` | `threading/cancellation.h` | Shared cooperative cancellation for queued and running work. Tokens are cheap to copy and retain their cancellation generation when a source is reset. |
 | `nx::mutex` et al. | `threading/sync.h` | Futex-based synchronization: `spin_lock`, `mutex`, `recursive_mutex`, `cond_var`, `rw_lock` (writer-preferring), `semaphore`, `event`, `barrier`, `once_flag`/`call_once`, and `scoped_lock`/`scoped_shared_lock` guards. 4-8 bytes of state each, kernel wait only under contention. |
 | `nx::futex` | `threading/sync.h` | The raw 32-bit futex wait/wake primitive everything in `sync.h` is built on (WaitOnAddress / `SYS_futex`). |
 

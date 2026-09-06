@@ -3,11 +3,14 @@
 #include "core/foundation/containers/concurrent_queue.h"
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/callable.h"
+#include "core/foundation/threading/cancellation.h"
 #include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread.h"
 
+#include <array>
 #include <atomic>
 #include <exception>
+#include <optional>
 #include <stdexcept>
 
 namespace nx {
@@ -25,6 +28,43 @@ enum class task_priority : u8 {
   Count,
 };
 
+[[nodiscard]] constexpr usize
+task_priority_index(const task_priority priority) noexcept {
+  return static_cast<usize>(priority);
+}
+
+struct task_lane_statistics {
+  u64 submitted = 0;
+  u64 started = 0;
+  u64 completed = 0;
+  u64 stolen = 0;
+  u64 overflowed = 0;
+  u64 execution_ns = 0;
+  u32 queued = 0;
+  u32 peak_queued = 0;
+  u32 active = 0;
+  u32 peak_active = 0;
+};
+
+struct thread_pool_statistics {
+  std::array<task_lane_statistics, static_cast<usize>(task_priority::Count)>
+      lanes{};
+  u32 workers = 0;
+  u32 background_limit = 0;
+  u32 background_active = 0;
+  bool enabled = false;
+  bool timings_enabled = false;
+};
+
+template <typename T> struct when_any_result {
+  usize index = 0;
+  T value;
+};
+
+template <> struct when_any_result<void> {
+  usize index = 0;
+};
+
 namespace detail {
 
 using task_fn = unique_function<void(), 24>;
@@ -33,6 +73,7 @@ struct pool_task {
   task_fn fn;
   task_group *group = nullptr;
   task_priority priority = task_priority::Normal;
+  bool holds_background_slot = false;
 };
 static_assert(sizeof(pool_task) <= 48,
               "pool tasks should fit beside queue metadata in one cache line");
@@ -45,7 +86,7 @@ struct future_continuation {
 };
 
 struct future_state_base {
-  // 0 pending, 1 value/void ready, 2 failed with error populated.
+  // 0 pending, 1 value/void ready, 2 failed, 3 cancelled.
   std::atomic<u32> ready{0};
   std::atomic<u32> refs{2};
   thread_pool *pool = nullptr;
@@ -85,7 +126,22 @@ template <typename F> struct continuation_result<void, F> {
 
 template <typename T, typename F>
 using continuation_result_t = typename continuation_result<T, F>::type;
-}
+
+template <typename F,
+          bool WithToken = std::is_invocable_v<F &, cancellation_token>>
+struct cancellable_result;
+
+template <typename F> struct cancellable_result<F, true> {
+  using type = std::invoke_result_t<F &, cancellation_token>;
+};
+
+template <typename F> struct cancellable_result<F, false> {
+  using type = std::invoke_result_t<F &>;
+};
+
+template <typename F>
+using cancellable_result_t = typename cancellable_result<F>::type;
+} // namespace detail
 
 /// Completion counter for a batch of tasks: submit any number against a group,
 /// then wait(). Reusable afterwards. A group is bound to the first pool it is
@@ -113,7 +169,8 @@ private:
   thread_pool *m_pool = nullptr;
 };
 
-/// Move-only. get() waits (helping the pool) and moves the result out; once per valid future.
+/// Move-only. get() waits (helping the pool) and moves the result out; once per
+/// valid future.
 template <typename T> class future {
 public:
   future() = default;
@@ -141,6 +198,10 @@ public:
 
   [[nodiscard]] bool failed() const noexcept {
     return m_state && m_state->ready.load(std::memory_order_acquire) == 2;
+  }
+
+  [[nodiscard]] bool cancelled() const noexcept {
+    return m_state && m_state->ready.load(std::memory_order_acquire) == 3;
   }
 
   void wait() noexcept;
@@ -187,6 +248,18 @@ public:
     const char *name = "nx-worker";
     bool pin_threads = false;
     thread_priority priority = thread_priority::Normal;
+    /// Zero reserves one worker from background work when possible. An
+    /// explicit value is clamped to the number of workers.
+    u32 max_background_concurrency = 0;
+    /// Relaxed counters are enabled by default in debug and opt-in in release.
+#if defined(NX_DEBUG)
+    bool collect_statistics = true;
+#else
+    bool collect_statistics = false;
+#endif
+    /// Adds a monotonic clock read around every task. Keep disabled unless
+    /// profiling aggregate execution time.
+    bool collect_timings = false;
   };
 
   thread_pool() : thread_pool(config{}) {}
@@ -204,6 +277,10 @@ public:
   }
 
   [[nodiscard]] bool is_worker_thread() const noexcept;
+
+  [[nodiscard]] thread_pool_statistics statistics() const noexcept;
+  /// Reset is only valid while the pool is idle.
+  void reset_statistics() noexcept;
 
   void submit(detail::task_fn fn) {
     enqueue({std::move(fn), nullptr, task_priority::Normal});
@@ -240,6 +317,47 @@ public:
     submit(group, priority, detail::task_fn(std::forward<F>(fn)));
   }
 
+  template <typename F> void submit(cancellation_token token, F &&fn) {
+    submit(task_priority::Normal, std::move(token), std::forward<F>(fn));
+  }
+
+  template <typename F>
+  void submit(task_priority priority, cancellation_token token, F &&fn) {
+    using Fn = std::decay_t<F>;
+    static_assert(std::is_invocable_v<Fn &> ||
+                  std::is_invocable_v<Fn &, cancellation_token>);
+    submit(priority, [token = std::move(token),
+                      callable = Fn(std::forward<F>(fn))]() mutable {
+      token.throw_if_requested();
+      if constexpr (std::is_invocable_v<Fn &, cancellation_token>)
+        callable(token);
+      else
+        callable();
+    });
+  }
+
+  template <typename F>
+  void submit(task_group &group, cancellation_token token, F &&fn) {
+    submit(group, task_priority::Normal, std::move(token), std::forward<F>(fn));
+  }
+
+  template <typename F>
+  void submit(task_group &group, task_priority priority,
+              cancellation_token token, F &&fn) {
+    using Fn = std::decay_t<F>;
+    static_assert(std::is_invocable_v<Fn &> ||
+                  std::is_invocable_v<Fn &, cancellation_token>);
+    submit(group, priority,
+           [token = std::move(token),
+            callable = Fn(std::forward<F>(fn))]() mutable {
+             token.throw_if_requested();
+             if constexpr (std::is_invocable_v<Fn &, cancellation_token>)
+               callable(token);
+             else
+               callable();
+           });
+  }
+
   template <typename F, typename R = std::invoke_result_t<std::decay_t<F>>>
   [[nodiscard]] future<R> async(F &&fn) {
     return async(task_priority::Normal, std::forward<F>(fn));
@@ -261,6 +379,9 @@ public:
             else
               ::new (st->storage) R(f());
             detail::future_state_finish(st, 1);
+          } catch (const task_cancelled &) {
+            st->error = std::current_exception();
+            detail::future_state_finish(st, 3);
           } catch (...) {
             st->error = std::current_exception();
             detail::future_state_finish(st, 2);
@@ -277,6 +398,61 @@ public:
     submit(priority, std::move(task));
     return future<R>(st);
   }
+
+  template <typename F, typename Fn = std::decay_t<F>,
+            typename R = detail::cancellable_result_t<Fn>>
+  [[nodiscard]] future<R> async(cancellation_token token, F &&fn) {
+    return async(task_priority::Normal, std::move(token), std::forward<F>(fn));
+  }
+
+  template <typename F, typename Fn = std::decay_t<F>,
+            typename R = detail::cancellable_result_t<Fn>>
+  [[nodiscard]] future<R> async(task_priority priority,
+                                cancellation_token token, F &&fn) {
+    static_assert(std::is_invocable_v<Fn &> ||
+                  std::is_invocable_v<Fn &, cancellation_token>);
+    return async(
+        priority,
+        [token = std::move(token),
+         callable = Fn(std::forward<F>(fn))]() mutable -> R {
+          token.throw_if_requested();
+          if constexpr (std::is_invocable_v<Fn &, cancellation_token>) {
+            if constexpr (std::is_void_v<R>)
+              callable(token);
+            else
+              return callable(token);
+          } else {
+            if constexpr (std::is_void_v<R>)
+              callable();
+            else
+              return callable();
+          }
+        });
+  }
+
+  /// Completes after every input and preserves input order. The first failure
+  /// wins; cancellation is reported only when no input failed.
+  template <typename T>
+    requires(!std::is_void_v<T>)
+  [[nodiscard]] future<nx::vector<T>>
+  when_all(nx::vector<future<T>> futures,
+           task_priority priority = task_priority::Normal);
+
+  [[nodiscard]] future<void>
+  when_all(nx::vector<future<void>> futures,
+           task_priority priority = task_priority::Normal);
+
+  /// Completes with the index and value of the first terminal input. A first
+  /// failure or cancellation is propagated. Other inputs continue normally.
+  template <typename T>
+    requires(!std::is_void_v<T>)
+  [[nodiscard]] future<when_any_result<T>>
+  when_any(nx::vector<future<T>> futures,
+           task_priority priority = task_priority::Normal);
+
+  [[nodiscard]] future<when_any_result<void>>
+  when_any(nx::vector<future<void>> futures,
+           task_priority priority = task_priority::Normal);
 
   template <typename F> void parallel_for(usize begin, usize end, F &&body) {
     parallel_for(begin, end, 0, std::forward<F>(body));
@@ -309,8 +485,8 @@ public:
   }
 
   template <typename F> void parallel_region(u32 requested, F &&body) {
-    assert(!is_worker_thread() &&
-           "parallel_region must run from a non-worker thread");
+    assert(!is_execution_context() &&
+           "parallel_region must run outside a pool task");
     const u32 workers = worker_count();
     const u32 count =
         requested == 0 ? workers + 1 : nx::min(requested, workers + 1);
@@ -361,22 +537,48 @@ private:
     std::atomic<u32> count{0};
   };
 
+  struct alignas(64) lane_counters {
+    std::atomic<u64> submitted{0};
+    std::atomic<u64> started{0};
+    std::atomic<u64> completed{0};
+    std::atomic<u64> stolen{0};
+    std::atomic<u64> overflowed{0};
+    std::atomic<u64> execution_ns{0};
+    std::atomic<u32> queued{0};
+    std::atomic<u32> peak_queued{0};
+    std::atomic<u32> active{0};
+    std::atomic<u32> peak_active{0};
+  };
+
   void enqueue(detail::pool_task &&t);
   bool try_get_task(detail::pool_task &out, u32 self_index, u32 &dispatches,
                     u32 &steal_cursor) noexcept;
   bool try_get_priority(detail::pool_task &out, u32 self_index,
-                        task_priority priority, u32 &steal_cursor) noexcept;
+                        task_priority priority, u32 &steal_cursor,
+                        bool &stolen) noexcept;
   void run_task(detail::pool_task &t) noexcept;
   void worker_loop(worker &w) noexcept;
+  [[nodiscard]] bool try_reserve_background() noexcept;
+  void release_background() noexcept;
+  void record_enqueued(task_priority priority) noexcept;
+  void record_started(task_priority priority, bool stolen) noexcept;
+  void record_completed(task_priority priority, u64 execution_ns) noexcept;
+  [[nodiscard]] bool is_execution_context() const noexcept;
 
   small_vector<worker *, 32> m_workers;
   mpmc::Queue<detail::pool_task, SHARED_QUEUE_SIZE>
       m_shared_queues[static_cast<usize>(task_priority::Count)];
   overflow_queue m_overflow[static_cast<usize>(task_priority::Count)];
+  lane_counters m_counters[static_cast<usize>(task_priority::Count)];
 
   std::atomic<u32> m_unfinished{0};
   std::atomic<u32> m_signal{0};
   std::atomic<u32> m_sleepers{0};
+  std::atomic<u32> m_background_queued{0};
+  std::atomic<u32> m_background_active{0};
+  u32 m_background_limit = 1;
+  bool m_collect_statistics = false;
+  bool m_collect_timings = false;
   std::atomic<bool> m_stop{false};
 };
 
@@ -400,6 +602,13 @@ template <typename T> T future<T>::get() {
     if (error)
       std::rethrow_exception(error);
     throw std::runtime_error("thread_pool task failed without an exception");
+  }
+  if (m_state->ready.load(std::memory_order_acquire) == 3) {
+    std::exception_ptr error = m_state->error;
+    reset();
+    if (error)
+      std::rethrow_exception(error);
+    throw task_cancelled{};
   }
   if constexpr (std::is_void_v<T>) {
     reset();
@@ -457,9 +666,10 @@ auto future<T>::then(thread_pool &pool, const task_priority priority, F &&fn)
   continuation->priority = priority;
   continuation->fn = detail::task_fn(
       [input, output, callable = Fn(std::forward<F>(fn))]() mutable {
-        if (input->ready.load(std::memory_order_acquire) == 2) {
+        const u32 input_status = input->ready.load(std::memory_order_acquire);
+        if (input_status == 2 || input_status == 3) {
           output->error = input->error;
-          detail::future_state_finish(output, 2);
+          detail::future_state_finish(output, input_status);
         } else {
           try {
             if constexpr (std::is_void_v<T>) {
@@ -496,6 +706,475 @@ auto future<T>::then(thread_pool &pool, const task_priority priority, F &&fn)
   return future<R>(output);
 }
 
+namespace detail {
+
+template <typename T> struct when_all_state {
+  std::atomic<usize> remaining{0};
+  nx::vector<std::optional<T>> values;
+  nx::mutex terminal_lock;
+  std::exception_ptr error;
+  bool cancelled = false;
+  future_state<nx::vector<T>> *output = nullptr;
+};
+
+struct when_all_void_state {
+  std::atomic<usize> remaining{0};
+  nx::mutex terminal_lock;
+  std::exception_ptr error;
+  bool cancelled = false;
+  future_state<void> *output = nullptr;
+};
+
+template <typename State>
+void note_combiner_terminal(State &state, const u32 status,
+                            std::exception_ptr error) noexcept {
+  const nx::scoped_lock<nx::mutex> held(state.terminal_lock);
+  if (status == 2 && !state.error)
+    state.error = std::move(error);
+  else if (status == 3)
+    state.cancelled = true;
+}
+
+template <typename T>
+void finish_when_all(const nx::shared_ptr<when_all_state<T>> &state) noexcept {
+  std::exception_ptr error;
+  bool cancelled = false;
+  {
+    const nx::scoped_lock<nx::mutex> held(state->terminal_lock);
+    error = state->error;
+    cancelled = state->cancelled;
+  }
+
+  if (error) {
+    state->output->error = std::move(error);
+    future_state_finish(state->output, 2);
+  } else if (cancelled) {
+    state->output->error = std::make_exception_ptr(task_cancelled{});
+    future_state_finish(state->output, 3);
+  } else {
+    try {
+      nx::vector<T> values;
+      values.reserve(state->values.size());
+      for (std::optional<T> &value : state->values)
+        values.push_back(std::move(*value));
+      ::new (state->output->storage) nx::vector<T>(std::move(values));
+      future_state_finish(state->output, 1);
+    } catch (...) {
+      state->output->error = std::current_exception();
+      future_state_finish(state->output, 2);
+    }
+  }
+  future_state_release(state->output);
+}
+
+inline void
+finish_when_all(const nx::shared_ptr<when_all_void_state> &state) noexcept {
+  std::exception_ptr error;
+  bool cancelled = false;
+  {
+    const nx::scoped_lock<nx::mutex> held(state->terminal_lock);
+    error = state->error;
+    cancelled = state->cancelled;
+  }
+  if (error) {
+    state->output->error = std::move(error);
+    future_state_finish(state->output, 2);
+  } else if (cancelled) {
+    state->output->error = std::make_exception_ptr(task_cancelled{});
+    future_state_finish(state->output, 3);
+  } else {
+    future_state_finish(state->output, 1);
+  }
+  future_state_release(state->output);
+}
+
+template <typename T>
+void arrive_when_all(const nx::shared_ptr<when_all_state<T>> &state,
+                     future_state<T> *input, const usize index) noexcept {
+  const u32 status = input->ready.load(std::memory_order_acquire);
+  if (status == 1) {
+    try {
+      state->values[index].emplace(std::move(*input->value()));
+    } catch (...) {
+      note_combiner_terminal(*state, 2, std::current_exception());
+    }
+  } else {
+    note_combiner_terminal(*state, status, input->error);
+  }
+  future_state_release(input);
+  if (state->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1)
+    finish_when_all(state);
+}
+
+inline void arrive_when_all(const nx::shared_ptr<when_all_void_state> &state,
+                            future_state<void> *input) noexcept {
+  const u32 status = input->ready.load(std::memory_order_acquire);
+  if (status != 1)
+    note_combiner_terminal(*state, status, input->error);
+  future_state_release(input);
+  if (state->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1)
+    finish_when_all(state);
+}
+
+template <typename T> struct when_any_state {
+  std::atomic<bool> won{false};
+  future_state<when_any_result<T>> *output = nullptr;
+};
+
+template <typename T>
+void arrive_when_any(const nx::shared_ptr<when_any_state<T>> &state,
+                     future_state<T> *input, const usize index) noexcept {
+  bool expected = false;
+  if (state->won.compare_exchange_strong(expected, true,
+                                         std::memory_order_acq_rel)) {
+    const u32 status = input->ready.load(std::memory_order_acquire);
+    if (status == 1) {
+      try {
+        ::new (state->output->storage)
+            when_any_result<T>{index, std::move(*input->value())};
+        future_state_finish(state->output, 1);
+      } catch (...) {
+        state->output->error = std::current_exception();
+        future_state_finish(state->output, 2);
+      }
+    } else {
+      state->output->error = input->error;
+      future_state_finish(state->output, status);
+    }
+    future_state_release(state->output);
+  }
+  future_state_release(input);
+}
+
+template <>
+inline void arrive_when_any(const nx::shared_ptr<when_any_state<void>> &state,
+                            future_state<void> *input,
+                            const usize index) noexcept {
+  bool expected = false;
+  if (state->won.compare_exchange_strong(expected, true,
+                                         std::memory_order_acq_rel)) {
+    const u32 status = input->ready.load(std::memory_order_acquire);
+    if (status == 1) {
+      ::new (state->output->storage) when_any_result<void>{index};
+      future_state_finish(state->output, 1);
+    } else {
+      state->output->error = input->error;
+      future_state_finish(state->output, status);
+    }
+    future_state_release(state->output);
+  }
+  future_state_release(input);
+}
+
+template <typename R> future_state<R> *make_combiner_output(thread_pool *pool) {
+  future_state<R> *const output = allocate<future_state<R>>();
+  if (output != nullptr)
+    output->pool = pool;
+  return output;
+}
+
+template <typename R>
+void fail_combiner_output(future_state<R> *output,
+                          std::exception_ptr error) noexcept {
+  output->error = std::move(error);
+  future_state_finish(output, 2);
+  future_state_release(output);
+}
+
+} // namespace detail
+
+template <typename T>
+  requires(!std::is_void_v<T>)
+future<nx::vector<T>> thread_pool::when_all(nx::vector<future<T>> futures,
+                                            const task_priority priority) {
+  auto *const output = detail::make_combiner_output<nx::vector<T>>(this);
+  if (output == nullptr)
+    return {};
+  if (futures.empty()) {
+    ::new (output->storage) nx::vector<T>();
+    detail::future_state_finish(output, 1);
+    detail::future_state_release(output);
+    return future<nx::vector<T>>(output);
+  }
+  for (const future<T> &input : futures) {
+    if (!input.valid()) {
+      detail::fail_combiner_output(
+          output, std::make_exception_ptr(std::invalid_argument(
+                      "when_all contains invalid future")));
+      return future<nx::vector<T>>(output);
+    }
+  }
+
+  auto state = nx::make_shared<detail::when_all_state<T>>();
+  if (!state) {
+    detail::future_state_release(output);
+    detail::future_state_release(output);
+    return {};
+  }
+  state->remaining.store(futures.size(), std::memory_order_relaxed);
+  state->output = output;
+
+  nx::vector<detail::future_continuation *> nodes;
+  try {
+    state->values.resize(futures.size());
+    nodes.reserve(futures.size());
+  } catch (...) {
+    detail::fail_combiner_output(output, std::current_exception());
+    return future<nx::vector<T>>(output);
+  }
+  for (usize i = 0; i < futures.size(); ++i) {
+    auto *const node = allocate<detail::future_continuation>();
+    if (node != nullptr) {
+      detail::future_state<T> *const input = futures[i].m_state;
+      node->pool = this;
+      node->priority = priority;
+      node->fn = detail::task_fn(
+          [state, input, i] { detail::arrive_when_all(state, input, i); });
+    }
+    if (node == nullptr || !node->fn) {
+      if (node != nullptr)
+        release(node);
+      for (detail::future_continuation *created : nodes)
+        release(created);
+      detail::fail_combiner_output(output,
+                                   std::make_exception_ptr(std::bad_alloc{}));
+      return future<nx::vector<T>>(output);
+    }
+    nodes.push_back(node);
+  }
+
+  for (usize i = 0; i < futures.size(); ++i) {
+    detail::future_state<T> *const input = futures[i].m_state;
+    futures[i].m_state = nullptr;
+    detail::future_state_continue(input, nodes[i]);
+  }
+  return future<nx::vector<T>>(output);
+}
+
+inline future<void> thread_pool::when_all(nx::vector<future<void>> futures,
+                                          const task_priority priority) {
+  auto *const output = detail::make_combiner_output<void>(this);
+  if (output == nullptr)
+    return {};
+  if (futures.empty()) {
+    detail::future_state_finish(output, 1);
+    detail::future_state_release(output);
+    return future<void>(output);
+  }
+  for (const future<void> &input : futures) {
+    if (!input.valid()) {
+      detail::fail_combiner_output(
+          output, std::make_exception_ptr(std::invalid_argument(
+                      "when_all contains invalid future")));
+      return future<void>(output);
+    }
+  }
+
+  auto state = nx::make_shared<detail::when_all_void_state>();
+  if (!state) {
+    detail::future_state_release(output);
+    detail::future_state_release(output);
+    return {};
+  }
+  state->remaining.store(futures.size(), std::memory_order_relaxed);
+  state->output = output;
+
+  nx::vector<detail::future_continuation *> nodes;
+  try {
+    nodes.reserve(futures.size());
+  } catch (...) {
+    detail::fail_combiner_output(output, std::current_exception());
+    return future<void>(output);
+  }
+  for (future<void> &source : futures) {
+    auto *const node = allocate<detail::future_continuation>();
+    if (node != nullptr) {
+      detail::future_state<void> *const input = source.m_state;
+      node->pool = this;
+      node->priority = priority;
+      node->fn = detail::task_fn(
+          [state, input] { detail::arrive_when_all(state, input); });
+    }
+    if (node == nullptr || !node->fn) {
+      if (node != nullptr)
+        release(node);
+      for (detail::future_continuation *created : nodes)
+        release(created);
+      detail::fail_combiner_output(output,
+                                   std::make_exception_ptr(std::bad_alloc{}));
+      return future<void>(output);
+    }
+    nodes.push_back(node);
+  }
+
+  for (usize i = 0; i < futures.size(); ++i) {
+    detail::future_state<void> *const input = futures[i].m_state;
+    futures[i].m_state = nullptr;
+    detail::future_state_continue(input, nodes[i]);
+  }
+  return future<void>(output);
+}
+
+template <typename T>
+  requires(!std::is_void_v<T>)
+future<when_any_result<T>> thread_pool::when_any(nx::vector<future<T>> futures,
+                                                 const task_priority priority) {
+  auto *const output = detail::make_combiner_output<when_any_result<T>>(this);
+  if (output == nullptr)
+    return {};
+  if (futures.empty()) {
+    detail::fail_combiner_output(
+        output,
+        std::make_exception_ptr(std::invalid_argument("when_any is empty")));
+    return future<when_any_result<T>>(output);
+  }
+  for (const future<T> &input : futures) {
+    if (!input.valid()) {
+      detail::fail_combiner_output(
+          output, std::make_exception_ptr(std::invalid_argument(
+                      "when_any contains invalid future")));
+      return future<when_any_result<T>>(output);
+    }
+  }
+
+  auto state = nx::make_shared<detail::when_any_state<T>>();
+  if (!state) {
+    detail::future_state_release(output);
+    detail::future_state_release(output);
+    return {};
+  }
+  state->output = output;
+
+  nx::vector<detail::future_continuation *> nodes;
+  try {
+    nodes.reserve(futures.size());
+  } catch (...) {
+    detail::fail_combiner_output(output, std::current_exception());
+    return future<when_any_result<T>>(output);
+  }
+  for (usize i = 0; i < futures.size(); ++i) {
+    auto *const node = allocate<detail::future_continuation>();
+    if (node != nullptr) {
+      detail::future_state<T> *const input = futures[i].m_state;
+      node->pool = this;
+      node->priority = priority;
+      node->fn = detail::task_fn(
+          [state, input, i] { detail::arrive_when_any(state, input, i); });
+    }
+    if (node == nullptr || !node->fn) {
+      if (node != nullptr)
+        release(node);
+      for (detail::future_continuation *created : nodes)
+        release(created);
+      detail::fail_combiner_output(output,
+                                   std::make_exception_ptr(std::bad_alloc{}));
+      return future<when_any_result<T>>(output);
+    }
+    nodes.push_back(node);
+  }
+
+  for (usize i = 0; i < futures.size(); ++i) {
+    detail::future_state<T> *const input = futures[i].m_state;
+    futures[i].m_state = nullptr;
+    detail::future_state_continue(input, nodes[i]);
+  }
+  return future<when_any_result<T>>(output);
+}
+
+inline future<when_any_result<void>>
+thread_pool::when_any(nx::vector<future<void>> futures,
+                      const task_priority priority) {
+  auto *const output =
+      detail::make_combiner_output<when_any_result<void>>(this);
+  if (output == nullptr)
+    return {};
+  if (futures.empty()) {
+    detail::fail_combiner_output(
+        output,
+        std::make_exception_ptr(std::invalid_argument("when_any is empty")));
+    return future<when_any_result<void>>(output);
+  }
+  for (const future<void> &input : futures) {
+    if (!input.valid()) {
+      detail::fail_combiner_output(
+          output, std::make_exception_ptr(std::invalid_argument(
+                      "when_any contains invalid future")));
+      return future<when_any_result<void>>(output);
+    }
+  }
+
+  auto state = nx::make_shared<detail::when_any_state<void>>();
+  if (!state) {
+    detail::future_state_release(output);
+    detail::future_state_release(output);
+    return {};
+  }
+  state->output = output;
+
+  nx::vector<detail::future_continuation *> nodes;
+  try {
+    nodes.reserve(futures.size());
+  } catch (...) {
+    detail::fail_combiner_output(output, std::current_exception());
+    return future<when_any_result<void>>(output);
+  }
+  for (usize i = 0; i < futures.size(); ++i) {
+    auto *const node = allocate<detail::future_continuation>();
+    if (node != nullptr) {
+      detail::future_state<void> *const input = futures[i].m_state;
+      node->pool = this;
+      node->priority = priority;
+      node->fn = detail::task_fn(
+          [state, input, i] { detail::arrive_when_any(state, input, i); });
+    }
+    if (node == nullptr || !node->fn) {
+      if (node != nullptr)
+        release(node);
+      for (detail::future_continuation *created : nodes)
+        release(created);
+      detail::fail_combiner_output(output,
+                                   std::make_exception_ptr(std::bad_alloc{}));
+      return future<when_any_result<void>>(output);
+    }
+    nodes.push_back(node);
+  }
+
+  for (usize i = 0; i < futures.size(); ++i) {
+    detail::future_state<void> *const input = futures[i].m_state;
+    futures[i].m_state = nullptr;
+    detail::future_state_continue(input, nodes[i]);
+  }
+  return future<when_any_result<void>>(output);
+}
+
+template <typename T>
+  requires(!std::is_void_v<T>)
+[[nodiscard]] future<nx::vector<T>>
+when_all(thread_pool &pool, nx::vector<future<T>> futures,
+         const task_priority priority = task_priority::Normal) {
+  return pool.when_all(std::move(futures), priority);
+}
+
+[[nodiscard]] inline future<void>
+when_all(thread_pool &pool, nx::vector<future<void>> futures,
+         const task_priority priority = task_priority::Normal) {
+  return pool.when_all(std::move(futures), priority);
+}
+
+template <typename T>
+  requires(!std::is_void_v<T>)
+[[nodiscard]] future<when_any_result<T>>
+when_any(thread_pool &pool, nx::vector<future<T>> futures,
+         const task_priority priority = task_priority::Normal) {
+  return pool.when_any(std::move(futures), priority);
+}
+
+[[nodiscard]] inline future<when_any_result<void>>
+when_any(thread_pool &pool, nx::vector<future<void>> futures,
+         const task_priority priority = task_priority::Normal) {
+  return pool.when_any(std::move(futures), priority);
+}
+
 template <class T, class Fn>
 void parallel_collect(thread_pool *pool, const usize count,
                       const usize parallel_min, nx::vector<nx::vector<T>> &bins,
@@ -524,4 +1203,4 @@ void parallel_collect(thread_pool *pool, const usize count,
       out.push_back(value);
 }
 
-}
+} // namespace nx
