@@ -176,6 +176,7 @@ inline constexpr Format texture_formats[] = {
     {".png", ".png.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
     {".webp", ".webp.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
     {".hdr", ".hdr.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
+    {".ktx2", ".ktx2.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
 };
 
 inline constexpr Family core_families[] = {
