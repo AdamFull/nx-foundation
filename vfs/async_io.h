@@ -44,6 +44,47 @@ struct AsyncIoStatistics {
 
 class AsyncIoService;
 
+/// Movable ownership of bytes charged to an AsyncIoService. Asset pipelines
+/// transfer a request's reservation into this lease while its payload waits for
+/// CPU preparation, preventing completed reads from escaping the shared budget.
+class AsyncIoReservation {
+public:
+  AsyncIoReservation() = default;
+  ~AsyncIoReservation() { reset(); }
+
+  AsyncIoReservation(const AsyncIoReservation &) = delete;
+  AsyncIoReservation &operator=(const AsyncIoReservation &) = delete;
+
+  AsyncIoReservation(AsyncIoReservation &&other) noexcept
+      : m_service(other.m_service), m_bytes(other.m_bytes) {
+    other.m_service = nullptr;
+    other.m_bytes = 0;
+  }
+
+  AsyncIoReservation &operator=(AsyncIoReservation &&other) noexcept {
+    if (this != &other) {
+      reset();
+      m_service = other.m_service;
+      m_bytes = other.m_bytes;
+      other.m_service = nullptr;
+      other.m_bytes = 0;
+    }
+    return *this;
+  }
+
+  [[nodiscard]] u64 bytes() const noexcept { return m_bytes; }
+  [[nodiscard]] explicit operator bool() const noexcept { return m_bytes != 0; }
+  void reset() noexcept;
+
+private:
+  friend class AsyncIoContext;
+  AsyncIoReservation(AsyncIoService &service, u64 bytes) noexcept
+      : m_service(&service), m_bytes(bytes) {}
+
+  AsyncIoService *m_service = nullptr;
+  u64 m_bytes = 0;
+};
+
 /// Per-request view of the VFS. It propagates cancellation around every
 /// potentially blocking call and releases the operation's byte reservation
 /// when the request completes.
@@ -64,6 +105,9 @@ public:
   /// before allocating or reading a custom payload. Waiting is cooperative and
   /// cancellation-aware; reservations never shrink during an operation.
   void reserve(u64 bytes);
+  /// Transfers the current byte charge to the caller. The returned lease must
+  /// not outlive the service. Further context reads start a new reservation.
+  [[nodiscard]] AsyncIoReservation take_reservation() noexcept;
   /// Accounts one range read performed by a stateful custom operation on a
   /// stream obtained through open(). Built-in read helpers account themselves.
   void record_range_read(u64 bytes) noexcept;
@@ -151,6 +195,7 @@ public:
 
 private:
   friend class AsyncIoContext;
+  friend class AsyncIoReservation;
 
   [[nodiscard]] u64 acquire_bytes(u64 bytes,
                                   const cancellation_token &cancellation);

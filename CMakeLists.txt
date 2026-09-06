@@ -67,6 +67,7 @@ set(NX_FOUNDATION_HEADERS
   vfs/vfs.h
   vfs/vfs_internal.h
   vfs/async_io.h
+  vfs/asset_pipeline.h
   vfs/pack_manifest.h
 
   diagnostics/crash.h

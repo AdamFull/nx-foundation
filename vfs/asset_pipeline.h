@@ -1,0 +1,709 @@
+#pragma once
+
+#include "core/foundation/containers/slot_map.h"
+#include "core/foundation/containers/string_map.h"
+#include "core/foundation/core/callable.h"
+#include "core/foundation/threading/thread_pool.h"
+#include "core/foundation/threading/workload.h"
+#include "core/foundation/vfs/async_io.h"
+
+#include <atomic>
+#include <optional>
+
+namespace nx::vfs {
+
+enum class AssetPipelineStage : u8 {
+  None,
+  Queued,
+  Acquiring,
+  WaitingToPrepare,
+  Preparing,
+  ReadyToPublish,
+  Published,
+  Failed,
+  Cancelled,
+  Stale,
+};
+
+enum class AssetFenceStatus : u8 {
+  Pending,
+  Ready,
+  Failed,
+  Cancelled,
+  Stale,
+};
+
+namespace detail {
+struct AssetFenceState {
+  std::atomic<u32> status{static_cast<u32>(AssetFenceStatus::Pending)};
+};
+} // namespace detail
+
+/// Copyable completion token for an exact asset generation. Dependencies use
+/// fences rather than pipeline-local handles, so assets of different types can
+/// form one load graph without coupling their payload types or registries.
+class AssetFence {
+public:
+  AssetFence() = default;
+
+  [[nodiscard]] bool valid() const noexcept { return m_state != nullptr; }
+  [[nodiscard]] AssetFenceStatus status() const noexcept {
+    return m_state != nullptr
+               ? static_cast<AssetFenceStatus>(
+                     m_state->status.load(std::memory_order_acquire))
+               : AssetFenceStatus::Failed;
+  }
+  [[nodiscard]] bool ready() const noexcept {
+    return status() == AssetFenceStatus::Ready;
+  }
+  [[nodiscard]] bool terminal() const noexcept {
+    return status() != AssetFenceStatus::Pending;
+  }
+
+private:
+  template <typename, typename> friend class StagedAssetPipeline;
+
+  explicit AssetFence(nx::shared_ptr<detail::AssetFenceState> state) noexcept
+      : m_state(std::move(state)) {}
+
+  nx::shared_ptr<detail::AssetFenceState> m_state;
+};
+
+struct AssetDependency {
+  AssetFence fence;
+  /// Optional dependencies delay acquisition while pending, but do not fail
+  /// the dependent asset if they finish unsuccessfully.
+  bool optional = false;
+};
+
+struct AssetLoadHandleTag;
+using AssetLoadHandle = nx::typed_handle32<AssetLoadHandleTag>;
+
+struct AssetPipelineRequest {
+  nx::string_view key;
+  /// Must increase when the observable source or its load policy changes.
+  /// Requests for the same key and generation are coalesced.
+  u64 generation = 1;
+  nx::task_priority priority = nx::task_priority::Normal;
+  std::span<const AssetDependency> dependencies;
+};
+
+struct AssetPipelineStatistics {
+  usize assets = 0;
+  usize interests = 0;
+  usize queued = 0;
+  usize acquiring = 0;
+  usize waiting_to_prepare = 0;
+  usize preparing = 0;
+  usize ready_to_publish = 0;
+  usize published = 0;
+  usize failed = 0;
+  usize cancelled = 0;
+  usize stale = 0;
+  u64 coalesced_requests = 0;
+  u64 superseded_generations = 0;
+  u64 stale_requests = 0;
+  u64 publication_failures = 0;
+  nx::workload_statistics acquire_workload;
+  nx::workload_statistics prepare_workload;
+};
+
+/// Reusable acquire -> prepare -> publish pipeline.
+///
+/// Acquisition always runs on the bounded VFS service. Preparation runs on the
+/// CPU pool. Publication is deliberately caller-driven through publish(),
+/// keeping renderer, audio-device and registry mutation on their owner thread.
+/// The pipeline owns in-flight generations until they drain, so cancellation
+/// never leaves a task referring to destroyed subsystem state.
+template <typename Acquired, typename Prepared> class StagedAssetPipeline {
+public:
+  using AcquireFn = nx::unique_function<Acquired(
+      AsyncIoContext &, nx::string_view, const nx::cancellation_token &), 48>;
+  using PrepareFn = nx::unique_function<Prepared(
+      Acquired &&, nx::string_view, const nx::cancellation_token &), 48>;
+
+  StagedAssetPipeline() = default;
+  StagedAssetPipeline(AsyncIoService &io, nx::thread_pool &workers) noexcept
+      : m_io(&io), m_workers(&workers) {}
+  ~StagedAssetPipeline() { shutdown(); }
+
+  StagedAssetPipeline(const StagedAssetPipeline &) = delete;
+  StagedAssetPipeline &operator=(const StagedAssetPipeline &) = delete;
+
+  void bind(AsyncIoService &io, nx::thread_pool &workers) noexcept {
+    assert(m_entries.empty() && "cannot rebind an active asset pipeline");
+    m_io = &io;
+    m_workers = &workers;
+  }
+
+  /// Limits may change between pump calls. Zero pauses new work; max usize is
+  /// unbounded at this layer, while the thread pools retain their own limits.
+  void set_limits(const usize acquiring, const usize preparing) noexcept {
+    m_acquire_limit = acquiring;
+    m_prepare_limit = preparing;
+  }
+
+  /// Adds interest to the current matching generation without rebuilding the
+  /// asset-specific stage callables. This is the allocation-free fast path for
+  /// registries that already coalesce by key.
+  [[nodiscard]] AssetLoadHandle
+  retain(const nx::string_view key, const u64 generation,
+         const nx::task_priority priority = nx::task_priority::Normal) noexcept {
+    const auto found = m_current.find(key);
+    if (found == m_current.end())
+      return {};
+    Entry *const current = m_entries.try_get(found->second);
+    if (current == nullptr || current->generation != generation)
+      return {};
+    ++current->interests;
+    if (priority > current->priority &&
+        current->stage == AssetPipelineStage::Queued)
+      current->priority = priority;
+    ++m_coalesced_requests;
+    return found->second;
+  }
+
+  [[nodiscard]] AssetLoadHandle request(AssetPipelineRequest request,
+                                        AcquireFn acquire,
+                                        PrepareFn prepare) {
+    if (m_io == nullptr || m_workers == nullptr || request.key.empty() ||
+        request.generation == 0 || !acquire || !prepare)
+      return {};
+
+    if (const auto found = m_current.find(request.key);
+        found != m_current.end()) {
+      Entry *const current = m_entries.try_get(found->second);
+      if (current == nullptr) {
+        m_current.erase(found);
+      } else if (current->generation == request.generation) {
+        return retain(request.key, request.generation, request.priority);
+      } else if (request.generation < current->generation) {
+        ++m_stale_requests;
+        return {};
+      } else {
+        supersede(*current);
+        m_current.erase(found);
+      }
+    }
+
+    nx::shared_ptr<Operation> operation = nx::make_shared<Operation>(
+        nx::string(request.key), std::move(acquire), std::move(prepare));
+    if (operation == nullptr)
+      return {};
+    nx::shared_ptr<detail::AssetFenceState> fence =
+        nx::make_shared<detail::AssetFenceState>();
+    if (fence == nullptr)
+      return {};
+
+    Entry entry;
+    entry.operation = std::move(operation);
+    entry.fence = std::move(fence);
+    entry.dependencies.assign(request.dependencies.begin(),
+                              request.dependencies.end());
+    entry.generation = request.generation;
+    entry.priority = request.priority;
+    entry.stage = AssetPipelineStage::Queued;
+    entry.interests = 1;
+    const AssetLoadHandle handle = m_entries.insert(std::move(entry));
+    m_current.insert_or_assign(nx::string(request.key), handle);
+    pump();
+    return handle;
+  }
+
+  [[nodiscard]] bool prioritize(const AssetLoadHandle handle,
+                                const nx::task_priority priority) noexcept {
+    Entry *const entry = m_entries.try_get(handle);
+    if (entry == nullptr)
+      return false;
+    if (entry->stage == AssetPipelineStage::Queued && priority > entry->priority)
+      entry->priority = priority;
+    return true;
+  }
+
+  [[nodiscard]] AssetPipelineStage
+  stage(const AssetLoadHandle handle) const noexcept {
+    const Entry *const entry = m_entries.try_get(handle);
+    return entry != nullptr ? entry->stage : AssetPipelineStage::None;
+  }
+
+  [[nodiscard]] u64 generation(const AssetLoadHandle handle) const noexcept {
+    const Entry *const entry = m_entries.try_get(handle);
+    return entry != nullptr ? entry->generation : 0;
+  }
+
+  [[nodiscard]] usize acquiring() const noexcept { return m_acquiring; }
+  [[nodiscard]] usize preparing() const noexcept { return m_preparing; }
+
+  [[nodiscard]] AssetFence fence(const AssetLoadHandle handle) const noexcept {
+    const Entry *const entry = m_entries.try_get(handle);
+    return entry != nullptr ? AssetFence(entry->fence) : AssetFence{};
+  }
+
+  /// Advances completed worker stages and starts the highest-priority work
+  /// allowed by the current limits and dependency fences.
+  void pump() {
+    finish_acquisitions();
+    finish_preparations();
+    start_acquisitions();
+    start_preparations();
+    retire_unowned();
+  }
+
+  /// Waits for worker stages only. Publication still belongs to the caller.
+  /// Same-pipeline dependencies are pumped as part of the wait; cross-pipeline
+  /// dependencies must be progressed by their owning thread.
+  [[nodiscard]] AssetPipelineStage wait(const AssetLoadHandle handle) {
+    for (;;) {
+      pump();
+      Entry *const wanted = m_entries.try_get(handle);
+      if (wanted == nullptr || !worker_pending(wanted->stage))
+        return wanted != nullptr ? wanted->stage : AssetPipelineStage::None;
+
+      bool waited = false;
+      for (Entry &entry : m_entries) {
+        if (entry.acquiring.valid()) {
+          entry.acquiring.wait();
+          waited = true;
+          break;
+        }
+        if (entry.preparing.valid()) {
+          entry.preparing.wait();
+          waited = true;
+          break;
+        }
+      }
+      if (!waited)
+        return wanted->stage;
+    }
+  }
+
+  /// Runs publication synchronously on the calling thread. A failed publisher
+  /// leaves the previously published resource entirely under caller control.
+  template <typename PublishFn>
+  [[nodiscard]] bool publish(const AssetLoadHandle handle,
+                             PublishFn &&publisher) {
+    pump();
+    Entry *entry = m_entries.try_get(handle);
+    if (entry == nullptr ||
+        entry->stage != AssetPipelineStage::ReadyToPublish ||
+        !entry->prepared.has_value())
+      return false;
+
+    const auto current = m_current.find(entry->operation->key);
+    if (current == m_current.end() || current->second != handle) {
+      supersede(*entry);
+      return false;
+    }
+
+    Prepared prepared = std::move(entry->prepared.value());
+    entry->prepared.reset();
+    try {
+      const bool accepted = static_cast<bool>(std::invoke(
+          publisher, std::move(prepared), entry->operation->key.view(),
+          entry->generation));
+      if (accepted) {
+        set_terminal(*entry, AssetPipelineStage::Published,
+                     AssetFenceStatus::Ready);
+        return true;
+      }
+      ++m_publication_failures;
+      set_terminal(*entry, AssetPipelineStage::Failed,
+                   AssetFenceStatus::Failed);
+      return false;
+    } catch (...) {
+      ++m_publication_failures;
+      set_terminal(*entry, AssetPipelineStage::Failed,
+                   AssetFenceStatus::Failed);
+      throw;
+    }
+  }
+
+  [[nodiscard]] bool cancel(const AssetLoadHandle handle) noexcept {
+    Entry *const entry = m_entries.try_get(handle);
+    if (entry == nullptr || terminal(entry->stage))
+      return false;
+    (void)entry->operation->cancellation.request_stop();
+    set_terminal(*entry, AssetPipelineStage::Cancelled,
+                 AssetFenceStatus::Cancelled);
+    erase_current(handle, *entry);
+    return true;
+  }
+
+  /// Releases one coalesced interest. The final release cancels unfinished
+  /// work, but its futures remain owned until pump() or shutdown() drains them.
+  [[nodiscard]] bool release(const AssetLoadHandle handle) noexcept {
+    Entry *const entry = m_entries.try_get(handle);
+    if (entry == nullptr || entry->interests == 0)
+      return false;
+    --entry->interests;
+    if (entry->interests != 0)
+      return true;
+    if (!terminal(entry->stage)) {
+      (void)entry->operation->cancellation.request_stop();
+      set_terminal(*entry, AssetPipelineStage::Cancelled,
+                   AssetFenceStatus::Cancelled);
+    }
+    erase_current(handle, *entry);
+    if (!entry->acquiring.valid() && !entry->preparing.valid())
+      (void)m_entries.erase(handle);
+    return true;
+  }
+
+  [[nodiscard]] AssetPipelineStatistics statistics() const noexcept {
+    AssetPipelineStatistics out{
+        .assets = m_entries.size(),
+        .coalesced_requests = m_coalesced_requests,
+        .superseded_generations = m_superseded_generations,
+        .stale_requests = m_stale_requests,
+        .publication_failures = m_publication_failures,
+        .acquire_workload = m_acquire_workload.statistics(),
+        .prepare_workload = m_prepare_workload.statistics(),
+    };
+    for (const Entry &entry : m_entries) {
+      out.interests += entry.interests;
+      switch (entry.stage) {
+      case AssetPipelineStage::Queued:
+        ++out.queued;
+        break;
+      case AssetPipelineStage::Acquiring:
+        ++out.acquiring;
+        break;
+      case AssetPipelineStage::WaitingToPrepare:
+        ++out.waiting_to_prepare;
+        break;
+      case AssetPipelineStage::Preparing:
+        ++out.preparing;
+        break;
+      case AssetPipelineStage::ReadyToPublish:
+        ++out.ready_to_publish;
+        break;
+      case AssetPipelineStage::Published:
+        ++out.published;
+        break;
+      case AssetPipelineStage::Failed:
+        ++out.failed;
+        break;
+      case AssetPipelineStage::Cancelled:
+        ++out.cancelled;
+        break;
+      case AssetPipelineStage::Stale:
+        ++out.stale;
+        break;
+      case AssetPipelineStage::None:
+        break;
+      }
+    }
+    return out;
+  }
+
+  void shutdown() noexcept {
+    for (Entry &entry : m_entries)
+      (void)entry.operation->cancellation.request_stop();
+    for (Entry &entry : m_entries) {
+      drain(entry.acquiring);
+      drain(entry.preparing);
+      if (!terminal(entry.stage))
+        set_terminal(entry, AssetPipelineStage::Cancelled,
+                     AssetFenceStatus::Cancelled);
+    }
+    m_acquiring = 0;
+    m_preparing = 0;
+    m_current.clear();
+    m_entries.clear();
+  }
+
+private:
+  struct Operation {
+    Operation(nx::string key_value, AcquireFn acquire_value,
+              PrepareFn prepare_value)
+        : key(std::move(key_value)), acquire(std::move(acquire_value)),
+          prepare(std::move(prepare_value)) {}
+
+    nx::string key;
+    AcquireFn acquire;
+    PrepareFn prepare;
+    nx::cancellation_source cancellation;
+  };
+
+  struct Entry {
+    nx::shared_ptr<Operation> operation;
+    nx::shared_ptr<detail::AssetFenceState> fence;
+    nx::vector<AssetDependency> dependencies;
+    struct AcquiredStage {
+      Acquired value;
+      AsyncIoReservation reservation;
+    };
+    nx::future<AcquiredStage> acquiring;
+    std::optional<AcquiredStage> acquired;
+    nx::future<Prepared> preparing;
+    std::optional<Prepared> prepared;
+    u64 generation = 0;
+    nx::task_priority priority = nx::task_priority::Normal;
+    AssetPipelineStage stage = AssetPipelineStage::None;
+    usize interests = 0;
+  };
+
+  enum class DependencyState : u8 { Pending, Ready, Failed };
+
+  [[nodiscard]] static bool terminal(const AssetPipelineStage stage) noexcept {
+    return stage == AssetPipelineStage::Published ||
+           stage == AssetPipelineStage::Failed ||
+           stage == AssetPipelineStage::Cancelled ||
+           stage == AssetPipelineStage::Stale;
+  }
+
+  [[nodiscard]] static bool
+  worker_pending(const AssetPipelineStage stage) noexcept {
+    return stage == AssetPipelineStage::Queued ||
+           stage == AssetPipelineStage::Acquiring ||
+           stage == AssetPipelineStage::WaitingToPrepare ||
+           stage == AssetPipelineStage::Preparing;
+  }
+
+  [[nodiscard]] static DependencyState
+  dependencies(const Entry &entry) noexcept {
+    bool pending = false;
+    for (const AssetDependency &dependency : entry.dependencies) {
+      const AssetFenceStatus status = dependency.fence.status();
+      if (status == AssetFenceStatus::Pending) {
+        pending = true;
+      } else if (status != AssetFenceStatus::Ready && !dependency.optional) {
+        return DependencyState::Failed;
+      }
+    }
+    return pending ? DependencyState::Pending : DependencyState::Ready;
+  }
+
+  [[nodiscard]] bool acquire_room() const noexcept {
+    return m_acquiring < m_acquire_limit;
+  }
+
+  [[nodiscard]] bool prepare_room() const noexcept {
+    return m_preparing < m_prepare_limit;
+  }
+
+  void start_acquisitions() {
+    while (acquire_room()) {
+      AssetLoadHandle selected;
+      for (usize i = 0; i < m_entries.size(); ++i) {
+        const AssetLoadHandle handle = m_entries.handle_at(i);
+        Entry &entry = m_entries[handle];
+        if (entry.stage != AssetPipelineStage::Queued)
+          continue;
+        const DependencyState state = dependencies(entry);
+        if (state == DependencyState::Failed) {
+          set_terminal(entry, AssetPipelineStage::Failed,
+                       AssetFenceStatus::Failed);
+          continue;
+        }
+        if (state != DependencyState::Ready)
+          continue;
+        if (!selected.valid() ||
+            entry.priority > m_entries[selected].priority)
+          selected = handle;
+      }
+      if (!selected.valid())
+        return;
+
+      Entry &entry = m_entries[selected];
+      const nx::shared_ptr<Operation> operation = entry.operation;
+      const nx::cancellation_token cancellation =
+          operation->cancellation.token();
+      const nx::workload_ticket ticket = m_acquire_workload.submit();
+      nx::future<typename Entry::AcquiredStage> future = m_io->async(
+          {.priority = entry.priority, .cancellation = cancellation},
+          [this, operation, cancellation,
+           ticket](AsyncIoContext &context) mutable {
+            return nx::measure_workload(
+                m_acquire_workload, ticket, cancellation,
+                [&] {
+                  Acquired value = operation->acquire(
+                      context, operation->key.view(), cancellation);
+                  return typename Entry::AcquiredStage{
+                      std::move(value), context.take_reservation()};
+                });
+          });
+      if (!future.valid()) {
+        m_acquire_workload.reject(ticket);
+        set_terminal(entry, AssetPipelineStage::Failed,
+                     AssetFenceStatus::Failed);
+        continue;
+      }
+      entry.acquiring = std::move(future);
+      entry.stage = AssetPipelineStage::Acquiring;
+      ++m_acquiring;
+    }
+  }
+
+  void finish_acquisitions() {
+    for (Entry &entry : m_entries) {
+      if (!entry.acquiring.valid() || !entry.acquiring.ready())
+        continue;
+      const bool active = entry.stage == AssetPipelineStage::Acquiring;
+      try {
+        typename Entry::AcquiredStage acquired = entry.acquiring.get();
+        if (active) {
+          entry.acquired.emplace(std::move(acquired));
+          entry.stage = AssetPipelineStage::WaitingToPrepare;
+        }
+      } catch (const nx::task_cancelled &) {
+        if (active)
+          set_terminal(entry, AssetPipelineStage::Cancelled,
+                       AssetFenceStatus::Cancelled);
+      } catch (...) {
+        if (active)
+          set_terminal(entry, AssetPipelineStage::Failed,
+                       AssetFenceStatus::Failed);
+      }
+      assert(m_acquiring != 0);
+      --m_acquiring;
+    }
+  }
+
+  void start_preparations() {
+    while (prepare_room()) {
+      AssetLoadHandle selected;
+      for (usize i = 0; i < m_entries.size(); ++i) {
+        const AssetLoadHandle handle = m_entries.handle_at(i);
+        const Entry &entry = m_entries[handle];
+        if (entry.stage != AssetPipelineStage::WaitingToPrepare ||
+            !entry.acquired.has_value())
+          continue;
+        if (!selected.valid() ||
+            entry.priority > m_entries[selected].priority)
+          selected = handle;
+      }
+      if (!selected.valid())
+        return;
+
+      Entry &entry = m_entries[selected];
+      nx::shared_ptr<typename Entry::AcquiredStage> source =
+          nx::make_shared<typename Entry::AcquiredStage>(
+              std::move(entry.acquired.value()));
+      if (source == nullptr) {
+        set_terminal(entry, AssetPipelineStage::Failed,
+                     AssetFenceStatus::Failed);
+        continue;
+      }
+      entry.acquired.reset();
+      const nx::shared_ptr<Operation> operation = entry.operation;
+      const nx::cancellation_token cancellation =
+          operation->cancellation.token();
+      const nx::workload_ticket ticket = m_prepare_workload.submit();
+      nx::future<Prepared> future = m_workers->async(
+          entry.priority, cancellation,
+          [this, operation, source, cancellation, ticket]() mutable {
+            return nx::measure_workload(
+                m_prepare_workload, ticket, cancellation,
+                [&] {
+                  return operation->prepare(std::move(source->value),
+                                            operation->key.view(),
+                                            cancellation);
+                });
+          });
+      if (!future.valid()) {
+        m_prepare_workload.reject(ticket);
+        entry.acquired.emplace(std::move(*source));
+        return;
+      }
+      entry.preparing = std::move(future);
+      entry.stage = AssetPipelineStage::Preparing;
+      ++m_preparing;
+    }
+  }
+
+  void finish_preparations() {
+    for (Entry &entry : m_entries) {
+      if (!entry.preparing.valid() || !entry.preparing.ready())
+        continue;
+      const bool active = entry.stage == AssetPipelineStage::Preparing;
+      try {
+        Prepared prepared = entry.preparing.get();
+        if (active) {
+          entry.prepared.emplace(std::move(prepared));
+          entry.stage = AssetPipelineStage::ReadyToPublish;
+        }
+      } catch (const nx::task_cancelled &) {
+        if (active)
+          set_terminal(entry, AssetPipelineStage::Cancelled,
+                       AssetFenceStatus::Cancelled);
+      } catch (...) {
+        if (active)
+          set_terminal(entry, AssetPipelineStage::Failed,
+                       AssetFenceStatus::Failed);
+      }
+      assert(m_preparing != 0);
+      --m_preparing;
+    }
+  }
+
+  void supersede(Entry &entry) noexcept {
+    if (entry.stage == AssetPipelineStage::Stale)
+      return;
+    // A fence describes one exact generation and completion is immutable.
+    // Successfully published or already-failed generations retain their
+    // terminal result while a newer generation becomes current.
+    if (!terminal(entry.stage)) {
+      (void)entry.operation->cancellation.request_stop();
+      set_terminal(entry, AssetPipelineStage::Stale, AssetFenceStatus::Stale);
+    }
+    ++m_superseded_generations;
+  }
+
+  static void set_terminal(Entry &entry, const AssetPipelineStage stage,
+                           const AssetFenceStatus fence) noexcept {
+    entry.stage = stage;
+    entry.acquired.reset();
+    entry.prepared.reset();
+    if (entry.fence != nullptr) {
+      entry.fence->status.store(static_cast<u32>(fence),
+                                std::memory_order_release);
+    }
+  }
+
+  void erase_current(const AssetLoadHandle handle, const Entry &entry) {
+    const auto found = m_current.find(entry.operation->key);
+    if (found != m_current.end() && found->second == handle)
+      m_current.erase(found);
+  }
+
+  void retire_unowned() {
+    for (usize i = 0; i < m_entries.size();) {
+      const AssetLoadHandle handle = m_entries.handle_at(i);
+      Entry &entry = m_entries[handle];
+      if (entry.interests == 0 && terminal(entry.stage) &&
+          !entry.acquiring.valid() && !entry.preparing.valid()) {
+        erase_current(handle, entry);
+        (void)m_entries.erase(handle);
+        continue;
+      }
+      ++i;
+    }
+  }
+
+  template <typename T> static void drain(nx::future<T> &future) noexcept {
+    if (!future.valid())
+      return;
+    try {
+      (void)future.get();
+    } catch (...) {
+    }
+  }
+
+  AsyncIoService *m_io = nullptr;
+  nx::thread_pool *m_workers = nullptr;
+  nx::slot_map<Entry, AssetLoadHandle> m_entries;
+  nx::string_map<AssetLoadHandle> m_current;
+  nx::workload_tracker m_acquire_workload;
+  nx::workload_tracker m_prepare_workload;
+  usize m_acquiring = 0;
+  usize m_preparing = 0;
+  usize m_acquire_limit = ~usize{0};
+  usize m_prepare_limit = ~usize{0};
+  u64 m_coalesced_requests = 0;
+  u64 m_superseded_generations = 0;
+  u64 m_stale_requests = 0;
+  u64 m_publication_failures = 0;
+};
+
+} // namespace nx::vfs

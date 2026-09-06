@@ -34,6 +34,13 @@ constexpr usize READ_CHUNK = 256u * 1024u;
 
 } // namespace
 
+void AsyncIoReservation::reset() noexcept {
+  if (m_service != nullptr && m_bytes != 0)
+    m_service->release_bytes(m_bytes);
+  m_service = nullptr;
+  m_bytes = 0;
+}
+
 AsyncIoContext::AsyncIoContext(AsyncIoService &service,
                                cancellation_token cancellation) noexcept
     : m_service(service), m_cancellation(std::move(cancellation)) {}
@@ -75,6 +82,13 @@ void AsyncIoContext::reserve(const u64 bytes) {
   m_reservation = 0;
   m_charged = m_service.acquire_bytes(bytes, m_cancellation);
   m_reservation = bytes;
+}
+
+AsyncIoReservation AsyncIoContext::take_reservation() noexcept {
+  AsyncIoReservation held(m_service, m_charged);
+  m_charged = 0;
+  m_reservation = 0;
+  return held;
 }
 
 void AsyncIoContext::record_range_read(const u64 bytes) noexcept {
