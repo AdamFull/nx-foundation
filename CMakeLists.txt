@@ -56,6 +56,7 @@ set(NX_FOUNDATION_HEADERS
   threading/sync.h
   threading/thread.h
   threading/thread_pool.h
+  threading/workload.h
 
   platform/filesystem.h
   platform/native_window.h
