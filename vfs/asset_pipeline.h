@@ -104,6 +104,13 @@ struct AssetPipelineStatistics {
   u64 superseded_generations = 0;
   u64 stale_requests = 0;
   u64 publication_failures = 0;
+  u64 acquired_bytes = 0;
+  u64 peak_acquired_bytes = 0;
+  u64 prepared_bytes = 0;
+  u64 peak_prepared_bytes = 0;
+  u64 acquire_budget_stalls = 0;
+  u64 prepare_budget_stalls = 0;
+  u64 priority_promotions = 0;
   nx::workload_statistics acquire_workload;
   nx::workload_statistics prepare_workload;
 };
@@ -121,6 +128,7 @@ public:
       AsyncIoContext &, nx::string_view, const nx::cancellation_token &), 48>;
   using PrepareFn = nx::unique_function<Prepared(
       Acquired &&, nx::string_view, const nx::cancellation_token &), 48>;
+  using PreparedBytesFn = nx::unique_function<u64(const Prepared &), 32>;
 
   StagedAssetPipeline() = default;
   StagedAssetPipeline(AsyncIoService &io, nx::thread_pool &workers) noexcept
@@ -143,6 +151,23 @@ public:
     m_prepare_limit = preparing;
   }
 
+  /// Bounds payloads retained between stages. Acquisition may overshoot by at
+  /// most the currently executing VFS requests, and preparation by at most the
+  /// currently executing CPU jobs. An individually oversized asset is still
+  /// admitted when its stage has no retained payload, avoiding permanent
+  /// starvation. max u64 disables a limit; zero pauses that stage.
+  void set_memory_limits(const u64 acquired_bytes,
+                         const u64 prepared_bytes) noexcept {
+    m_acquired_limit = acquired_bytes;
+    m_prepared_limit = prepared_bytes;
+  }
+
+  /// Number of pump calls before queued work is promoted by one priority lane.
+  /// Zero disables coordinator-level aging (worker queues still age normally).
+  void set_priority_aging(const u64 pumps_per_lane) noexcept {
+    m_aging_interval = pumps_per_lane;
+  }
+
   /// Adds interest to the current matching generation without rebuilding the
   /// asset-specific stage callables. This is the allocation-free fast path for
   /// registries that already coalesce by key.
@@ -156,8 +181,8 @@ public:
     if (current == nullptr || current->generation != generation)
       return {};
     ++current->interests;
-    if (priority > current->priority &&
-        current->stage == AssetPipelineStage::Queued)
+    if (priority > current->priority && !terminal(current->stage) &&
+        current->stage != AssetPipelineStage::ReadyToPublish)
       current->priority = priority;
     ++m_coalesced_requests;
     return found->second;
@@ -165,7 +190,8 @@ public:
 
   [[nodiscard]] AssetLoadHandle request(AssetPipelineRequest request,
                                         AcquireFn acquire,
-                                        PrepareFn prepare) {
+                                        PrepareFn prepare,
+                                        PreparedBytesFn prepared_bytes = {}) {
     if (m_io == nullptr || m_workers == nullptr || request.key.empty() ||
         request.generation == 0 || !acquire || !prepare)
       return {};
@@ -187,7 +213,8 @@ public:
     }
 
     nx::shared_ptr<Operation> operation = nx::make_shared<Operation>(
-        nx::string(request.key), std::move(acquire), std::move(prepare));
+        nx::string(request.key), std::move(acquire), std::move(prepare),
+        std::move(prepared_bytes));
     if (operation == nullptr)
       return {};
     nx::shared_ptr<detail::AssetFenceState> fence =
@@ -204,6 +231,7 @@ public:
     entry.priority = request.priority;
     entry.stage = AssetPipelineStage::Queued;
     entry.interests = 1;
+    entry.queued_at = m_pump_serial;
     const AssetLoadHandle handle = m_entries.insert(std::move(entry));
     m_current.insert_or_assign(nx::string(request.key), handle);
     pump();
@@ -215,7 +243,9 @@ public:
     Entry *const entry = m_entries.try_get(handle);
     if (entry == nullptr)
       return false;
-    if (entry->stage == AssetPipelineStage::Queued && priority > entry->priority)
+    if (!terminal(entry->stage) &&
+        entry->stage != AssetPipelineStage::ReadyToPublish &&
+        priority > entry->priority)
       entry->priority = priority;
     return true;
   }
@@ -242,6 +272,7 @@ public:
   /// Advances completed worker stages and starts the highest-priority work
   /// allowed by the current limits and dependency fences.
   void pump() {
+    ++m_pump_serial;
     finish_acquisitions();
     finish_preparations();
     start_acquisitions();
@@ -296,7 +327,6 @@ public:
     }
 
     Prepared prepared = std::move(entry->prepared.value());
-    entry->prepared.reset();
     try {
       const bool accepted = static_cast<bool>(std::invoke(
           publisher, std::move(prepared), entry->operation->key.view(),
@@ -356,6 +386,13 @@ public:
         .superseded_generations = m_superseded_generations,
         .stale_requests = m_stale_requests,
         .publication_failures = m_publication_failures,
+        .acquired_bytes = m_acquired_bytes,
+        .peak_acquired_bytes = m_peak_acquired_bytes,
+        .prepared_bytes = m_prepared_bytes,
+        .peak_prepared_bytes = m_peak_prepared_bytes,
+        .acquire_budget_stalls = m_acquire_budget_stalls,
+        .prepare_budget_stalls = m_prepare_budget_stalls,
+        .priority_promotions = m_priority_promotions,
         .acquire_workload = m_acquire_workload.statistics(),
         .prepare_workload = m_prepare_workload.statistics(),
     };
@@ -408,6 +445,10 @@ public:
     }
     m_acquiring = 0;
     m_preparing = 0;
+    m_acquired_bytes = 0;
+    m_prepared_bytes = 0;
+    m_acquire_budget_stalled = false;
+    m_prepare_budget_stalled = false;
     m_current.clear();
     m_entries.clear();
   }
@@ -415,13 +456,15 @@ public:
 private:
   struct Operation {
     Operation(nx::string key_value, AcquireFn acquire_value,
-              PrepareFn prepare_value)
+              PrepareFn prepare_value, PreparedBytesFn prepared_bytes_value)
         : key(std::move(key_value)), acquire(std::move(acquire_value)),
-          prepare(std::move(prepare_value)) {}
+          prepare(std::move(prepare_value)),
+          prepared_bytes(std::move(prepared_bytes_value)) {}
 
     nx::string key;
     AcquireFn acquire;
     PrepareFn prepare;
+    PreparedBytesFn prepared_bytes;
     nx::cancellation_source cancellation;
   };
 
@@ -441,6 +484,10 @@ private:
     nx::task_priority priority = nx::task_priority::Normal;
     AssetPipelineStage stage = AssetPipelineStage::None;
     usize interests = 0;
+    u64 acquired_bytes = 0;
+    u64 prepared_bytes = 0;
+    u64 queued_at = 0;
+    bool promoted = false;
   };
 
   enum class DependencyState : u8 { Pending, Ready, Failed };
@@ -475,14 +522,76 @@ private:
   }
 
   [[nodiscard]] bool acquire_room() const noexcept {
-    return m_acquiring < m_acquire_limit;
+    return m_acquiring < m_acquire_limit &&
+           (m_acquired_bytes < m_acquired_limit ||
+            (m_acquired_bytes == 0 && m_acquired_limit != 0));
   }
 
   [[nodiscard]] bool prepare_room() const noexcept {
-    return m_preparing < m_prepare_limit;
+    return m_preparing < m_prepare_limit &&
+           (m_prepared_bytes < m_prepared_limit ||
+            (m_prepared_bytes == 0 && m_prepared_limit != 0));
+  }
+
+  [[nodiscard]] nx::task_priority aged_priority(const Entry &entry) const
+      noexcept {
+    if (m_aging_interval == 0)
+      return entry.priority;
+    const u64 age = m_pump_serial - entry.queued_at;
+    const u64 maximum = nx::cast<u64>(
+        task_priority_index(task_priority::Critical) -
+        task_priority_index(entry.priority));
+    const usize promotions =
+        nx::cast<usize>(nx::min(age / m_aging_interval, maximum));
+    return static_cast<task_priority>(task_priority_index(entry.priority) +
+                                      promotions);
+  }
+
+  [[nodiscard]] bool older(const Entry &candidate,
+                           const Entry &selected) const noexcept {
+    const task_priority candidate_priority = aged_priority(candidate);
+    const task_priority selected_priority = aged_priority(selected);
+    return candidate_priority > selected_priority ||
+           (candidate_priority == selected_priority &&
+            candidate.queued_at < selected.queued_at);
+  }
+
+  static void update_peak(u64 &peak, const u64 value) noexcept {
+    if (value > peak)
+      peak = value;
+  }
+
+  static void subtract_saturated(u64 &value, const u64 amount) noexcept {
+    value = amount < value ? value - amount : 0;
+  }
+
+  static void add_saturated(u64 &value, const u64 amount) noexcept {
+    value = amount > ~u64{0} - value ? ~u64{0} : value + amount;
+  }
+
+  void release_acquired_memory(Entry &entry) noexcept {
+    subtract_saturated(m_acquired_bytes, entry.acquired_bytes);
+    entry.acquired_bytes = 0;
+  }
+
+  void release_prepared_memory(Entry &entry) noexcept {
+    subtract_saturated(m_prepared_bytes, entry.prepared_bytes);
+    entry.prepared_bytes = 0;
   }
 
   void start_acquisitions() {
+    if (m_acquired_bytes >= m_acquired_limit) {
+      bool queued = false;
+      for (const Entry &entry : m_entries)
+        queued |= entry.stage == AssetPipelineStage::Queued &&
+                  dependencies(entry) == DependencyState::Ready;
+      if (queued && !m_acquire_budget_stalled) {
+        ++m_acquire_budget_stalls;
+        m_acquire_budget_stalled = true;
+      }
+    } else {
+      m_acquire_budget_stalled = false;
+    }
     while (acquire_room()) {
       AssetLoadHandle selected;
       for (usize i = 0; i < m_entries.size(); ++i) {
@@ -498,20 +607,24 @@ private:
         }
         if (state != DependencyState::Ready)
           continue;
-        if (!selected.valid() ||
-            entry.priority > m_entries[selected].priority)
+        if (!selected.valid() || older(entry, m_entries[selected]))
           selected = handle;
       }
       if (!selected.valid())
         return;
 
       Entry &entry = m_entries[selected];
+      const nx::task_priority execution_priority = aged_priority(entry);
+      if (!entry.promoted && execution_priority > entry.priority) {
+        entry.promoted = true;
+        ++m_priority_promotions;
+      }
       const nx::shared_ptr<Operation> operation = entry.operation;
       const nx::cancellation_token cancellation =
           operation->cancellation.token();
       const nx::workload_ticket ticket = m_acquire_workload.submit();
       nx::future<typename Entry::AcquiredStage> future = m_io->async(
-          {.priority = entry.priority, .cancellation = cancellation},
+          {.priority = execution_priority, .cancellation = cancellation},
           [this, operation, cancellation,
            ticket](AsyncIoContext &context) mutable {
             return nx::measure_workload(
@@ -543,6 +656,9 @@ private:
       try {
         typename Entry::AcquiredStage acquired = entry.acquiring.get();
         if (active) {
+          entry.acquired_bytes = acquired.reservation.bytes();
+          add_saturated(m_acquired_bytes, entry.acquired_bytes);
+          update_peak(m_peak_acquired_bytes, m_acquired_bytes);
           entry.acquired.emplace(std::move(acquired));
           entry.stage = AssetPipelineStage::WaitingToPrepare;
         }
@@ -561,6 +677,17 @@ private:
   }
 
   void start_preparations() {
+    if (m_prepared_bytes >= m_prepared_limit) {
+      bool waiting = false;
+      for (const Entry &entry : m_entries)
+        waiting |= entry.stage == AssetPipelineStage::WaitingToPrepare;
+      if (waiting && !m_prepare_budget_stalled) {
+        ++m_prepare_budget_stalls;
+        m_prepare_budget_stalled = true;
+      }
+    } else {
+      m_prepare_budget_stalled = false;
+    }
     while (prepare_room()) {
       AssetLoadHandle selected;
       for (usize i = 0; i < m_entries.size(); ++i) {
@@ -569,14 +696,18 @@ private:
         if (entry.stage != AssetPipelineStage::WaitingToPrepare ||
             !entry.acquired.has_value())
           continue;
-        if (!selected.valid() ||
-            entry.priority > m_entries[selected].priority)
+        if (!selected.valid() || older(entry, m_entries[selected]))
           selected = handle;
       }
       if (!selected.valid())
         return;
 
       Entry &entry = m_entries[selected];
+      const nx::task_priority execution_priority = aged_priority(entry);
+      if (!entry.promoted && execution_priority > entry.priority) {
+        entry.promoted = true;
+        ++m_priority_promotions;
+      }
       nx::shared_ptr<typename Entry::AcquiredStage> source =
           nx::make_shared<typename Entry::AcquiredStage>(
               std::move(entry.acquired.value()));
@@ -591,7 +722,7 @@ private:
           operation->cancellation.token();
       const nx::workload_ticket ticket = m_prepare_workload.submit();
       nx::future<Prepared> future = m_workers->async(
-          entry.priority, cancellation,
+          execution_priority, cancellation,
           [this, operation, source, cancellation, ticket]() mutable {
             return nx::measure_workload(
                 m_prepare_workload, ticket, cancellation,
@@ -619,15 +750,23 @@ private:
       const bool active = entry.stage == AssetPipelineStage::Preparing;
       try {
         Prepared prepared = entry.preparing.get();
+        release_acquired_memory(entry);
         if (active) {
+          entry.prepared_bytes = entry.operation->prepared_bytes
+                                     ? entry.operation->prepared_bytes(prepared)
+                                     : 0;
+          add_saturated(m_prepared_bytes, entry.prepared_bytes);
+          update_peak(m_peak_prepared_bytes, m_prepared_bytes);
           entry.prepared.emplace(std::move(prepared));
           entry.stage = AssetPipelineStage::ReadyToPublish;
         }
       } catch (const nx::task_cancelled &) {
+        release_acquired_memory(entry);
         if (active)
           set_terminal(entry, AssetPipelineStage::Cancelled,
                        AssetFenceStatus::Cancelled);
       } catch (...) {
+        release_acquired_memory(entry);
         if (active)
           set_terminal(entry, AssetPipelineStage::Failed,
                        AssetFenceStatus::Failed);
@@ -650,9 +789,13 @@ private:
     ++m_superseded_generations;
   }
 
-  static void set_terminal(Entry &entry, const AssetPipelineStage stage,
-                           const AssetFenceStatus fence) noexcept {
+  void set_terminal(Entry &entry, const AssetPipelineStage stage,
+                    const AssetFenceStatus fence) noexcept {
     entry.stage = stage;
+    if (entry.acquired.has_value())
+      release_acquired_memory(entry);
+    if (entry.prepared.has_value())
+      release_prepared_memory(entry);
     entry.acquired.reset();
     entry.prepared.reset();
     if (entry.fence != nullptr) {
@@ -700,10 +843,23 @@ private:
   usize m_preparing = 0;
   usize m_acquire_limit = ~usize{0};
   usize m_prepare_limit = ~usize{0};
+  u64 m_acquired_bytes = 0;
+  u64 m_peak_acquired_bytes = 0;
+  u64 m_prepared_bytes = 0;
+  u64 m_peak_prepared_bytes = 0;
+  u64 m_acquired_limit = ~u64{0};
+  u64 m_prepared_limit = ~u64{0};
+  u64 m_pump_serial = 0;
+  u64 m_aging_interval = 120;
   u64 m_coalesced_requests = 0;
   u64 m_superseded_generations = 0;
   u64 m_stale_requests = 0;
   u64 m_publication_failures = 0;
+  u64 m_acquire_budget_stalls = 0;
+  u64 m_prepare_budget_stalls = 0;
+  u64 m_priority_promotions = 0;
+  bool m_acquire_budget_stalled = false;
+  bool m_prepare_budget_stalled = false;
 };
 
 } // namespace nx::vfs
