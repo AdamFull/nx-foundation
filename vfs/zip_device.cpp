@@ -11,6 +11,9 @@
 #include <mz_zip.h>
 #include <mz_zip_rw.h>
 
+#include <array>
+#include <limits>
+
 namespace nx::vfs {
 
 using detail::BlobStream;
@@ -164,6 +167,8 @@ void destroy_reader(ZipReader *reader) {
 // Read-only device over a .zip (or an APK).
 class ZipDevice final : public Device {
 public:
+  class EntryStream;
+
   ZipDevice(nx::string zip_path, nx::string subdir)
       : m_zip_path(std::move(zip_path)), m_subdir(std::move(subdir)) {}
   ZipDevice(nx::blob<u8> zip_data, nx::string subdir)
@@ -247,15 +252,7 @@ public:
     return data;
   }
 
-  [[nodiscard]] io_result<stream_ptr> open(const path_view rel) override {
-    auto r = read(rel);
-    if (!r)
-      return err(r.error());
-    auto *s = nx::allocate<BlobStream>(std::move(r).value());
-    if (!s)
-      return err(file_error{io_error::OpenFailed, 0});
-    return stream_ptr(s);
-  }
+  [[nodiscard]] io_result<stream_ptr> open(path_view rel) override;
 
   [[nodiscard]] FileInfo stat(const path_view rel) override {
     const nx::string key = canon_rel(rel);
@@ -414,7 +411,160 @@ private:
   nx::mpmc::Queue<ZipReader *, READER_POOL> m_readers;
 };
 
+/// A live minizip entry rather than an eagerly materialised BlobStream. This
+/// matters for large compressed textures: sequential reads now inflate only
+/// the coarse mip tail initially, and continue through finer mips on demand.
+class ZipDevice::EntryStream final : public nx::fs::stream {
+public:
+  EntryStream(ZipDevice &owner, ZipReader *reader, nx::string entry,
+              const u64 size) noexcept
+      : m_owner(owner), m_reader(reader), m_entry(std::move(entry)),
+        m_size(size) {}
+
+  ~EntryStream() override {
+    close_entry();
+    m_owner.release_reader(m_reader);
+  }
+
+  usize read(void *destination, const usize bytes) override {
+    if (!m_reader || !m_open || destination == nullptr || bytes == 0 ||
+        m_position >= m_size)
+      return 0;
+    const u64 remaining = m_size - m_position;
+    usize wanted = nx::cast<usize>(nx::min<u64>(remaining, bytes));
+    usize total = 0;
+    auto *output = static_cast<u8 *>(destination);
+    while (total < wanted) {
+      const i32 chunk = nx::cast<i32>(nx::min<usize>(
+          wanted - total, nx::cast<usize>(std::numeric_limits<i32>::max())));
+      const i32 count =
+          mz_zip_reader_entry_read(m_reader->handle, output + total, chunk);
+      if (count <= 0) {
+        // The indexed uncompressed size is authoritative. Reaching the codec's
+        // end before it is corruption, not a healthy stream that merely needs
+        // another read call.
+        m_failed = true;
+        break;
+      }
+      total += nx::cast<usize>(count);
+      m_position += nx::cast<u64>(count);
+    }
+    return total;
+  }
+
+  bool seek(const i64 offset, const nx::fs::seek_origin origin) override {
+    if (!m_reader || m_failed)
+      return false;
+    i64 base = 0;
+    switch (origin) {
+    case nx::fs::seek_origin::begin:
+      break;
+    case nx::fs::seek_origin::current:
+      if (m_position > nx::cast<u64>(std::numeric_limits<i64>::max()))
+        return false;
+      base = nx::cast<i64>(m_position);
+      break;
+    case nx::fs::seek_origin::end:
+      if (m_size > nx::cast<u64>(std::numeric_limits<i64>::max()))
+        return false;
+      base = nx::cast<i64>(m_size);
+      break;
+    }
+    if ((offset > 0 && base > std::numeric_limits<i64>::max() - offset) ||
+        (offset < 0 && base < std::numeric_limits<i64>::min() - offset))
+      return false;
+    const i64 signed_target = base + offset;
+    if (signed_target < 0 || nx::cast<u64>(signed_target) > m_size)
+      return false;
+    const u64 target = nx::cast<u64>(signed_target);
+    if (target < m_position && !reopen())
+      return false;
+
+    std::array<u8, 64u * 1024u> discard{};
+    while (m_position < target) {
+      const usize count =
+          nx::cast<usize>(nx::min<u64>(discard.size(), target - m_position));
+      if (read(discard.data(), count) != count)
+        return false;
+    }
+    return true;
+  }
+
+  [[nodiscard]] i64 tell() const override {
+    return m_position <= nx::cast<u64>(std::numeric_limits<i64>::max())
+               ? nx::cast<i64>(m_position)
+               : -1;
+  }
+
+  [[nodiscard]] i64 size() const override {
+    return m_size <= nx::cast<u64>(std::numeric_limits<i64>::max())
+               ? nx::cast<i64>(m_size)
+               : -1;
+  }
+
+  [[nodiscard]] bool eof() const override {
+    return m_failed || m_position >= m_size;
+  }
+
+private:
+  void close_entry() noexcept {
+    if (m_reader && m_open) {
+      (void)mz_zip_reader_entry_close(m_reader->handle);
+      m_open = false;
+    }
+  }
+
+  [[nodiscard]] bool reopen() {
+    close_entry();
+    if (mz_zip_reader_locate_entry(m_reader->handle, m_entry.c_str(), 0) !=
+            MZ_OK ||
+        mz_zip_reader_entry_open(m_reader->handle) != MZ_OK) {
+      m_failed = true;
+      return false;
+    }
+    m_open = true;
+    m_position = 0;
+    return true;
+  }
+
+  ZipDevice &m_owner;
+  ZipReader *m_reader = nullptr;
+  nx::string m_entry;
+  u64 m_size = 0;
+  u64 m_position = 0;
+  bool m_open = true;
+  bool m_failed = false;
+};
+
+io_result<stream_ptr> ZipDevice::open(const path_view rel) {
+  const nx::string key = canon_rel(rel);
+  const auto found = m_index.find(key);
+  if (found == m_index.end() || found->second.is_dir)
+    return err(file_error{io_error::NotFound, 0});
+  if (found->second.size > nx::cast<u64>(std::numeric_limits<i64>::max()))
+    return err(file_error{io_error::FileTooLarge, 0});
+
+  const nx::string full = archive_name(key.view());
+  ZipReader *reader = acquire();
+  if (!reader)
+    return err(file_error{io_error::OpenFailed, 0});
+  if (mz_zip_reader_locate_entry(reader->handle, full.c_str(), 0) != MZ_OK ||
+      mz_zip_reader_entry_open(reader->handle) != MZ_OK) {
+    release_reader(reader);
+    return err(file_error{io_error::NotFound, 0});
+  }
+
+  auto *entry =
+      nx::allocate<EntryStream>(*this, reader, full, found->second.size);
+  if (!entry) {
+    (void)mz_zip_reader_entry_close(reader->handle);
+    release_reader(reader);
+    return err(file_error{io_error::OpenFailed, 0});
+  }
+  return stream_ptr(entry);
 }
+
+} // namespace
 
 io_result<Device *> make_zip_device(path_view zip_path,
                                     const path_view archive_subdir) {
@@ -523,4 +673,4 @@ io_result<void> ZipWriter::close() {
   return {};
 }
 
-}
+} // namespace nx::vfs
