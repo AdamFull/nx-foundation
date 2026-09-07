@@ -157,6 +157,11 @@
 #define NX_UNREACHABLE()
 #endif
 
+/// Prefer this form for public migrations: every supported C++ compiler emits
+/// the replacement guidance at the call site instead of a context-free
+/// deprecation warning.
+#define NX_DEPRECATED_MSG(message) [[deprecated(message)]]
+
 #if defined(NX_PLATFORM_WINDOWS)
 #if defined(NX_BUILD_SHARED)
 #define NX_API __declspec(dllexport)
