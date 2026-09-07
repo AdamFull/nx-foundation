@@ -67,6 +67,7 @@ set(NX_FOUNDATION_HEADERS
   vfs/vfs.h
   vfs/vfs_internal.h
   vfs/async_io.h
+  vfs/native_async_io.h
   vfs/asset_pipeline.h
   vfs/pack_manifest.h
 
@@ -108,6 +109,21 @@ set(NX_FOUNDATION_SOURCES
   reflection/registry.cpp
   serialization/reflect_json.cpp
   serialization/reflect_binary.cpp)
+
+if(WIN32)
+  list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_iocp.cpp)
+elseif(APPLE)
+  list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_dispatch.mm)
+elseif(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_uring.cpp)
+else()
+  list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_fallback.cpp)
+endif()
+
+if(APPLE)
+  set_source_files_properties(vfs/native_async_io_dispatch.mm
+    PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+endif()
 
 add_library(nx_foundation STATIC ${NX_FOUNDATION_SOURCES} ${NX_FOUNDATION_HEADERS})
 add_library(nx::foundation ALIAS nx_foundation)

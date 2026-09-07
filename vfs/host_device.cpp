@@ -46,6 +46,11 @@ public:
     return m_access == HostDeviceAccess::ReadWrite;
   }
   [[nodiscard]] bool watchable() const noexcept override { return true; }
+  [[nodiscard]] bool native_read_path(const path_view rel,
+                                      nx::string &out) const override {
+    out = full(rel);
+    return true;
+  }
 
   io_result<void> write(const path_view rel,
                         const std::span<const u8> data) override {

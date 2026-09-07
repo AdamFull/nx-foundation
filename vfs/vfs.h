@@ -52,6 +52,16 @@ public:
   /// Whether stat().mtime_ns can be polled to discover source changes. This is
   /// a capability declaration, not a promise of push notifications.
   [[nodiscard]] virtual bool watchable() const noexcept { return false; }
+  /// Resolves a read-only entry to an OS filesystem path when this device is
+  /// directly backed by one. VFS keeps this capability provider-neutral;
+  /// asynchronous services use it to select native kernel I/O without making
+  /// HostDevice part of their public contract.
+  [[nodiscard]] virtual bool native_read_path(path_view rel,
+                                              nx::string &out) const {
+    (void)rel;
+    (void)out;
+    return false;
+  }
   virtual io_result<void> write(const path_view rel,
                                 const std::span<const u8> data) {
     (void)rel;

@@ -12,6 +12,31 @@
 
 namespace nx::vfs {
 
+namespace detail {
+class NativeAsyncIo;
+}
+
+enum class AsyncIoBackend : u8 {
+  Blocking,
+  Iocp,
+  IoUring,
+  DispatchIo,
+};
+
+[[nodiscard]] constexpr nx::string_view
+to_string(const AsyncIoBackend backend) noexcept {
+  switch (backend) {
+  case AsyncIoBackend::Iocp:
+    return "iocp";
+  case AsyncIoBackend::IoUring:
+    return "io_uring";
+  case AsyncIoBackend::DispatchIo:
+    return "dispatch_io";
+  default:
+    return "blocking";
+  }
+}
+
 struct AsyncIoConfig {
   /// Blocking requests which may execute concurrently. These workers are kept
   /// separate from CPU jobs so a slow device cannot occupy simulation workers.
@@ -21,6 +46,9 @@ struct AsyncIoConfig {
   u64 byte_limit = 64u * 1024u * 1024u;
   const char *thread_name = "nx-io";
   bool collect_statistics = true;
+  /// Prefer the platform kernel backend for host-backed files. Archive,
+  /// memory, and custom devices continue through the bounded blocking pool.
+  bool enable_native_backend = true;
 };
 
 struct AsyncIoRequest {
@@ -40,6 +68,10 @@ struct AsyncIoStatistics {
   u64 bytes_read = 0;
   u64 whole_reads = 0;
   u64 range_reads = 0;
+  u64 native_reads = 0;
+  u64 fallback_reads = 0;
+  u64 native_cancellations = 0;
+  AsyncIoBackend backend = AsyncIoBackend::Blocking;
 };
 
 class AsyncIoService;
@@ -85,9 +117,10 @@ private:
   u64 m_bytes = 0;
 };
 
-/// Per-request view of the VFS. It propagates cancellation around every
-/// potentially blocking call and releases the operation's byte reservation
-/// when the request completes.
+/// Per-request view of the VFS used by stateful fallback operations. Host-file
+/// read helpers still route through the native backend while preserving this
+/// context's retained byte reservation; provider-specific open/stat work stays
+/// on the bounded I/O worker. Cancellation covers both paths.
 class AsyncIoContext {
 public:
   ~AsyncIoContext();
@@ -119,18 +152,20 @@ public:
 
 private:
   friend class AsyncIoService;
-  AsyncIoContext(AsyncIoService &service,
+  AsyncIoContext(AsyncIoService &service, task_priority priority,
                  cancellation_token cancellation) noexcept;
 
   AsyncIoService &m_service;
+  task_priority m_priority = task_priority::Normal;
   cancellation_token m_cancellation;
   u64 m_reservation = 0;
   u64 m_charged = 0;
 };
 
-/// Bounded executor for blocking VFS operations. Callers may use the built-in
-/// reads or invoke a stateful operation (for example a progressive archive
-/// stream) without depending on the underlying thread-pool implementation.
+/// Asynchronous VFS service. Host-backed whole/range reads use the platform
+/// kernel backend; devices which need user-space work (archives, memory,
+/// remote providers) and custom stateful operations use a bounded fallback
+/// pool without consuming the application's CPU workers.
 class AsyncIoService {
 public:
   explicit AsyncIoService(const AsyncIoConfig &config = {});
@@ -154,14 +189,15 @@ public:
 
     const workload_ticket ticket = m_workload.submit();
     const cancellation_token cancellation = request.cancellation;
+    const task_priority priority = request.priority;
     const u64 reservation = request.reservation_bytes;
     future<R> result = m_pool->async(
-        request.priority,
-        [this, cancellation, reservation, ticket,
+        priority,
+        [this, cancellation, priority, reservation, ticket,
          operation =
              std::decay_t<F>(std::forward<F>(operation))]() mutable -> R {
           return measure_workload(m_workload, ticket, cancellation, [&]() -> R {
-            AsyncIoContext context(*this, cancellation);
+            AsyncIoContext context(*this, priority, cancellation);
             if (reservation != 0)
               context.reserve(reservation);
             context.throw_if_cancelled();
@@ -188,8 +224,8 @@ public:
 
   [[nodiscard]] AsyncIoStatistics statistics() const noexcept;
 
-  /// Cancels service-owned waits and drains all submitted operations. Clients
-  /// must still request cancellation for operations blocked inside a device.
+  /// Cancels native requests and service-owned waits, then drains all submitted
+  /// operations. Custom fallback operations remain cooperatively cancellable.
   /// No request submission may race with shutdown or destruction.
   void shutdown() noexcept;
 
@@ -197,12 +233,24 @@ private:
   friend class AsyncIoContext;
   friend class AsyncIoReservation;
 
+  struct NativeRequest;
+
   [[nodiscard]] u64 acquire_bytes(u64 bytes,
                                   const cancellation_token &cancellation);
   void release_bytes(u64 bytes) noexcept;
   void throw_if_stopping() const;
+  [[nodiscard]] future<io_result<nx::blob<u8>>>
+  enqueue_native(nx::string path, u64 offset, u64 size, AsyncIoRequest request,
+                 bool whole_read, bool charge_budget,
+                 thread_pool *continuation_pool);
+  void pump_native() noexcept;
+  void complete_native(NativeRequest *request, io_result<nx::blob<u8>> result,
+                       bool cancelled) noexcept;
+  [[nodiscard]] NativeRequest *take_ready_native_locked() noexcept;
+  void update_visible_budget_locked() noexcept;
 
   nx::unique_ptr<thread_pool> m_pool;
+  nx::unique_ptr<detail::NativeAsyncIo> m_native;
   workload_tracker m_workload;
   mutable nx::mutex m_budget_lock;
   nx::cond_var m_budget_changed;
@@ -214,6 +262,13 @@ private:
   std::atomic<u64> m_bytes_read{0};
   std::atomic<u64> m_whole_reads{0};
   std::atomic<u64> m_range_reads{0};
+  std::atomic<u64> m_native_reads{0};
+  std::atomic<u64> m_fallback_reads{0};
+  std::atomic<u64> m_native_cancellations{0};
+  nx::vector<NativeRequest *>
+      m_native_pending[static_cast<usize>(task_priority::Count)];
+  u32 m_native_active = 0;
+  const u32 m_native_limit = 1;
 };
 
 } // namespace nx::vfs

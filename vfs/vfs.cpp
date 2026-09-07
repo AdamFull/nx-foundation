@@ -1,8 +1,8 @@
 #include "core/foundation/vfs/vfs_internal.h"
 
 #include "core/foundation/containers/slot_map.h"
-#include "core/foundation/core/hash.h"
 #include "core/foundation/containers/small_vector.h"
+#include "core/foundation/core/hash.h"
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"
 
@@ -101,7 +101,7 @@ io_result<void> write_route(const path_view vpath, Op &&op) {
   return err(file_error{io_error::PermissionDenied, 0});
 }
 
-}
+} // namespace
 
 // Lifetime
 
@@ -267,6 +267,28 @@ FileInfo stat(const path_view vpath) {
 
 bool exists(const path_view vpath) { return stat(vpath).exists; }
 
+bool detail::resolve_native_read(const path_view vpath, NativeReadFile &out) {
+  const nx::string v = canon_vpath(vpath);
+  if (v.empty())
+    return false;
+
+  State &s = state();
+  nx::scoped_shared_lock lock(s.mounts_lock);
+  CandidateList cands;
+  gather(s, v.view(), cands);
+  for (const Candidate &candidate : cands) {
+    const FileInfo info = candidate.device->stat(candidate.rel);
+    if (!info.exists)
+      continue;
+    if (info.is_directory ||
+        !candidate.device->native_read_path(candidate.rel, out.path))
+      return false;
+    out.info = info;
+    return true;
+  }
+  return false;
+}
+
 u64 file_generation(const path_view vpath, const FileInfo &info) noexcept {
   return nx::fnv1a64()
       .combine_all(nx::hash_fnv1a64(vpath.native()), info.mtime_ns, info.size,
@@ -344,4 +366,4 @@ io_result<void> create_directories(const path_view vpath) {
   });
 }
 
-}
+} // namespace nx::vfs

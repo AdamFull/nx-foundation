@@ -17,6 +17,7 @@ namespace nx {
 
 class thread_pool;
 class task_group;
+template <typename T> class completion_source;
 
 /// Scheduling urgency within a pool. Critical is intended for work on which
 /// the current frame or an audio deadline waits; Background is for progressive
@@ -228,6 +229,7 @@ public:
 
 private:
   friend class thread_pool;
+  friend class completion_source<T>;
   template <typename> friend class future;
   explicit future(detail::future_state<T> *s) noexcept : m_state(s) {}
 
@@ -239,6 +241,103 @@ private:
   }
 
   detail::future_state<T> *m_state = nullptr;
+};
+
+/// Single-producer completion endpoint for asynchronous work owned by an
+/// external subsystem (OS I/O, device callbacks, timers, and similar sources).
+/// It creates the same future used by thread_pool, so continuations remain in
+/// the engine scheduler without parking a worker until the external event.
+template <typename T> class completion_source {
+public:
+  explicit completion_source(thread_pool *continuation_pool = nullptr) noexcept
+      : m_state(allocate<detail::future_state<T>>()) {
+    if (m_state != nullptr) {
+      // The source owns the initial reference. get_future() adds the consumer
+      // reference instead of relying on the two-owner thread_pool default.
+      m_state->refs.store(1, std::memory_order_relaxed);
+      m_state->pool = continuation_pool;
+    }
+  }
+
+  ~completion_source() { abandon(); }
+
+  completion_source(const completion_source &) = delete;
+  completion_source &operator=(const completion_source &) = delete;
+
+  completion_source(completion_source &&other) noexcept
+      : m_state(other.m_state), m_future_taken(other.m_future_taken) {
+    other.m_state = nullptr;
+    other.m_future_taken = false;
+  }
+
+  completion_source &operator=(completion_source &&other) noexcept {
+    if (this != &other) {
+      abandon();
+      m_state = other.m_state;
+      m_future_taken = other.m_future_taken;
+      other.m_state = nullptr;
+      other.m_future_taken = false;
+    }
+    return *this;
+  }
+
+  [[nodiscard]] bool valid() const noexcept { return m_state != nullptr; }
+
+  /// Returns the sole consumer handle. Calling this more than once yields an
+  /// invalid future rather than manufacturing multiple consumers for a
+  /// move-only result.
+  [[nodiscard]] future<T> get_future() noexcept {
+    if (m_state == nullptr || m_future_taken)
+      return {};
+    m_future_taken = true;
+    m_state->refs.fetch_add(1, std::memory_order_relaxed);
+    return future<T>(m_state);
+  }
+
+  template <typename... Args>
+    requires(!std::is_void_v<T>)
+  void set_value(Args &&...args) {
+    assert(m_state != nullptr && "completion_source completed twice");
+    ::new (m_state->storage) T(std::forward<Args>(args)...);
+    finish(1);
+  }
+
+  void set_value()
+    requires(std::is_void_v<T>)
+  {
+    assert(m_state != nullptr && "completion_source completed twice");
+    finish(1);
+  }
+
+  void set_exception(std::exception_ptr error) noexcept {
+    assert(m_state != nullptr && "completion_source completed twice");
+    m_state->error = std::move(error);
+    finish(2);
+  }
+
+  void set_cancelled() noexcept {
+    assert(m_state != nullptr && "completion_source completed twice");
+    finish(3);
+  }
+
+private:
+  void finish(const u32 status) noexcept {
+    detail::future_state<T> *const state = m_state;
+    m_state = nullptr;
+    m_future_taken = false;
+    detail::future_state_finish(state, status);
+    detail::future_state_release(state);
+  }
+
+  void abandon() noexcept {
+    if (m_state == nullptr)
+      return;
+    // A destroyed producer must never leave its consumer waiting forever.
+    set_cancelled();
+  }
+
+  detail::future_state<T> *m_state = nullptr;
+  bool m_future_taken = false;
 };
 
 class thread_pool {

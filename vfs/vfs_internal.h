@@ -7,6 +7,16 @@
 
 namespace nx::vfs::detail {
 
+struct NativeReadFile {
+  nx::string path;
+  FileInfo info;
+};
+
+/// Resolves the first existing provider for a virtual path. A lower-priority
+/// native mount is deliberately not selected when a higher-priority memory or
+/// archive device owns the entry; this preserves normal VFS shadowing rules.
+[[nodiscard]] bool resolve_native_read(path_view vpath, NativeReadFile &out);
+
 [[nodiscard]] inline nx::string canon_vpath(const path_view v) {
   nx::string s = nx::fs::path::normalize(nx::fs::path::join("/", v.native()));
   if (!s.empty() && s.front() != '/')
@@ -71,4 +81,4 @@ private:
   nx::hash_map<nx::string, u8> m_seen;
 };
 
-}
+} // namespace nx::vfs::detail

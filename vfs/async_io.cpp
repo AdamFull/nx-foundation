@@ -1,4 +1,6 @@
 #include "core/foundation/vfs/async_io.h"
+#include "core/foundation/vfs/native_async_io.h"
+#include "core/foundation/vfs/vfs_internal.h"
 
 #include <chrono>
 #include <limits>
@@ -34,6 +36,27 @@ constexpr usize READ_CHUNK = 256u * 1024u;
 
 } // namespace
 
+struct AsyncIoService::NativeRequest {
+  NativeRequest(thread_pool *pool, nx::string native_path,
+                const u64 read_offset, const u64 read_size,
+                AsyncIoRequest io_request,
+                const bool should_charge_budget) noexcept
+      : completion(pool), path(std::move(native_path)), offset(read_offset),
+        size(read_size), cancellation(std::move(io_request.cancellation)),
+        priority(io_request.priority), charge_budget(should_charge_budget) {}
+
+  completion_source<io_result<nx::blob<u8>>> completion;
+  nx::string path;
+  u64 offset = 0;
+  u64 size = 0;
+  cancellation_token cancellation;
+  task_priority priority = task_priority::Normal;
+  workload_ticket ticket;
+  u64 started_at_ns = 0;
+  u64 charged = 0;
+  bool charge_budget = true;
+};
+
 void AsyncIoReservation::reset() noexcept {
   if (m_service != nullptr && m_bytes != 0)
     m_service->release_bytes(m_bytes);
@@ -42,8 +65,10 @@ void AsyncIoReservation::reset() noexcept {
 }
 
 AsyncIoContext::AsyncIoContext(AsyncIoService &service,
+                               const task_priority priority,
                                cancellation_token cancellation) noexcept
-    : m_service(service), m_cancellation(std::move(cancellation)) {}
+    : m_service(service), m_priority(priority),
+      m_cancellation(std::move(cancellation)) {}
 
 AsyncIoContext::~AsyncIoContext() {
   if (m_charged != 0)
@@ -93,12 +118,28 @@ AsyncIoReservation AsyncIoContext::take_reservation() noexcept {
 
 void AsyncIoContext::record_range_read(const u64 bytes) noexcept {
   m_service.m_range_reads.fetch_add(1, std::memory_order_relaxed);
+  m_service.m_fallback_reads.fetch_add(1, std::memory_order_relaxed);
   m_service.m_bytes_read.fetch_add(bytes, std::memory_order_relaxed);
 }
 
 io_result<nx::blob<u8>> AsyncIoContext::read(const path_view path,
                                              const u64 max_bytes) {
+  detail::NativeReadFile native;
+  if (m_service.m_native && detail::resolve_native_read(path, native) &&
+      native.info.size <= std::numeric_limits<usize>::max() &&
+      (max_bytes == 0 || native.info.size <= max_bytes)) {
+    reserve(native.info.size);
+    auto pending = m_service.enqueue_native(
+        std::move(native.path), 0, native.info.size,
+        {.priority = m_priority, .cancellation = m_cancellation}, true, false,
+        nullptr);
+    if (!pending.valid())
+      return err(file_error{io_error::ReadFailed, 0});
+    return pending.get();
+  }
+
   m_service.m_whole_reads.fetch_add(1, std::memory_order_relaxed);
+  m_service.m_fallback_reads.fetch_add(1, std::memory_order_relaxed);
   auto opened = open(path);
   if (!opened)
     return err(opened.error());
@@ -139,7 +180,22 @@ io_result<nx::blob<u8>> AsyncIoContext::read(const path_view path,
 io_result<nx::blob<u8>> AsyncIoContext::read_range(const path_view path,
                                                    const u64 offset,
                                                    const u64 size) {
+  detail::NativeReadFile native;
+  if (m_service.m_native && detail::resolve_native_read(path, native) &&
+      offset <= native.info.size && size <= native.info.size - offset &&
+      size <= std::numeric_limits<usize>::max()) {
+    reserve(size);
+    auto pending = m_service.enqueue_native(
+        std::move(native.path), offset, size,
+        {.priority = m_priority, .cancellation = m_cancellation}, false, false,
+        nullptr);
+    if (!pending.valid())
+      return err(file_error{io_error::ReadFailed, 0});
+    return pending.get();
+  }
+
   m_service.m_range_reads.fetch_add(1, std::memory_order_relaxed);
+  m_service.m_fallback_reads.fetch_add(1, std::memory_order_relaxed);
   auto opened = open(path);
   if (!opened)
     return err(opened.error());
@@ -156,7 +212,8 @@ io_result<nx::blob<u8>> AsyncIoContext::read_range(const path_view path,
 }
 
 AsyncIoService::AsyncIoService(const AsyncIoConfig &config)
-    : m_byte_limit(config.byte_limit) {
+    : m_byte_limit(config.byte_limit),
+      m_native_limit(nx::max(1u, config.max_concurrent_requests)) {
   const u32 concurrency = nx::max(1u, config.max_concurrent_requests);
   m_pool = nx::make_unique<thread_pool>(thread_pool::config{
       .thread_count = concurrency,
@@ -166,6 +223,8 @@ AsyncIoService::AsyncIoService(const AsyncIoConfig &config)
       .max_background_concurrency = 0,
       .collect_statistics = config.collect_statistics,
   });
+  if (config.enable_native_backend)
+    m_native = detail::make_native_async_io(config.thread_name);
 }
 
 AsyncIoService::~AsyncIoService() { shutdown(); }
@@ -173,6 +232,13 @@ AsyncIoService::~AsyncIoService() { shutdown(); }
 future<io_result<nx::blob<u8>>> AsyncIoService::read(const path_view path,
                                                      AsyncIoRequest request,
                                                      const u64 max_bytes) {
+  detail::NativeReadFile native;
+  if (m_native && detail::resolve_native_read(path, native) &&
+      native.info.size <= std::numeric_limits<usize>::max() &&
+      (max_bytes == 0 || native.info.size <= max_bytes)) {
+    return enqueue_native(std::move(native.path), 0, native.info.size,
+                          std::move(request), true, true, m_pool.get());
+  }
   return async(std::move(request), [path = nx::string(path.native()),
                                     max_bytes](AsyncIoContext &context) {
     return context.read(path.view(), max_bytes);
@@ -182,11 +248,175 @@ future<io_result<nx::blob<u8>>> AsyncIoService::read(const path_view path,
 future<io_result<nx::blob<u8>>>
 AsyncIoService::read_range(const path_view path, const u64 offset,
                            const u64 size, AsyncIoRequest request) {
+  detail::NativeReadFile native;
+  if (m_native && detail::resolve_native_read(path, native) &&
+      offset <= native.info.size && size <= native.info.size - offset &&
+      size <= std::numeric_limits<usize>::max()) {
+    return enqueue_native(std::move(native.path), offset, size,
+                          std::move(request), false, true, m_pool.get());
+  }
   request.reservation_bytes = size;
   return async(std::move(request), [path = nx::string(path.native()), offset,
                                     size](AsyncIoContext &context) {
     return context.read_range(path.view(), offset, size);
   });
+}
+
+future<io_result<nx::blob<u8>>>
+AsyncIoService::enqueue_native(nx::string path, const u64 offset,
+                               const u64 size, AsyncIoRequest request,
+                               const bool whole_read, const bool charge_budget,
+                               thread_pool *const continuation_pool) {
+  if (!m_pool || !m_native || m_stopping.load(std::memory_order_acquire))
+    return {};
+
+  NativeRequest *pending =
+      nx::allocate<NativeRequest>(continuation_pool, std::move(path), offset,
+                                  size, std::move(request), charge_budget);
+  if (pending == nullptr || !pending->completion.valid()) {
+    if (pending != nullptr)
+      nx::release(pending);
+    return {};
+  }
+  future<io_result<nx::blob<u8>>> result = pending->completion.get_future();
+  pending->ticket = m_workload.submit();
+  if (whole_read)
+    m_whole_reads.fetch_add(1, std::memory_order_relaxed);
+  else
+    m_range_reads.fetch_add(1, std::memory_order_relaxed);
+  m_native_reads.fetch_add(1, std::memory_order_relaxed);
+
+  {
+    try {
+      nx::scoped_lock lock(m_budget_lock);
+      if (m_stopping.load(std::memory_order_relaxed)) {
+        pending->started_at_ns = m_workload.start(pending->ticket);
+        ++m_native_active;
+        // Completion outside the lock keeps user continuations re-entrant.
+      } else {
+        m_native_pending[task_priority_index(pending->priority)].push_back(
+            pending);
+        pending = nullptr;
+      }
+    } catch (...) {
+      m_workload.reject(pending->ticket);
+      pending->completion.set_exception(std::current_exception());
+      nx::release(pending);
+      return result;
+    }
+  }
+  if (pending != nullptr) {
+    complete_native(pending, err(file_error{io_error::Interrupted, 0}), true);
+  } else {
+    pump_native();
+  }
+  return result;
+}
+
+AsyncIoService::NativeRequest *
+AsyncIoService::take_ready_native_locked() noexcept {
+  if (m_native_active >= m_native_limit)
+    return nullptr;
+
+  for (usize priority = task_priority_index(task_priority::Count);
+       priority-- > 0;) {
+    nx::vector<NativeRequest *> &queue = m_native_pending[priority];
+    for (usize i = 0; i < queue.size(); ++i) {
+      NativeRequest *request = queue[i];
+      const u64 charge = !request->charge_budget || m_byte_limit == 0
+                             ? 0
+                             : nx::min(request->size, m_byte_limit);
+      const bool cancelled = request->cancellation.stop_requested();
+      const bool fits =
+          charge == 0 ||
+          charge <= m_byte_limit - nx::min(m_byte_limit, m_bytes_in_flight);
+      if (!cancelled && !fits)
+        continue;
+
+      queue.erase(queue.begin() + nx::cast<isize>(i));
+      request->charged = cancelled ? 0 : charge;
+      m_bytes_in_flight += request->charged;
+      ++m_native_active;
+      update_visible_budget_locked();
+      return request;
+    }
+  }
+  return nullptr;
+}
+
+void AsyncIoService::pump_native() noexcept {
+  for (;;) {
+    NativeRequest *request = nullptr;
+    {
+      nx::scoped_lock lock(m_budget_lock);
+      if (m_stopping.load(std::memory_order_relaxed))
+        return;
+      request = take_ready_native_locked();
+      if (request == nullptr)
+        return;
+      request->started_at_ns = m_workload.start(request->ticket);
+    }
+
+    if (request->cancellation.stop_requested()) {
+      complete_native(request, err(file_error{io_error::Interrupted, 0}), true);
+      continue;
+    }
+
+    detail::NativeAsyncReadRequest native_request{
+        .path = std::move(request->path),
+        .offset = request->offset,
+        .size = request->size,
+        .cancellation = request->cancellation,
+    };
+    detail::NativeAsyncReadCompletion completion(
+        [this, request](io_result<nx::blob<u8>> bytes,
+                        const bool cancelled) mutable {
+          complete_native(request, std::move(bytes), cancelled);
+        });
+    if (!m_native->submit(std::move(native_request), std::move(completion))) {
+      complete_native(request, err(file_error{io_error::OpenFailed, 0}),
+                      m_stopping.load(std::memory_order_acquire));
+    }
+  }
+}
+
+void AsyncIoService::complete_native(NativeRequest *request,
+                                     io_result<nx::blob<u8>> result,
+                                     bool cancelled) noexcept {
+  cancelled = cancelled || request->cancellation.stop_requested() ||
+              m_stopping.load(std::memory_order_acquire);
+  if (!cancelled && result)
+    m_bytes_read.fetch_add(result->size(), std::memory_order_relaxed);
+  if (cancelled)
+    m_native_cancellations.fetch_add(1, std::memory_order_relaxed);
+  m_workload.complete(request->started_at_ns, cancelled, false);
+
+  {
+    nx::scoped_lock lock(m_budget_lock);
+    assert(m_native_active != 0);
+    --m_native_active;
+    assert(request->charged <= m_bytes_in_flight);
+    m_bytes_in_flight -= request->charged;
+    update_visible_budget_locked();
+  }
+  m_budget_changed.notify_all();
+
+  if (cancelled)
+    request->completion.set_cancelled();
+  else
+    request->completion.set_value(std::move(result));
+  nx::release(request);
+  pump_native();
+}
+
+void AsyncIoService::update_visible_budget_locked() noexcept {
+  m_visible_bytes_in_flight.store(m_bytes_in_flight, std::memory_order_relaxed);
+  u64 peak = m_peak_bytes_in_flight.load(std::memory_order_relaxed);
+  while (peak < m_bytes_in_flight &&
+         !m_peak_bytes_in_flight.compare_exchange_weak(
+             peak, m_bytes_in_flight, std::memory_order_relaxed,
+             std::memory_order_relaxed)) {
+  }
 }
 
 u64 AsyncIoService::acquire_bytes(const u64 bytes,
@@ -202,13 +432,7 @@ u64 AsyncIoService::acquire_bytes(const u64 bytes,
                                     std::chrono::milliseconds(2));
   }
   m_bytes_in_flight += charged;
-  m_visible_bytes_in_flight.store(m_bytes_in_flight, std::memory_order_relaxed);
-  u64 peak = m_peak_bytes_in_flight.load(std::memory_order_relaxed);
-  while (peak < m_bytes_in_flight &&
-         !m_peak_bytes_in_flight.compare_exchange_weak(
-             peak, m_bytes_in_flight, std::memory_order_relaxed,
-             std::memory_order_relaxed)) {
-  }
+  update_visible_budget_locked();
   return charged;
 }
 
@@ -219,10 +443,11 @@ void AsyncIoService::release_bytes(const u64 bytes) noexcept {
     nx::scoped_lock lock(m_budget_lock);
     assert(bytes <= m_bytes_in_flight);
     m_bytes_in_flight -= bytes;
-    m_visible_bytes_in_flight.store(m_bytes_in_flight,
-                                    std::memory_order_relaxed);
+    update_visible_budget_locked();
   }
   m_budget_changed.notify_all();
+  if (!m_stopping.load(std::memory_order_acquire))
+    pump_native();
 }
 
 void AsyncIoService::throw_if_stopping() const {
@@ -242,6 +467,11 @@ AsyncIoStatistics AsyncIoService::statistics() const noexcept {
       .bytes_read = m_bytes_read.load(std::memory_order_relaxed),
       .whole_reads = m_whole_reads.load(std::memory_order_relaxed),
       .range_reads = m_range_reads.load(std::memory_order_relaxed),
+      .native_reads = m_native_reads.load(std::memory_order_relaxed),
+      .fallback_reads = m_fallback_reads.load(std::memory_order_relaxed),
+      .native_cancellations =
+          m_native_cancellations.load(std::memory_order_relaxed),
+      .backend = m_native ? m_native->backend() : AsyncIoBackend::Blocking,
   };
 }
 
@@ -250,6 +480,28 @@ void AsyncIoService::shutdown() noexcept {
     return;
   m_stopping.store(true, std::memory_order_release);
   m_budget_changed.notify_all();
+
+  for (;;) {
+    NativeRequest *pending = nullptr;
+    {
+      nx::scoped_lock lock(m_budget_lock);
+      for (nx::vector<NativeRequest *> &queue : m_native_pending) {
+        if (queue.empty())
+          continue;
+        pending = queue.back();
+        queue.pop_back();
+        pending->started_at_ns = m_workload.start(pending->ticket);
+        ++m_native_active;
+        break;
+      }
+    }
+    if (pending == nullptr)
+      break;
+    complete_native(pending, err(file_error{io_error::Interrupted, 0}), true);
+  }
+  if (m_native)
+    m_native->shutdown();
+  m_native.reset();
   m_pool->wait_idle();
   m_pool.reset();
 }
