@@ -1,9 +1,11 @@
 #pragma once
 
+#include "core/foundation/core/scope_guard.h"
 #include "core/foundation/platform/os.h"
 #include "core/foundation/threading/cancellation.h"
 
 #include <atomic>
+#include <exception>
 #include <functional>
 #include <type_traits>
 #include <utility>
@@ -129,24 +131,22 @@ auto measure_workload(workload_tracker &tracker, const workload_ticket ticket,
                       const cancellation_token &cancellation, F &&callable)
     -> std::invoke_result_t<F &> {
   const u64 started = tracker.start(ticket);
-  try {
-    cancellation.throw_if_requested();
-    using R = std::invoke_result_t<F &>;
-    if constexpr (std::is_void_v<R>) {
-      std::invoke(callable);
-      tracker.complete(started);
-      return;
-    } else {
-      R result = std::invoke(callable);
-      tracker.complete(started);
-      return result;
-    }
-  } catch (const task_cancelled &) {
-    tracker.complete(started, true, false);
-    throw;
-  } catch (...) {
-    tracker.complete(started, false, true);
-    throw;
+  const int exceptions_at_entry = std::uncaught_exceptions();
+  const auto finish = scoped_exit([&] {
+    const bool unwinding = std::uncaught_exceptions() > exceptions_at_entry;
+    const bool cancelled = unwinding && cancellation.stop_requested();
+    tracker.complete(started, cancelled, unwinding && !cancelled);
+  });
+
+  // Telemetry observes task termination without intercepting its exception;
+  // futures and task groups remain the sole owners of outcome propagation.
+  cancellation.throw_if_requested();
+  using R = std::invoke_result_t<F &>;
+  if constexpr (std::is_void_v<R>) {
+    std::invoke(callable);
+    return;
+  } else {
+    return std::invoke(callable);
   }
 }
 
