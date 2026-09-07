@@ -1,6 +1,6 @@
 #include "core/foundation/vfs/native_async_io.h"
 
-#if defined(NX_PLATFORM_LINUX) || defined(NX_PLATFORM_ANDROID)
+#if defined(NX_PLATFORM_LINUX) && !defined(NX_PLATFORM_ANDROID)
 
 #if __has_include(<linux/io_uring.h>)
 #include <linux/io_uring.h>

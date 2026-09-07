@@ -114,7 +114,12 @@ if(WIN32)
   list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_iocp.cpp)
 elseif(APPLE)
   list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_dispatch.mm)
-elseif(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+elseif(ANDROID)
+  # Android seccomp policies may terminate a process which probes io_uring,
+  # rather than returning a recoverable error. Provider-backed reads (APK,
+  # packages and app storage) use AsyncIoService's bounded VFS worker pool.
+  list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_fallback.cpp)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_uring.cpp)
 else()
   list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_fallback.cpp)
