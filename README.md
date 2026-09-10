@@ -138,6 +138,7 @@ if (result.status == nx::cli::ParseStatus::Help)
 | Type | Header | Use it for |
 | --- | --- | --- |
 | `nx::log` | `diagnostics/log.h` | Asynchronous multi-sink logger: `nx::logv/logd/logi/logw/loge/logc` helpers, runtime-interned string categories (`log::category("name")`, predefined `app`/`gpu`/`render`/`system`), per-category and global level filtering, and console (colored) / debugger / rotating-file sinks. Records format on the caller and drain on a background worker; `log::init()`/`shutdown()` bracket its lifetime. |
+| `nx::crash` | `diagnostics/crash.h` | Cross-platform fatal-report installation, bounded runtime notes and log tail, native minidumps where supported, and explicit non-signal reports. A `Fatal` report may include bounded binary attachments; they are atomically written as sanitized sidecars beside the text report and pruned with their owner. |
 | `NX_ASSERT` | `diagnostics/diagnostic.h` | Contract checks that log, flush, and break in debug builds and compile out in release. Also the `nx::dbg_*` helpers (break, is-present, wait-for-attach). |
 | `NX_PROFILE_*` | `diagnostics/profiler.h` | Zone/frame/thread-name/plot instrumentation macros, forwarding to the Tracy client. No-ops unless the profile configuration is built (`NX_ENABLE_PROFILER` / `NX_PROFILE_ENABLED`). |
 

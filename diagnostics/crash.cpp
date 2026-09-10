@@ -806,11 +806,20 @@ void prune(const string_view where, const u32 keep) {
 
   std::sort(reports.begin(), reports.end());
   const usize drop = reports.size() - keep;
-  for (usize i = 0; i < drop; ++i)
+  for (usize i = 0; i < drop; ++i) {
+    if (reports[i].ends_with(".txt")) {
+      string attachment_prefix(
+          reports[i].view().substr(0, reports[i].size() - 4));
+      attachment_prefix.push_back('-');
+      for (const fs::directory_entry &entry : listed.value())
+        if (entry.path.starts_with(attachment_prefix))
+          (void)fs::remove(entry.path);
+    }
     (void)fs::remove(reports[i]);
+  }
 }
 
-}
+} // namespace
 
 bool install(const Config &config) {
   State &s = state();
@@ -919,6 +928,17 @@ void clear_note(const string_view key) {
     }
 }
 
+bool valid_attachment_name(const string_view name) noexcept {
+  if (name.empty() || name.size() >= ATTACHMENT_NAME_CAPACITY || name == "." ||
+      name == "..")
+    return false;
+  for (const char c : name)
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'))
+      return false;
+  return true;
+}
+
 bool report(const Fatal &fatal) {
   State &s = state();
   if (s.directory_length == 0)
@@ -951,6 +971,33 @@ bool report(const Fatal &fatal) {
       out.text(fatal.detail);
       out.nl();
     }
+    if (!fatal.attachments.empty()) {
+      out.text("\n--- attachments ---\n");
+      const string_view report_stem =
+          path.ends_with(".txt") ? path.view().substr(0, path.size() - 4)
+                                 : path.view();
+      for (const Attachment &attachment : fatal.attachments) {
+        if (!valid_attachment_name(attachment.name)) {
+          out.text("rejected invalid attachment name\n");
+          continue;
+        }
+        if (attachment.bytes.size() > ATTACHMENT_SIZE_CAPACITY) {
+          out.text(attachment.name);
+          out.text(" : rejected (size limit)\n");
+          continue;
+        }
+        nx::string attachment_path(report_stem);
+        attachment_path.push_back('-');
+        attachment_path.append(attachment.name);
+        const auto wrote =
+            fs::file_write_atomic(attachment_path, attachment.bytes);
+        out.text(attachment.name);
+        out.text(wrote ? " : " : " : write failed: ");
+        out.text(wrote ? attachment_path.view()
+                       : fs::to_string(wrote.error().kind));
+        out.nl();
+      }
+    }
     write_notes(out);
     write_tail(out);
   }
@@ -978,4 +1025,4 @@ vector<string> pending_reports() {
   return found;
 }
 
-}
+} // namespace nx::crash
