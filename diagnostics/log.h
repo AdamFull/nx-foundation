@@ -135,6 +135,7 @@ void submit(Level level, Category category, const char *message) noexcept;
 inline const Category app = category("app");
 inline const Category gpu = category("gpu");
 inline const Category render = category("render");
+inline const Category rhi = category("rhi");
 inline const Category system = category("system");
 
 }
