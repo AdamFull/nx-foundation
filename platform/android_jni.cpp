@@ -102,4 +102,27 @@ nx::vector<i64> to_nx_i64_vector(JNIEnv *const env, const jlongArray value) {
   return out;
 }
 
+nx::string to_nx_bytes(JNIEnv *const env, const jbyteArray value) {
+  if (env == nullptr || value == nullptr)
+    return {};
+  const jsize count = env->GetArrayLength(value);
+  nx::string out;
+  out.resize(static_cast<usize>(count));
+  static_assert(sizeof(jbyte) == sizeof(char));
+  env->GetByteArrayRegion(value, 0, count, reinterpret_cast<jbyte *>(out.data()));
+  return out;
+}
+
+jbyteArray to_jbyte_array(JNIEnv *const env, const nx::string_view value) {
+  if (env == nullptr)
+    return nullptr;
+  const jbyteArray array = env->NewByteArray(static_cast<jsize>(value.size()));
+  if (array == nullptr)
+    return nullptr;
+  static_assert(sizeof(jbyte) == sizeof(char));
+  env->SetByteArrayRegion(array, 0, static_cast<jsize>(value.size()),
+                          reinterpret_cast<const jbyte *>(value.data()));
+  return array;
+}
+
 }

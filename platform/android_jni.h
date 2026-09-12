@@ -76,4 +76,11 @@ private:
 to_jstring_array(JNIEnv *env, const nx::vector<nx::string> &values);
 [[nodiscard]] nx::vector<i64> to_nx_i64_vector(JNIEnv *env, jlongArray value);
 
+/// Raw byte payloads (e.g. Play Games Services' Snapshots cloud-save
+/// contents) - `nx::string` is used purely as a byte buffer here, the same
+/// convention `GameCenterCloudSaves::read()` already uses for
+/// `NSData`-backed saved games.
+[[nodiscard]] nx::string to_nx_bytes(JNIEnv *env, jbyteArray value);
+[[nodiscard]] jbyteArray to_jbyte_array(JNIEnv *env, nx::string_view value);
+
 }
