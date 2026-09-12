@@ -62,6 +62,7 @@ set(NX_FOUNDATION_HEADERS
   platform/native_window.h
   platform/os.h
   platform/shared_library.h
+  platform/android_jni.h
   platform/socket.h
 
   vfs/vfs.h
@@ -118,7 +119,8 @@ elseif(ANDROID)
   # Android seccomp policies may terminate a process which probes io_uring,
   # rather than returning a recoverable error. Provider-backed reads (APK,
   # packages and app storage) use AsyncIoService's bounded VFS worker pool.
-  list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_fallback.cpp)
+  list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_fallback.cpp
+    platform/android_jni.cpp)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_uring.cpp)
 else()
