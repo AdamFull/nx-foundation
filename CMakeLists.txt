@@ -31,6 +31,7 @@ set(NX_FOUNDATION_HEADERS
   containers/stream_compact.h
   containers/string_map.h
   containers/stable_pool.h
+  containers/sync_slot_map.h
 
   strings/format.h
   strings/id_string.h
