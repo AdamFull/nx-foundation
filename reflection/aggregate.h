@@ -86,14 +86,16 @@ template <class T, usize I, auto P> consteval string_view signature() {
   return last == string_view::npos ? string_view{}
                                    : sig.substr(first, last - first);
 #else
-  // GCC/Clang qualify the field with its (possibly namespaced) class name -
-  // "...value.nxe::audio::BankSound::loop_begin)" - not the bare
-  // ".loop_begin)" this used to assume, so the field name is whatever comes
-  // after the LAST "::" before the closing paren, not everything after the
-  // first dot. Verified against real GCC 13 output (a MinGW build here
-  // reproduces CI's error exactly); the old version silently extracted the
-  // rest of the whole signature as the "name", so nothing named this way
-  // could ever match and NX_ATTRIBUTES() failed for every type on GCC.
+  // Clang: "...[T = ..., P = &fake.value.loop_begin]" - bare field name,
+  // nothing between it and the closing bracket. GCC: "...(& fake<T>.
+  // fake_storage<T>::value.nxe::audio::BankSound::loop_begin); ...]" - the
+  // pointer expression is parenthesized and the field is qualified with
+  // its (possibly namespaced) class name, so everything after the last dot
+  // used to come back as the "name" here, most of it noise past the real
+  // field. Verified directly against real GCC 13 (MinGW, reproduces CI's
+  // "static assertion failed" exactly) and Clang: NX_ATTRIBUTES() was
+  // broken for every type on GCC specifically, not Clang, which is why
+  // this only ever showed up on the plain (non-clang) Linux preset.
   const usize end = sig.rfind(']');
   if (end == string_view::npos)
     return {};
@@ -101,9 +103,9 @@ template <class T, usize I, auto P> consteval string_view signature() {
   if (dot == string_view::npos)
     return {};
   const usize close = sig.find(')', dot);
-  if (close == string_view::npos)
-    return {};
-  const usize scope = sig.rfind("::", close);
+  if (close == string_view::npos || close > end) // Clang: no wrapping parens
+    return sig.substr(dot + 1, end - dot - 1);
+  const usize scope = sig.rfind("::", close); // GCC: strip the class scope
   return scope == string_view::npos ? string_view{}
                                     : sig.substr(scope + 2, close - scope - 2);
 #endif
