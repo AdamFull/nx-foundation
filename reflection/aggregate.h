@@ -86,12 +86,26 @@ template <class T, usize I, auto P> consteval string_view signature() {
   return last == string_view::npos ? string_view{}
                                    : sig.substr(first, last - first);
 #else
+  // GCC/Clang qualify the field with its (possibly namespaced) class name -
+  // "...value.nxe::audio::BankSound::loop_begin)" - not the bare
+  // ".loop_begin)" this used to assume, so the field name is whatever comes
+  // after the LAST "::" before the closing paren, not everything after the
+  // first dot. Verified against real GCC 13 output (a MinGW build here
+  // reproduces CI's error exactly); the old version silently extracted the
+  // rest of the whole signature as the "name", so nothing named this way
+  // could ever match and NX_ATTRIBUTES() failed for every type on GCC.
   const usize end = sig.rfind(']');
   if (end == string_view::npos)
     return {};
   const usize dot = sig.rfind('.', end);
-  return dot == string_view::npos ? string_view{}
-                                  : sig.substr(dot + 1, end - dot - 1);
+  if (dot == string_view::npos)
+    return {};
+  const usize close = sig.find(')', dot);
+  if (close == string_view::npos)
+    return {};
+  const usize scope = sig.rfind("::", close);
+  return scope == string_view::npos ? string_view{}
+                                    : sig.substr(scope + 2, close - scope - 2);
 #endif
 }
 
