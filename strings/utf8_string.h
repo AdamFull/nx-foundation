@@ -5,6 +5,7 @@
 #include "core/foundation/strings/utf8_string_view.h"
 
 #include <cassert>
+#include <cstring>
 #include <format>
 #include <string>
 

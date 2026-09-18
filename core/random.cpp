@@ -1,6 +1,7 @@
 #include "core/foundation/core/random.h"
 
 #include <bit>
+#include <cstring>
 
 namespace nx {
 namespace {
