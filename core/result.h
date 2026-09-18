@@ -28,9 +28,15 @@ template <typename T, typename E> union storage {
 };
 
 template <typename E> union storage<void, E> {
+  // Unlike storage<T, E>, there's no "value" member here for the default
+  // constructor to activate - GCC's constexpr evaluator (unlike Clang's)
+  // treats a union left with no active member as incompletely initialized,
+  // rejecting `constexpr result<void, E> ok;` as not a constant expression.
+  // This dummy member gives the default constructor something to activate.
+  struct empty_t {} none;
   E error;
 
-  constexpr storage() {}
+  constexpr storage() : none() {}
   constexpr ~storage() {}
 };
 
