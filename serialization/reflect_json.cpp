@@ -65,12 +65,10 @@ void store_real(void *p, const u32 size, const f64 value) noexcept {
                                   : static_cast<i64>(load_unsigned(p, t.size));
 }
 
-[[nodiscard]] value write_value(const type_info &t, const void *p,
-                                write_mode mode);
-void read_value(const type_info &t, const value &v, void *p);
-[[nodiscard]] bool same_as(const type_info &t, const void *a, const void *b);
+} // namespace
 
-[[nodiscard]] bool same_as(const type_info &t, const void *a, const void *b) {
+[[nodiscard]] static bool same_as(const type_info &t, const void *a,
+                                  const void *b) {
   switch (t.kind) {
   case type_kind::string:
     return *static_cast<const string *>(a) == *static_cast<const string *>(b);
@@ -99,8 +97,7 @@ void read_value(const type_info &t, const value &v, void *p);
   }
 }
 
-[[nodiscard]] value write_value(const type_info &t, const void *p,
-                                const write_mode mode) {
+value write_value(const type_info &t, const void *p, const write_mode mode) {
   switch (t.kind) {
   case type_kind::boolean:
     return value(*static_cast<const bool *>(p));
@@ -197,8 +194,6 @@ void read_value(const type_info &t, const value &v, void *p) {
   case type_kind::opaque:
     break;
   }
-}
-
 }
 
 value write_fields(const type_info &type, const void *object,

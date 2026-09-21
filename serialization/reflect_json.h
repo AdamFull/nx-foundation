@@ -16,6 +16,13 @@ enum class write_mode : u8 {
 
 void read_fields(const reflect::type_info &type, const value &in, void *object);
 
+/// One value of any reflected type; read_value leaves what @p in omits as it
+/// was.
+[[nodiscard]] value write_value(const reflect::type_info &type,
+                                const void *object,
+                                write_mode mode = write_mode::every_field);
+void read_value(const reflect::type_info &type, const value &in, void *object);
+
 template <class T>
 [[nodiscard]] value
 write_fields(const T &object,
