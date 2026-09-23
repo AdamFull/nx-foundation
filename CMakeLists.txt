@@ -53,6 +53,9 @@ set(NX_FOUNDATION_HEADERS
   serialization/reflect_json.h
   serialization/reflect_binary.h
 
+  fibers/context.h
+  fibers/stack.h
+
   threading/cancellation.h
   threading/sync.h
   threading/thread.h
@@ -83,6 +86,8 @@ set(NX_FOUNDATION_HEADERS
 set(NX_FOUNDATION_SOURCES
   core/foundation.cpp
   core/random.cpp
+  fibers/context.cpp
+  fibers/stack.cpp
   threading/sync.cpp
   threading/thread.cpp
   threading/thread_pool.cpp
@@ -112,6 +117,15 @@ set(NX_FOUNDATION_SOURCES
   serialization/reflect_json.cpp
   serialization/reflect_binary.cpp)
 
+# Enabled here rather than at the root: a root-level ASM_MASM breaks zstd's project(... C ASM).
+if(MSVC)
+  enable_language(ASM_MASM)
+else()
+  enable_language(ASM)
+  list(APPEND NX_FOUNDATION_SOURCES
+    fibers/context_aarch64.S fibers/context_x64_sysv.S)
+endif()
+
 if(WIN32)
   list(APPEND NX_FOUNDATION_SOURCES vfs/native_async_io_iocp.cpp)
 elseif(APPLE)
@@ -135,6 +149,14 @@ endif()
 
 add_library(nx_foundation STATIC ${NX_FOUNDATION_SOURCES} ${NX_FOUNDATION_HEADERS})
 add_library(nx::foundation ALIAS nx_foundation)
+
+if(MSVC)
+  # Assembled apart from nx_foundation so ml64 is not handed nx::compile_options' C++ switches.
+  add_library(nx_foundation_fiber_asm OBJECT fibers/context_x64_win.asm)
+  target_compile_options(nx_foundation_fiber_asm PRIVATE /nologo)
+  set_target_properties(nx_foundation_fiber_asm PROPERTIES FOLDER "engine")
+  target_sources(nx_foundation PRIVATE $<TARGET_OBJECTS:nx_foundation_fiber_asm>)
+endif()
 
 target_include_directories(nx_foundation PUBLIC "${NX_ENGINE_ROOT}/engine")
 

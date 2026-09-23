@@ -184,6 +184,21 @@
 #define NX_UNLIKELY(x) (x)
 #endif
 
+#if defined(__SANITIZE_ADDRESS__)
+#define NX_ASAN_ENABLED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define NX_ASAN_ENABLED 1
+#endif
+#endif
+#if defined(__SANITIZE_THREAD__)
+#define NX_TSAN_ENABLED 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define NX_TSAN_ENABLED 1
+#endif
+#endif
+
 #if defined(NX_COMPILER_MSVC)
 #define NX_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
 #else

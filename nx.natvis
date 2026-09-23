@@ -198,4 +198,21 @@
         <DisplayString>dead</DisplayString>
     </Type>
 
+    <!-- The resume address is the return slot of the context_x64_win.asm frame (0x108). -->
+    <Type Name="nx::fiber::Context">
+        <DisplayString Condition="m_sp == nullptr">running</DisplayString>
+        <DisplayString>suspended at {(void(*)())((void**)m_sp)[33],na}</DisplayString>
+        <Expand>
+            <Item Name="[resume address]" Condition="m_sp != nullptr">(void(*)())((void**)m_sp)[33]</Item>
+            <Item Name="[saved sp]">m_sp</Item>
+            <Item Name="[stack bottom]">m_stack_bottom</Item>
+            <Item Name="[stack size]">m_stack_size</Item>
+            <Item Name="[entry]">m_entry</Item>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::fiber::Stack">
+        <DisplayString>{{ [{limit}, {base}) size={(char*)base - (char*)limit} }}</DisplayString>
+    </Type>
+
 </AutoVisualizer>

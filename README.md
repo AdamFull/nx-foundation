@@ -24,6 +24,7 @@ Most of it is header-only; the platform backends (`threading`, `platform`,
 | `core/` | Platform/compiler detection, allocators, and the primitives everything else builds on (`foundation.h`, `handle.h`, `hash.h`, `result.h`, `scope_guard.h`, `callable.h`, `enum.h`, `random.h`). |
 | `containers/` | Custom container types. |
 | `strings/` | UTF-8 string, string view, `std::format` integration, interned ids. |
+| `fibers/` | Stackful context switching and fiber stacks, the base of the fiber job system. |
 | `threading/` | Threads, synchronization primitives, and the work-stealing thread pool. |
 | `platform/` | OS-facing services: filesystem, virtual memory, process/memory/time queries. |
 | `diagnostics/` | Logging, assertions, and profiler instrumentation. |
@@ -124,6 +125,16 @@ if (result.status == nx::cli::ParseStatus::Help)
 | `nx::cancellation_source` / `nx::cancellation_token` | `threading/cancellation.h` | Shared cooperative cancellation for queued and running work. Tokens are cheap to copy and retain their cancellation generation when a source is reset. |
 | `nx::mutex` et al. | `threading/sync.h` | Futex-based synchronization: `spin_lock`, `mutex`, `recursive_mutex`, `cond_var`, `rw_lock` (writer-preferring), `semaphore`, `event`, `barrier`, `once_flag`/`call_once`, and `scoped_lock`/`scoped_shared_lock` guards. 4-8 bytes of state each, kernel wait only under contention. |
 | `nx::futex` | `threading/sync.h` | The raw 32-bit futex wait/wake primitive everything in `sync.h` is built on (WaitOnAddress / `SYS_futex`). |
+
+## Fibers
+
+| Type | Header | Use it for |
+| --- | --- | --- |
+| `nx::fiber::Context` | `fibers/context.h` | A suspended or running execution context. `switch_to(from, to, data)` suspends one and resumes the other, passing a pointer both ways; `exit_to` leaves a fiber for good. Saves the ABI's callee-saved registers and FP control state; on Windows it also swaps the TIB stack bounds, so SEH, `__chkstk` and guard-page growth work on fiber stacks. Carries unwind info so debuggers walk fiber stacks, and ASan/TSan annotations. |
+| `nx::fiber::StackPool` / `nx::fiber::Stack` | `fibers/stack.h` | Guard-paged fiber stacks that only consume memory as deep as they are used (Windows commits on demand; POSIX faults pages lazily), recycled most-recent-first with a bounded cache and a `trim()` that returns grown pages to the OS. |
+
+A fiber can resume on a different OS thread than the one it suspended on. Code
+that switches must not keep a `thread_local` address across the switch.
 
 ## Platform
 
