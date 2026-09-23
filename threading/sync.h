@@ -31,6 +31,19 @@ inline constexpr std::chrono::nanoseconds WAIT_FOREVER =
 
 using sync_clock = std::chrono::steady_clock;
 
+#if NX_DEBUG
+// Locks that block the OS thread; a fiber must not suspend while holding one.
+extern thread_local i32 t_os_locks_held;
+#endif
+
+NX_FORCE_INLINE void note_os_lock(const i32 delta) noexcept {
+#if NX_DEBUG
+  t_os_locks_held += delta;
+#else
+  (void)delta;
+#endif
+}
+
 template <class Rep, class Period>
 [[nodiscard]] NX_FORCE_INLINE std::chrono::nanoseconds
 to_ns(std::chrono::duration<Rep, Period> d) noexcept {
@@ -83,17 +96,20 @@ public:
 
   void lock() noexcept {
     u32 expected = 0;
-    if (NX_LIKELY(m_state.compare_exchange_strong(expected, LOCKED,
-                                                  std::memory_order_acquire,
-                                                  std::memory_order_relaxed)))
-      return;
-    lock_slow();
+    if (!NX_LIKELY(m_state.compare_exchange_strong(expected, LOCKED,
+                                                   std::memory_order_acquire,
+                                                   std::memory_order_relaxed)))
+      lock_slow();
+    detail::note_os_lock(1);
   }
 
   [[nodiscard]] bool try_lock() noexcept {
     u32 expected = 0;
-    return m_state.compare_exchange_strong(
+    const bool locked = m_state.compare_exchange_strong(
         expected, LOCKED, std::memory_order_acquire, std::memory_order_relaxed);
+    if (locked)
+      detail::note_os_lock(1);
+    return locked;
   }
 
   template <class Rep, class Period>
@@ -108,10 +124,12 @@ public:
       if (!detail::futex_wait_until(&m_state, CONTENDED, deadline))
         return false;
     }
+    detail::note_os_lock(1);
     return true;
   }
 
   void unlock() noexcept {
+    detail::note_os_lock(-1);
     if (m_state.exchange(0, std::memory_order_release) == CONTENDED)
       futex::wake(&m_state, 1);
   }
@@ -278,13 +296,16 @@ public:
     u32 s = m_state.load(std::memory_order_relaxed);
     while (!(s & WRITER)) {
       if (m_state.compare_exchange_weak(s, s + 1, std::memory_order_acquire,
-                                        std::memory_order_relaxed))
+                                        std::memory_order_relaxed)) {
+        detail::note_os_lock(1);
         return true;
+      }
     }
     return false;
   }
 
   void unlock_shared() noexcept {
+    detail::note_os_lock(-1);
     const u32 prev = m_state.fetch_sub(1, std::memory_order_seq_cst);
     if (prev == 1 && m_waiting_writers.load(std::memory_order_seq_cst) != 0) {
       m_writer_gate.fetch_add(1, std::memory_order_release);
@@ -311,15 +332,20 @@ public:
       spin = 0;
     }
     m_waiting_writers.fetch_sub(1, std::memory_order_relaxed);
+    detail::note_os_lock(1);
   }
 
   [[nodiscard]] bool try_lock() noexcept {
     u32 expected = 0;
-    return m_state.compare_exchange_strong(
+    const bool locked = m_state.compare_exchange_strong(
         expected, WRITER, std::memory_order_acquire, std::memory_order_relaxed);
+    if (locked)
+      detail::note_os_lock(1);
+    return locked;
   }
 
   void unlock() noexcept {
+    detail::note_os_lock(-1);
     m_state.store(0, std::memory_order_seq_cst);
     if (m_waiting_writers.load(std::memory_order_seq_cst) != 0) {
       m_writer_gate.fetch_add(1, std::memory_order_release);

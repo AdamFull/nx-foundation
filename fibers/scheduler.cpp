@@ -1,16 +1,19 @@
 #include "core/foundation/fibers/scheduler.h"
 
 #include "core/foundation/containers/concurrent_queue.h"
+#include "core/foundation/containers/fixed_vector.h"
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/diagnostics/diagnostic.h"
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"
 #include "core/foundation/fibers/context.h"
 #include "core/foundation/fibers/stack.h"
+#include "core/foundation/fibers/wait.h"
 #include "core/foundation/strings/format.h"
 #include "core/foundation/threading/thread.h"
 
 #include <cstring>
+#include <limits>
 
 namespace nx::fiber {
 
@@ -25,17 +28,30 @@ constexpr usize GLOBAL_QUEUE = 4096;
 constexpr usize MAIN_QUEUE = 1024;
 constexpr usize FIBER_QUEUE = 4096;
 constexpr u32 IDLE_SPINS = 64;
+constexpr i64 NO_TIMER = std::numeric_limits<i64>::max();
+
+i64 ticks(const clock::time_point time) noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             time.time_since_epoch())
+      .count();
+}
 
 } // namespace
 
+namespace internal {
+WaitResult block_thread(Waiter &waiter, spin_lock *lock, WaitList *list,
+                        clock::time_point deadline) noexcept;
+}
+
 enum class Affinity : u8 { Any, Main };
-enum class After : u8 { Nothing, Release, Ready, Yield, Park };
+enum class After : u8 { Nothing, Release, Ready, Yield, Park, Enqueue };
 
 struct Fiber {
   Context context;
   Stack stack;
   SchedulerState *owner = nullptr;
   Fiber *next_parked = nullptr;
+  internal::Waiter waiter;
   u32 target = 0;
   Priority priority = Priority::Normal;
   Affinity affinity = Affinity::Any;
@@ -55,6 +71,8 @@ struct Handoff {
   Fiber *subject = nullptr;
   Fiber *to = nullptr;
   Counter *counter = nullptr;
+  spin_lock *lock = nullptr;
+  internal::WaitList *list = nullptr;
 };
 
 struct Worker {
@@ -109,12 +127,25 @@ struct SchedulerState {
 
   void switch_fiber(Fiber *from, Fiber *to, After after,
                     Counter *counter = nullptr) noexcept;
+  void switch_with(Handoff out) noexcept;
   void complete(Handoff handoff) noexcept;
   void suspend(After after) noexcept;
   void suspend_until(Worker *worker, Counter &counter, u32 target) noexcept;
   void help_until(Counter &counter, u32 target) noexcept;
   [[noreturn]] void loop(Fiber *self) noexcept;
   Fiber *next_work(Worker *worker, Work &work) noexcept;
+
+  void assert_may_suspend() const noexcept;
+  internal::WaitResult block(Worker *worker, spin_lock *lock,
+                             internal::WaitList *list,
+                             clock::time_point deadline) noexcept;
+
+  void add_timer(Fiber *fiber) noexcept;
+  void remove_timer(Fiber *fiber) noexcept;
+  void remove_timer_at(u32 index) noexcept;
+  void sift_timer(u32 index) noexcept;
+  void publish_next_deadline() noexcept;
+  void fire_timers() noexcept;
 
   void wake_workers(usize count) noexcept;
   void park_worker() noexcept;
@@ -142,6 +173,11 @@ struct SchedulerState {
   std::atomic<u32> limit_hits{0};
   std::atomic<u64> jobs_run{0};
   std::atomic<bool> stopping{false};
+
+  spin_lock timer_lock;
+  Fiber **timers = nullptr;
+  u32 timer_count = 0;
+  std::atomic<i64> next_deadline{NO_TIMER};
 };
 
 namespace {
@@ -216,6 +252,9 @@ SchedulerState::SchedulerState(const Scheduler::Config &requested) noexcept
   fibers = static_cast<Fiber **>(
       mem_alloc(sizeof(Fiber *) * config.max_fibers, alignof(Fiber *)));
   std::memset(fibers, 0, sizeof(Fiber *) * config.max_fibers);
+  timers = static_cast<Fiber **>(
+      mem_alloc(sizeof(Fiber *) * (config.max_fibers + worker_count + 1),
+                alignof(Fiber *)));
 
   for (u32 i = 0; i <= worker_count; ++i) {
     Worker *worker = allocate<Worker>();
@@ -245,6 +284,7 @@ SchedulerState::~SchedulerState() noexcept {
   NX_ASSERT(free_count == created, "{} fibers were still suspended",
             created - free_count);
   mem_free(fibers);
+  mem_free(timers);
   for (Worker *worker : workers)
     release(worker);
 }
@@ -422,8 +462,11 @@ void SchedulerState::execute(const Work &work) noexcept {
 
 void SchedulerState::switch_fiber(Fiber *from, Fiber *to, const After after,
                                   Counter *counter) noexcept {
-  Handoff out{after, from, to, counter};
-  const Transfer in = switch_to(from->context, to->context, &out);
+  switch_with(Handoff{after, from, to, counter});
+}
+
+void SchedulerState::switch_with(Handoff out) noexcept {
+  const Transfer in = switch_to(out.subject->context, out.to->context, &out);
   complete(*static_cast<const Handoff *>(in.data));
 }
 
@@ -447,10 +490,19 @@ void SchedulerState::complete(const Handoff handoff) noexcept {
   case After::Park:
     park(handoff.subject, *handoff.counter);
     break;
+  case After::Enqueue:
+    if (handoff.list)
+      handoff.list->push(&handoff.subject->waiter);
+    if (handoff.subject->waiter.deadline != internal::NO_DEADLINE)
+      add_timer(handoff.subject);
+    if (handoff.lock)
+      handoff.lock->unlock();
+    break;
   }
 }
 
 void SchedulerState::suspend(const After after) noexcept {
+  assert_may_suspend();
   for (;;) {
     Worker *worker = this_worker();
     Fiber *self = worker->current;
@@ -475,6 +527,7 @@ void SchedulerState::suspend(const After after) noexcept {
 
 void SchedulerState::suspend_until(Worker *worker, Counter &counter,
                                    const u32 target) noexcept {
+  assert_may_suspend();
   Fiber *self = worker->current;
   self->target = target;
   if (self == &worker->thread_fiber)
@@ -540,6 +593,7 @@ Fiber *SchedulerState::next_work(Worker *worker, Work &work) noexcept {
       park_main(worker);
       continue;
     }
+    fire_timers();
     for (usize priority = 0; priority < PRIORITY_COUNT; ++priority) {
       if (ready[priority].try_pop(fiber))
         return fiber;
@@ -573,8 +627,15 @@ void SchedulerState::park_worker() noexcept {
   const u32 epoch = worker_epoch.load(std::memory_order_seq_cst);
   sleepers.fetch_add(1, std::memory_order_seq_cst);
   std::atomic_thread_fence(std::memory_order_seq_cst);
-  if (!has_general_work() && !stopping.load(std::memory_order_seq_cst))
-    futex::wait(&worker_epoch, epoch, detail::WAIT_FOREVER);
+  if (!has_general_work() && !stopping.load(std::memory_order_seq_cst)) {
+    const i64 deadline = next_deadline.load(std::memory_order_acquire);
+    if (deadline == NO_TIMER) {
+      futex::wait(&worker_epoch, epoch, detail::WAIT_FOREVER);
+    } else if (const i64 now = ticks(clock::now()); now < deadline) {
+      futex::wait(&worker_epoch, epoch,
+                  std::chrono::nanoseconds(deadline - now));
+    }
+  }
   sleepers.fetch_sub(1, std::memory_order_seq_cst);
 }
 
@@ -612,6 +673,252 @@ void SchedulerState::worker_main(Worker *worker) noexcept {
          worker->name);
   set_current_worker(nullptr);
 }
+
+bool may_suspend() noexcept {
+#if NX_DEBUG
+  if (nx::detail::t_os_locks_held != 0)
+    return false;
+#endif
+#if NX_ALLOC_GUARD
+  if (!allocation_allowed())
+    return false;
+#endif
+  return true;
+}
+
+void SchedulerState::assert_may_suspend() const noexcept {
+  NX_ASSERT(may_suspend(), "a fiber must not suspend while it holds an OS "
+                           "lock or is inside a no_suspend_scope");
+}
+
+internal::WaitResult
+SchedulerState::block(Worker *worker, spin_lock *lock, internal::WaitList *list,
+                      const clock::time_point deadline) noexcept {
+  assert_may_suspend();
+  Fiber *self = worker->current;
+  internal::Waiter &waiter = self->waiter;
+  Fiber *next = next_to_resume(worker);
+  if (!next) {
+    if (limit_hits.fetch_add(1, std::memory_order_relaxed) == 0)
+      logw(log_fiber,
+           "fiber: all {} fibers are in use; a blocked fiber now blocks its "
+           "thread",
+           config.max_fibers);
+    return internal::block_thread(waiter, lock, list, deadline);
+  }
+  waiter.fiber = self;
+  waiter.next = nullptr;
+  waiter.list = list;
+  waiter.lock = lock;
+  waiter.deadline = deadline;
+  waiter.state.store(internal::Waiter::WAITING, std::memory_order_relaxed);
+  if (self == &worker->thread_fiber)
+    worker->main_deadline = clock::time_point::max();
+
+  Handoff out{After::Enqueue, self, next};
+  out.lock = lock;
+  out.list = list;
+  switch_with(out);
+
+  if (deadline != internal::NO_DEADLINE)
+    remove_timer(self);
+  return waiter.state.load(std::memory_order_acquire) ==
+                 internal::Waiter::TIMED_OUT
+             ? internal::WaitResult::TimedOut
+             : internal::WaitResult::Woken;
+}
+
+void SchedulerState::publish_next_deadline() noexcept {
+  next_deadline.store(timer_count ? ticks(timers[0]->waiter.deadline)
+                                  : NO_TIMER,
+                      std::memory_order_release);
+}
+
+void SchedulerState::sift_timer(u32 index) noexcept {
+  const auto earlier = [&](u32 a, u32 b) {
+    return timers[a]->waiter.deadline < timers[b]->waiter.deadline;
+  };
+  const auto swap = [&](u32 a, u32 b) {
+    Fiber *held = timers[a];
+    timers[a] = timers[b];
+    timers[b] = held;
+    timers[a]->waiter.heap_index = a;
+    timers[b]->waiter.heap_index = b;
+  };
+  while (index > 0 && earlier(index, (index - 1) / 2)) {
+    swap(index, (index - 1) / 2);
+    index = (index - 1) / 2;
+  }
+  for (;;) {
+    u32 first = index;
+    for (const u32 child : {2 * index + 1, 2 * index + 2})
+      if (child < timer_count && earlier(child, first))
+        first = child;
+    if (first == index)
+      return;
+    swap(index, first);
+    index = first;
+  }
+}
+
+void SchedulerState::add_timer(Fiber *fiber) noexcept {
+  bool earliest = false;
+  {
+    scoped_lock guard(timer_lock);
+    const u32 index = timer_count++;
+    timers[index] = fiber;
+    fiber->waiter.heap_index = index;
+    sift_timer(index);
+    earliest = timers[0] == fiber;
+    publish_next_deadline();
+  }
+  if (earliest)
+    wake_workers(1);
+}
+
+void SchedulerState::remove_timer_at(const u32 index) noexcept {
+  timers[index]->waiter.heap_index = internal::Waiter::NOT_IN_HEAP;
+  const u32 last = --timer_count;
+  if (index != last) {
+    timers[index] = timers[last];
+    timers[index]->waiter.heap_index = index;
+    sift_timer(index);
+  }
+}
+
+void SchedulerState::remove_timer(Fiber *fiber) noexcept {
+  scoped_lock guard(timer_lock);
+  if (fiber->waiter.heap_index != internal::Waiter::NOT_IN_HEAP) {
+    remove_timer_at(fiber->waiter.heap_index);
+    publish_next_deadline();
+  }
+}
+
+// The state transition happens under timer_lock: a fiber removes its own
+// timer under the same lock before it can wait again, so an expiry can never
+// time out a later wait.
+void SchedulerState::fire_timers() noexcept {
+  if (next_deadline.load(std::memory_order_acquire) > ticks(clock::now()))
+    return;
+  fixed_vector<Fiber *, 32> expired;
+  {
+    scoped_lock guard(timer_lock);
+    const clock::time_point now = clock::now();
+    while (timer_count && timers[0]->waiter.deadline <= now &&
+           expired.size() < expired.capacity()) {
+      Fiber *fiber = timers[0];
+      remove_timer_at(0);
+      u32 waiting = internal::Waiter::WAITING;
+      if (fiber->waiter.state.compare_exchange_strong(
+              waiting, internal::Waiter::TIMED_OUT, std::memory_order_acq_rel))
+        expired.push_back(fiber);
+    }
+    publish_next_deadline();
+  }
+  for (Fiber *fiber : expired) {
+    internal::Waiter &waiter = fiber->waiter;
+    if (waiter.lock) {
+      scoped_lock guard(*waiter.lock);
+      waiter.list->remove(&waiter);
+    }
+    make_ready(fiber);
+  }
+}
+
+namespace internal {
+
+void WaitList::push(Waiter *waiter) noexcept {
+  waiter->next = nullptr;
+  if (tail)
+    tail->next = waiter;
+  else
+    head = waiter;
+  tail = waiter;
+}
+
+bool WaitList::remove(Waiter *waiter) noexcept {
+  Waiter *previous = nullptr;
+  for (Waiter *it = head; it; previous = it, it = it->next) {
+    if (it != waiter)
+      continue;
+    (previous ? previous->next : head) = it->next;
+    if (tail == it)
+      tail = previous;
+    it->next = nullptr;
+    return true;
+  }
+  return false;
+}
+
+WaitResult block_thread(Waiter &waiter, spin_lock *lock, WaitList *list,
+                        const clock::time_point deadline) noexcept {
+  waiter.fiber = nullptr;
+  waiter.list = list;
+  waiter.lock = lock;
+  waiter.deadline = deadline;
+  waiter.state.store(Waiter::WAITING, std::memory_order_relaxed);
+  if (list)
+    list->push(&waiter);
+  if (lock)
+    lock->unlock();
+  for (;;) {
+    const u32 state = waiter.state.load(std::memory_order_acquire);
+    if (state != Waiter::WAITING)
+      return WaitResult::Woken;
+    if (deadline == NO_DEADLINE) {
+      futex::wait(&waiter.state, Waiter::WAITING, nx::detail::WAIT_FOREVER);
+      continue;
+    }
+    const clock::time_point now = clock::now();
+    if (now < deadline) {
+      futex::wait(&waiter.state, Waiter::WAITING,
+                  nx::detail::to_ns(deadline - now));
+      continue;
+    }
+    if (lock)
+      lock->lock();
+    u32 waiting = Waiter::WAITING;
+    const bool timed_out = waiter.state.compare_exchange_strong(
+        waiting, Waiter::TIMED_OUT, std::memory_order_acq_rel);
+    if (timed_out && list)
+      list->remove(&waiter);
+    if (lock)
+      lock->unlock();
+    if (timed_out)
+      return WaitResult::TimedOut;
+  }
+}
+
+WaitResult block(spin_lock *lock, WaitList *list,
+                 const clock::time_point deadline) noexcept {
+  if (Worker *worker = current_worker())
+    return worker->state->block(worker, lock, list, deadline);
+  Waiter waiter;
+  return block_thread(waiter, lock, list, deadline);
+}
+
+Claimed claim(WaitList &list) noexcept {
+  while (Waiter *waiter = list.head) {
+    list.head = waiter->next;
+    if (!list.head)
+      list.tail = nullptr;
+    waiter->next = nullptr;
+    u32 waiting = Waiter::WAITING;
+    if (waiter->state.compare_exchange_strong(waiting, Waiter::WOKEN,
+                                              std::memory_order_acq_rel))
+      return Claimed{waiter->fiber, &waiter->state};
+  }
+  return {};
+}
+
+void resume(const Claimed &claimed) noexcept {
+  if (claimed.fiber)
+    claimed.fiber->owner->make_ready(claimed.fiber);
+  else
+    futex::wake(claimed.word, 1);
+}
+
+} // namespace internal
 
 Scheduler::Scheduler(const Config &config) {
   NX_ASSERT(current_worker() == nullptr,

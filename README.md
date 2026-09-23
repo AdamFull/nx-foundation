@@ -136,9 +136,13 @@ if (result.status == nx::cli::ParseStatus::Help)
 | `nx::fiber::Scheduler` | `fibers/scheduler.h` | The fiber job system. Worker threads run jobs (`{entry, arg}`, three priorities, per-worker queues with stealing) on pooled fibers. `wait(counter)` suspends the calling fiber instead of its thread. The constructing thread is the main thread: it runs only main-affine work (`run_on_main`, `switch_to_main`), inside `pump_main(budget)` or while it waits. Destruction finishes outstanding jobs. |
 | `nx::fiber::Counter` | `fibers/scheduler.h` | Outstanding-work count that jobs decrement on completion and fibers wait on. Any thread may decrement it, including I/O completion threads the scheduler does not own. |
 
+| `nx::fiber::mutex` et al. | `fibers/sync.h` | `mutex`, `rw_lock` (writer-preferring), `event`, `semaphore`, `cond_var` and `sleep_for` that suspend the waiting fiber instead of its thread, with timed waits on the scheduler's timers. Waking hands ownership straight to the waiter. On a thread no scheduler owns, the same objects block the thread. Unlike `nx::mutex`, they may be held across a suspension. |
+
 A fiber can resume on a different OS thread than the one it suspended on. Code
 that switches or waits must not keep a `thread_local` address across the call,
-and must not hold an OS-level lock (`nx::mutex`) across a wait.
+and must not hold an OS-level lock (`nx::mutex`, `nx::rw_lock`) across a wait.
+Debug builds assert this, and `nx::fiber::no_suspend_scope` extends the same
+check to other thread-affine resources.
 
 ## Platform
 

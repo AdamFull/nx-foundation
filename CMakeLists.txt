@@ -56,6 +56,8 @@ set(NX_FOUNDATION_HEADERS
   fibers/context.h
   fibers/scheduler.h
   fibers/stack.h
+  fibers/sync.h
+  fibers/wait.h
 
   threading/cancellation.h
   threading/sync.h
@@ -90,6 +92,7 @@ set(NX_FOUNDATION_SOURCES
   fibers/context.cpp
   fibers/scheduler.cpp
   fibers/stack.cpp
+  fibers/sync.cpp
   threading/sync.cpp
   threading/thread.cpp
   threading/thread_pool.cpp

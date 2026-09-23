@@ -30,6 +30,12 @@ constexpr uint32_t ULF_NO_ERRNO = 0x01000000;
 }
 #endif
 
+#if NX_DEBUG
+namespace nx::detail {
+thread_local i32 t_os_locks_held = 0;
+}
+#endif
+
 namespace nx::futex {
 
 #if NX_PLATFORM_POSIX && !NX_PLATFORM_APPLE

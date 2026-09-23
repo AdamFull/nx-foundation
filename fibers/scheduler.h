@@ -44,6 +44,21 @@ private:
   Fiber *m_parked = nullptr;
 };
 
+/// False while the caller holds an nx::mutex or nx::rw_lock, is inside
+/// scoped_no_alloc or a no_suspend_scope; suspending a fiber then asserts.
+/// Always true in release builds.
+[[nodiscard]] bool may_suspend() noexcept;
+
+/// Marks code that holds a thread-affine resource, such as a per-thread
+/// command pool, so a fiber cannot suspend and migrate while it is held.
+class no_suspend_scope {
+public:
+  no_suspend_scope() noexcept { nx::detail::note_os_lock(1); }
+  ~no_suspend_scope() noexcept { nx::detail::note_os_lock(-1); }
+  no_suspend_scope(const no_suspend_scope &) = delete;
+  no_suspend_scope &operator=(const no_suspend_scope &) = delete;
+};
+
 struct Job {
   void (*entry)(void *arg) = nullptr;
   void *arg = nullptr;

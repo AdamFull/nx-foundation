@@ -1,0 +1,188 @@
+#include "core/foundation/fibers/sync.h"
+
+namespace nx::fiber {
+
+using internal::block;
+using internal::claim;
+using internal::Claimed;
+using internal::NO_DEADLINE;
+using internal::resume;
+using internal::WaitResult;
+
+void mutex::lock_slow() noexcept {
+  for (i32 spin = 0; spin < nx::detail::SYNC_SPIN_COUNT; ++spin) {
+    u32 expected = 0;
+    if (m_state.load(std::memory_order_relaxed) == 0 &&
+        m_state.compare_exchange_weak(expected, LOCKED,
+                                      std::memory_order_acquire,
+                                      std::memory_order_relaxed))
+      return;
+    nx::detail::cpu_relax();
+  }
+  for (;;) {
+    m_lock.lock();
+    if (m_state.exchange(CONTENDED, std::memory_order_acquire) == 0) {
+      m_lock.unlock();
+      return;
+    }
+    block(&m_lock, &m_waiters, NO_DEADLINE);
+  }
+}
+
+void mutex::wake_one() noexcept {
+  m_lock.lock();
+  const Claimed claimed = claim(m_waiters);
+  m_lock.unlock();
+  if (claimed)
+    resume(claimed);
+}
+
+void rw_lock::lock() noexcept {
+  m_lock.lock();
+  if (!m_writer && m_readers == 0) {
+    m_writer = true;
+    m_lock.unlock();
+    return;
+  }
+  block(&m_lock, &m_waiting_writers, NO_DEADLINE);
+}
+
+bool rw_lock::try_lock() noexcept {
+  scoped_lock guard(m_lock);
+  if (m_writer || m_readers != 0)
+    return false;
+  m_writer = true;
+  return true;
+}
+
+void rw_lock::unlock() noexcept {
+  scoped_lock guard(m_lock);
+  if (const Claimed writer = claim(m_waiting_writers)) {
+    resume(writer);
+    return;
+  }
+  m_writer = false;
+  while (const Claimed reader = claim(m_waiting_readers)) {
+    ++m_readers;
+    resume(reader);
+  }
+}
+
+void rw_lock::lock_shared() noexcept {
+  m_lock.lock();
+  if (!m_writer && m_waiting_writers.empty()) {
+    ++m_readers;
+    m_lock.unlock();
+    return;
+  }
+  block(&m_lock, &m_waiting_readers, NO_DEADLINE);
+}
+
+bool rw_lock::try_lock_shared() noexcept {
+  scoped_lock guard(m_lock);
+  if (m_writer || !m_waiting_writers.empty())
+    return false;
+  ++m_readers;
+  return true;
+}
+
+void rw_lock::unlock_shared() noexcept {
+  scoped_lock guard(m_lock);
+  if (--m_readers != 0)
+    return;
+  if (const Claimed writer = claim(m_waiting_writers)) {
+    m_writer = true;
+    resume(writer);
+  }
+}
+
+void event::set() noexcept {
+  scoped_lock guard(m_lock);
+  if (m_manual_reset) {
+    m_set.store(true, std::memory_order_release);
+    while (const Claimed waiter = claim(m_waiters))
+      resume(waiter);
+    return;
+  }
+  if (const Claimed waiter = claim(m_waiters))
+    resume(waiter);
+  else
+    m_set.store(true, std::memory_order_release);
+}
+
+void event::reset() noexcept {
+  scoped_lock guard(m_lock);
+  m_set.store(false, std::memory_order_release);
+}
+
+bool event::wait_until(const internal::clock::time_point deadline) noexcept {
+  m_lock.lock();
+  if (m_set.load(std::memory_order_relaxed)) {
+    if (!m_manual_reset)
+      m_set.store(false, std::memory_order_relaxed);
+    m_lock.unlock();
+    return true;
+  }
+  if (deadline <= internal::clock::now()) {
+    m_lock.unlock();
+    return false;
+  }
+  return block(&m_lock, &m_waiters, deadline) == WaitResult::Woken;
+}
+
+bool semaphore::try_acquire() noexcept {
+  scoped_lock guard(m_lock);
+  if (m_count == 0)
+    return false;
+  --m_count;
+  return true;
+}
+
+bool semaphore::acquire_until(
+    const internal::clock::time_point deadline) noexcept {
+  m_lock.lock();
+  if (m_count != 0) {
+    --m_count;
+    m_lock.unlock();
+    return true;
+  }
+  if (deadline <= internal::clock::now()) {
+    m_lock.unlock();
+    return false;
+  }
+  return block(&m_lock, &m_waiters, deadline) == WaitResult::Woken;
+}
+
+void semaphore::release(u32 n) noexcept {
+  scoped_lock guard(m_lock);
+  for (; n != 0; --n) {
+    const Claimed waiter = claim(m_waiters);
+    if (!waiter)
+      break;
+    resume(waiter);
+  }
+  m_count += n;
+}
+
+void cond_var::notify_one() noexcept {
+  scoped_lock guard(m_lock);
+  if (const Claimed waiter = claim(m_waiters))
+    resume(waiter);
+}
+
+void cond_var::notify_all() noexcept {
+  scoped_lock guard(m_lock);
+  while (const Claimed waiter = claim(m_waiters))
+    resume(waiter);
+}
+
+bool cond_var::wait_until(mutex &m,
+                          const internal::clock::time_point deadline) noexcept {
+  m_lock.lock();
+  m.unlock();
+  const WaitResult result = block(&m_lock, &m_waiters, deadline);
+  m.lock();
+  return result == WaitResult::Woken;
+}
+
+} // namespace nx::fiber
