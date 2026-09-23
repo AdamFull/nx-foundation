@@ -120,6 +120,7 @@ if (result.status == nx::cli::ParseStatus::Help)
 | Type | Header | Use it for |
 | --- | --- | --- |
 | `nx::thread` | `threading/thread.h` | A cross-platform OS thread with name, stack size, affinity and priority set at creation. Joins on destruction. Also `nx::this_thread` (id, yield, sleep, name, affinity, priority). |
+| `nx::thread_parker` | `threading/thread.h` | Parks one thread until `unpark()` or a deadline kept to well under a millisecond on every platform (a Windows futex timeout rounds to the ~15.6 ms system tick). An `unpark()` before the park is not lost. |
 | `nx::cpu` | `threading/thread.h` | CPU topology queries: logical/physical core counts, SMT layout, hybrid P/E efficiency classes, cache hierarchy, NUMA node count. |
 | `nx::thread_pool` | `threading/thread_pool.h` | A priority-aware task pool on an `nx::fiber::Scheduler` of its own, with bounded background concurrency, `task_group` batches, cancellable futures and continuations, `when_all`/`when_any`, and opt-in statistics/timing. Waiting in a task suspends its fiber instead of occupying the worker. |
 | `nx::cancellation_source` / `nx::cancellation_token` | `threading/cancellation.h` | Shared cooperative cancellation for queued and running work. Tokens are cheap to copy and retain their cancellation generation when a source is reset. |

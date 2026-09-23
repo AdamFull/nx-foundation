@@ -153,6 +153,7 @@ struct SchedulerState {
   void fire_timers() noexcept;
 
   void wake_workers(usize count) noexcept;
+  void wake_keeper() noexcept;
   void park_worker() noexcept;
   void wake_main() noexcept;
   void park_main(Worker *worker) noexcept;
@@ -172,7 +173,11 @@ struct SchedulerState {
 
   std::atomic<u32> worker_epoch{0};
   std::atomic<u32> sleepers{0};
-  std::atomic<u32> main_epoch{0};
+  // At most one parked worker keeps the next timer's deadline; the rest park
+  // on worker_epoch with no timeout.
+  thread_parker keeper_parker;
+  std::atomic<u32> keeper{0};
+  thread_parker main_parker;
   std::atomic<u32> main_sleeping{0};
   std::atomic<u32> live_jobs{0};
   std::atomic<u32> limit_hits{0};
@@ -657,51 +662,57 @@ void SchedulerState::wake_workers(const usize count) noexcept {
     return;
   std::atomic_thread_fence(std::memory_order_seq_cst);
   const u32 asleep = sleepers.load(std::memory_order_seq_cst);
-  if (asleep == 0)
-    return;
-  worker_epoch.fetch_add(1, std::memory_order_seq_cst);
-  if (count >= asleep)
-    futex::wake_all(&worker_epoch);
-  else
-    futex::wake(&worker_epoch, nx::cast<i32>(count));
+  if (asleep != 0) {
+    worker_epoch.fetch_add(1, std::memory_order_seq_cst);
+    if (count >= asleep)
+      futex::wake_all(&worker_epoch);
+    else
+      futex::wake(&worker_epoch, nx::cast<i32>(count));
+  }
+  if (count > asleep)
+    wake_keeper();
 }
 
+void SchedulerState::wake_keeper() noexcept {
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  if (keeper.load(std::memory_order_seq_cst) != 0)
+    keeper_parker.unpark();
+}
+
+// A Windows futex timeout is rounded to the system tick (about 15.6 ms), so
+// the worker that waits for the next timer parks on a precise parker instead.
 void SchedulerState::park_worker() noexcept {
+  if (next_deadline.load(std::memory_order_acquire) != NO_TIMER &&
+      keeper.exchange(1, std::memory_order_seq_cst) == 0) {
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    const i64 deadline = next_deadline.load(std::memory_order_seq_cst);
+    if (deadline != NO_TIMER && !has_general_work() &&
+        !stopping.load(std::memory_order_seq_cst))
+      keeper_parker.park_until(
+          clock::time_point(std::chrono::duration_cast<clock::duration>(
+              std::chrono::nanoseconds(deadline))));
+    keeper.store(0, std::memory_order_seq_cst);
+    return;
+  }
   const u32 epoch = worker_epoch.load(std::memory_order_seq_cst);
   sleepers.fetch_add(1, std::memory_order_seq_cst);
   std::atomic_thread_fence(std::memory_order_seq_cst);
-  if (!has_general_work() && !stopping.load(std::memory_order_seq_cst)) {
-    const i64 deadline = next_deadline.load(std::memory_order_acquire);
-    if (deadline == NO_TIMER) {
-      futex::wait(&worker_epoch, epoch, detail::WAIT_FOREVER);
-    } else if (const i64 now = ticks(clock::now()); now < deadline) {
-      futex::wait(&worker_epoch, epoch,
-                  std::chrono::nanoseconds(deadline - now));
-    }
-  }
+  if (!has_general_work() && !stopping.load(std::memory_order_seq_cst))
+    futex::wait(&worker_epoch, epoch, detail::WAIT_FOREVER);
   sleepers.fetch_sub(1, std::memory_order_seq_cst);
 }
 
 void SchedulerState::wake_main() noexcept {
   std::atomic_thread_fence(std::memory_order_seq_cst);
-  if (main_sleeping.load(std::memory_order_seq_cst) == 0)
-    return;
-  main_epoch.fetch_add(1, std::memory_order_seq_cst);
-  futex::wake_all(&main_epoch);
+  if (main_sleeping.load(std::memory_order_seq_cst) != 0)
+    main_parker.unpark();
 }
 
 void SchedulerState::park_main(Worker *worker) noexcept {
-  const u32 epoch = main_epoch.load(std::memory_order_seq_cst);
   main_sleeping.store(1, std::memory_order_seq_cst);
   std::atomic_thread_fence(std::memory_order_seq_cst);
-  if (main_ready.empty_approx() && main_work.empty_approx()) {
-    const clock::time_point deadline = worker->main_deadline;
-    if (deadline == clock::time_point::max()) {
-      futex::wait(&main_epoch, epoch, detail::WAIT_FOREVER);
-    } else if (const clock::time_point now = clock::now(); now < deadline) {
-      futex::wait(&main_epoch, epoch, detail::to_ns(deadline - now));
-    }
-  }
+  if (main_ready.empty_approx() && main_work.empty_approx())
+    main_parker.park_until(worker->main_deadline);
   main_sleeping.store(0, std::memory_order_relaxed);
 }
 
@@ -815,8 +826,10 @@ void SchedulerState::add_timer(Fiber *fiber) noexcept {
     earliest = timers[0] == fiber;
     publish_next_deadline();
   }
-  if (earliest)
+  if (earliest) {
+    wake_keeper();
     wake_workers(1);
+  }
 }
 
 void SchedulerState::remove_timer_at(const u32 index) noexcept {
@@ -997,6 +1010,7 @@ Scheduler::~Scheduler() {
   state.stopping.store(true, std::memory_order_seq_cst);
   state.worker_epoch.fetch_add(1, std::memory_order_seq_cst);
   futex::wake_all(&state.worker_epoch);
+  state.keeper_parker.unpark();
   for (usize i = 1; i < state.workers.size(); ++i)
     if (state.workers[i]->os_thread.joinable())
       state.workers[i]->os_thread.join();

@@ -6,6 +6,7 @@
 #include "core/foundation/core/callable.h"
 #include "core/foundation/core/foundation.h"
 
+#include <atomic>
 #include <chrono>
 
 namespace nx {
@@ -111,6 +112,32 @@ bool set_affinity(u64 mask) noexcept;
 [[nodiscard]] thread_priority set_priority(thread_priority prio) noexcept;
 
 }
+
+/// Parks one thread at a time until unpark() or a deadline. Deadlines are kept
+/// to well under a millisecond on every platform, which a Windows futex
+/// timeout is not. An unpark() before the park is not lost; the parked thread
+/// may also return spuriously, so callers re-check their condition.
+class thread_parker {
+public:
+  thread_parker() noexcept;
+  ~thread_parker() noexcept;
+  thread_parker(const thread_parker &) = delete;
+  thread_parker &operator=(const thread_parker &) = delete;
+
+  void park_until(std::chrono::steady_clock::time_point deadline) noexcept;
+  void park() noexcept {
+    park_until(std::chrono::steady_clock::time_point::max());
+  }
+  void unpark() noexcept;
+
+private:
+#if defined(_WIN32)
+  void *m_event = nullptr;
+  void *m_timer = nullptr;
+#else
+  std::atomic<u32> m_state{0};
+#endif
+};
 
 namespace cpu {
 

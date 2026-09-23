@@ -400,6 +400,85 @@ thread_priority set_priority(const thread_priority prio) noexcept {
 
 }
 
+#if NX_HAS_WINDOWS_API
+thread_parker::thread_parker() noexcept
+    : m_event(CreateEventW(nullptr, FALSE, FALSE, nullptr)),
+      m_timer(CreateWaitableTimerExW(nullptr, nullptr,
+                                     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                     TIMER_ALL_ACCESS)) {}
+
+thread_parker::~thread_parker() noexcept {
+  if (m_timer)
+    CloseHandle(m_timer);
+  if (m_event)
+    CloseHandle(m_event);
+}
+
+void thread_parker::unpark() noexcept { SetEvent(m_event); }
+
+void thread_parker::park_until(
+    const std::chrono::steady_clock::time_point deadline) noexcept {
+  if (deadline == std::chrono::steady_clock::time_point::max() || !m_timer) {
+    DWORD timeout = INFINITE;
+    if (deadline != std::chrono::steady_clock::time_point::max()) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline)
+        return;
+      timeout = nx::cast<DWORD>(
+          std::chrono::ceil<std::chrono::milliseconds>(deadline - now).count());
+    }
+    WaitForSingleObject(m_event, timeout);
+    return;
+  }
+
+  // Same slicing as sleep_for: one long wait, then sub-period slices near the
+  // deadline, where a high-resolution timer is precise.
+  static const u64 period = this_thread::timer_period_100ns();
+  const i64 fine_slice = nx::cast<i64>(period * 95 / 100);
+  HANDLE handles[2] = {m_event, m_timer};
+  for (;;) {
+    const i64 remaining_100ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            deadline - std::chrono::steady_clock::now())
+            .count() /
+        100;
+    if (remaining_100ns <= 0)
+      return;
+    const i64 slice =
+        remaining_100ns > 2 * nx::cast<i64>(period)
+            ? remaining_100ns - nx::cast<i64>(period)
+            : (remaining_100ns < fine_slice ? remaining_100ns : fine_slice);
+    LARGE_INTEGER due;
+    due.QuadPart = -slice;
+    if (!SetWaitableTimer(m_timer, &due, 0, nullptr, nullptr, FALSE))
+      return;
+    if (WaitForMultipleObjects(2, handles, FALSE, INFINITE) == WAIT_OBJECT_0)
+      return;
+  }
+}
+#else
+thread_parker::thread_parker() noexcept = default;
+thread_parker::~thread_parker() noexcept = default;
+
+void thread_parker::unpark() noexcept {
+  m_state.store(1, std::memory_order_release);
+  futex::wake(&m_state, 1);
+}
+
+void thread_parker::park_until(
+    const std::chrono::steady_clock::time_point deadline) noexcept {
+  if (m_state.exchange(0, std::memory_order_acquire) == 1)
+    return;
+  if (deadline == std::chrono::steady_clock::time_point::max()) {
+    futex::wait(&m_state, 0, detail::WAIT_FOREVER);
+  } else if (const auto now = std::chrono::steady_clock::now();
+             now < deadline) {
+    futex::wait(&m_state, 0, detail::to_ns(deadline - now));
+  }
+  m_state.exchange(0, std::memory_order_acquire);
+}
+#endif
+
 namespace cpu {
 namespace {
 
