@@ -119,6 +119,8 @@ void detach_drain_pool(thread_pool &pool);
 /// Adds a sink; the logger takes ownership and destroys it (via nx::release)
 /// on remove_sink()/shutdown(). The sink must therefore be created with
 /// nx::allocate — the make_*_sink() factories below do this for you.
+/// remove_sink() on a sink the logger no longer holds, such as one shutdown()
+/// already destroyed, does nothing.
 void add_sink(Sink *sink);
 void remove_sink(Sink *sink);
 

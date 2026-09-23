@@ -406,9 +406,9 @@ void remove_sink(Sink *sink) {
   for (usize i = 0; i < l.sinks.size(); ++i)
     if (l.sinks[i] == sink) {
       l.sinks.erase(l.sinks.begin() + i);
-      break;
+      release(sink);
+      return;
     }
-  release(sink);
 }
 
 Sink *make_console_sink(bool color) { return allocate<ConsoleSink>(color); }
