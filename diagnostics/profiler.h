@@ -10,9 +10,26 @@
 
 #include <tracy/Tracy.hpp>
 
-#define NX_PROFILE_ZONE(name) ZoneScopedN(name)
-#define NX_PROFILE_ZONE_COLOR(name, color) ZoneScopedNC(name, color)
-#define NX_PROFILE_FUNCTION() ZoneScoped
+#if defined(TRACY_FIBERS) && defined(TRACY_ON_DEMAND)
+namespace nx::fiber {
+// Tracy drops fiber switches while no viewer is connected, so a thread tells a
+// newly connected one which fiber it is in before its first zone.
+void announce_to_profiler() noexcept;
+} // namespace nx::fiber
+#define NX_PROFILE_ANNOUNCE_FIBER() ::nx::fiber::announce_to_profiler()
+#else
+#define NX_PROFILE_ANNOUNCE_FIBER() ((void)0)
+#endif
+
+#define NX_PROFILE_ZONE(name)                                                  \
+  NX_PROFILE_ANNOUNCE_FIBER();                                                 \
+  ZoneScopedN(name)
+#define NX_PROFILE_ZONE_COLOR(name, color)                                     \
+  NX_PROFILE_ANNOUNCE_FIBER();                                                 \
+  ZoneScopedNC(name, color)
+#define NX_PROFILE_FUNCTION()                                                  \
+  NX_PROFILE_ANNOUNCE_FIBER();                                                 \
+  ZoneScoped
 #define NX_PROFILE_FRAME_MARK() FrameMark
 #define NX_PROFILE_FRAME_MARK_NAMED(name) FrameMarkNamed(name)
 #define NX_PROFILE_SET_THREAD_NAME(name) ::tracy::SetThreadName(name)

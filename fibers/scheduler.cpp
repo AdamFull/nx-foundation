@@ -14,6 +14,7 @@
 
 #include <cstring>
 #include <limits>
+#include <optional>
 
 namespace nx::fiber {
 
@@ -89,6 +90,10 @@ struct Worker {
   clock::time_point main_deadline{};
   u32 dispatches = 0;
   char name[32] = {};
+#if NX_PROFILE_ENABLED && defined(TRACY_FIBERS) && defined(TRACY_ON_DEMAND)
+  // The profiler connection that has seen which fiber this thread is in.
+  std::optional<u64> profiled_connection;
+#endif
   mpmc::Queue<Work, LOCAL_QUEUE> local[PRIORITY_COUNT];
   thread os_thread;
 };
@@ -218,6 +223,30 @@ const char *profile_fiber_name() noexcept {
     std::memcpy(name, buffer, length);
   return name;
 }
+
+#if defined(TRACY_FIBERS) && defined(TRACY_ON_DEMAND)
+// A viewer only sees switches made while it is connected. Connected is read
+// before the connection id, which Tracy advances first, so the pair agrees; a
+// leave is only sent to a connection that saw this thread enter a fiber.
+void profile_switch(Worker &worker, const Fiber &to) noexcept {
+  const tracy::Profiler &profiler = tracy::GetProfiler();
+  if (!profiler.IsConnected())
+    return;
+  const u64 connection = profiler.ConnectionId();
+  if (to.profile_name)
+    NX_PROFILE_FIBER_ENTER(to.profile_name);
+  else if (worker.profiled_connection == connection)
+    NX_PROFILE_FIBER_LEAVE();
+  worker.profiled_connection = connection;
+}
+#else
+void profile_switch(Worker &, const Fiber &to) noexcept {
+  if (to.profile_name)
+    NX_PROFILE_FIBER_ENTER(to.profile_name);
+  else
+    NX_PROFILE_FIBER_LEAVE();
+}
+#endif
 #endif
 
 u32 resolve_worker_count(u32 requested) noexcept {
@@ -532,10 +561,7 @@ void SchedulerState::switch_with(Handoff out) noexcept {
 void SchedulerState::complete(const Handoff handoff) noexcept {
   current_worker()->current = handoff.to;
 #if NX_PROFILE_ENABLED
-  if (handoff.to->profile_name)
-    NX_PROFILE_FIBER_ENTER(handoff.to->profile_name);
-  else
-    NX_PROFILE_FIBER_LEAVE();
+  profile_switch(*current_worker(), *handoff.to);
 #endif
   switch (handoff.after) {
   case After::Nothing:
@@ -1093,6 +1119,23 @@ void Scheduler::run_on_main(std::span<const Job> jobs, Counter *counter) {
 
 // The fiber itself moves, so fn runs on its stack with its fiber_local, and
 // may suspend there without holding the service thread.
+#if NX_PROFILE_ENABLED && defined(TRACY_FIBERS) && defined(TRACY_ON_DEMAND)
+void announce_to_profiler() noexcept {
+  Worker *const worker = current_worker();
+  if (worker == nullptr)
+    return;
+  const tracy::Profiler &profiler = tracy::GetProfiler();
+  if (!profiler.IsConnected())
+    return;
+  const u64 connection = profiler.ConnectionId();
+  if (worker->profiled_connection == connection)
+    return;
+  if (worker->current != nullptr && worker->current->profile_name)
+    NX_PROFILE_FIBER_ENTER(worker->current->profile_name);
+  worker->profiled_connection = connection;
+}
+#endif
+
 void run_blocking(const function_ref<void()> fn) noexcept {
   Worker *worker = current_worker();
   if (!worker || worker->role == Role::Blocking ||
