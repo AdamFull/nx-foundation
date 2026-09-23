@@ -3,7 +3,9 @@
 #include "core/foundation/vfs/vfs_internal.h"
 
 #include <chrono>
+#include <exception>
 #include <limits>
+#include <optional>
 
 namespace nx::vfs {
 namespace {
@@ -122,6 +124,26 @@ void AsyncIoContext::record_range_read(const u64 bytes) noexcept {
   m_service.m_bytes_read.fetch_add(bytes, std::memory_order_relaxed);
 }
 
+// A native read needs no thread while the kernel runs it, so the request gives
+// its slot to the next one meanwhile. It takes a slot back before going on,
+// outside any catch block: waiting inside one could resume this fiber on
+// another thread in the middle of the exception.
+io_result<nx::blob<u8>>
+AsyncIoContext::wait_native(future<io_result<nx::blob<u8>>> &pending) {
+  m_service.release_admission();
+  std::optional<io_result<nx::blob<u8>>> result;
+  std::exception_ptr error;
+  try {
+    result.emplace(pending.get());
+  } catch (...) {
+    error = std::current_exception();
+  }
+  m_service.reacquire_admission();
+  if (error)
+    std::rethrow_exception(error);
+  return std::move(*result);
+}
+
 io_result<nx::blob<u8>> AsyncIoContext::read(const path_view path,
                                              const u64 max_bytes) {
   detail::NativeReadFile native;
@@ -135,7 +157,7 @@ io_result<nx::blob<u8>> AsyncIoContext::read(const path_view path,
         nullptr);
     if (!pending.valid())
       return err(file_error{io_error::ReadFailed, 0});
-    return pending.get();
+    return wait_native(pending);
   }
 
   m_service.m_whole_reads.fetch_add(1, std::memory_order_relaxed);
@@ -191,7 +213,7 @@ io_result<nx::blob<u8>> AsyncIoContext::read_range(const path_view path,
         nullptr);
     if (!pending.valid())
       return err(file_error{io_error::ReadFailed, 0});
-    return pending.get();
+    return wait_native(pending);
   }
 
   m_service.m_range_reads.fetch_add(1, std::memory_order_relaxed);
@@ -438,14 +460,47 @@ bool AsyncIoService::take_fallback_locked(nx::detail::task_fn &job,
   return false;
 }
 
+void AsyncIoService::release_admission() noexcept {
+  {
+    nx::scoped_lock lock(m_budget_lock);
+    --m_fallback_active;
+  }
+  pump_fallback();
+}
+
+void AsyncIoService::reacquire_admission() {
+  fiber::Counter admitted(1);
+  {
+    nx::scoped_lock lock(m_budget_lock);
+    if (m_readmit.empty() && m_fallback_active < m_fallback_limit) {
+      ++m_fallback_active;
+      return;
+    }
+    m_readmit.push_back(&admitted);
+  }
+  fiber::wait(admitted);
+}
+
 void AsyncIoService::pump_fallback() noexcept {
   for (;;) {
     nx::detail::task_fn job;
     task_priority priority = task_priority::Normal;
+    fiber::Counter *readmitted = nullptr;
     {
       nx::scoped_lock lock(m_budget_lock);
-      if (!take_fallback_locked(job, priority))
+      if (!m_readmit.empty()) {
+        if (m_fallback_active >= m_fallback_limit)
+          return;
+        readmitted = m_readmit.front();
+        m_readmit.erase(m_readmit.begin());
+        ++m_fallback_active;
+      } else if (!take_fallback_locked(job, priority)) {
         return;
+      }
+    }
+    if (readmitted != nullptr) {
+      readmitted->decrement();
+      continue;
     }
     m_workers->submit(priority, [this, job = std::move(job)]() mutable {
       job();

@@ -157,6 +157,9 @@ private:
   AsyncIoContext(AsyncIoService &service, task_priority priority,
                  cancellation_token cancellation) noexcept;
 
+  [[nodiscard]] io_result<nx::blob<u8>>
+  wait_native(future<io_result<nx::blob<u8>>> &pending);
+
   AsyncIoService &m_service;
   task_priority m_priority = task_priority::Normal;
   cancellation_token m_cancellation;
@@ -263,6 +266,8 @@ private:
   void release_bytes(u64 bytes) noexcept;
   void throw_if_stopping() const;
   void enqueue_fallback(task_priority priority, nx::detail::task_fn job);
+  void release_admission() noexcept;
+  void reacquire_admission();
   void pump_fallback() noexcept;
   [[nodiscard]] bool take_fallback_locked(nx::detail::task_fn &job,
                                           task_priority &priority) noexcept;
@@ -300,6 +305,9 @@ private:
       m_fallback_pending[static_cast<usize>(task_priority::Count)];
   u32 m_fallback_active = 0;
   u32 m_fallback_limit = 1;
+  /// Requests whose native read has finished, waiting to take a slot back.
+  /// They go before any request not yet started.
+  nx::vector<fiber::Counter *> m_readmit;
   /// Fallback requests submitted and not yet finished; shutdown waits on it.
   fiber::Counter m_outstanding;
 };
