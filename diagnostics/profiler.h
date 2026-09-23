@@ -26,6 +26,13 @@
       ::tracy::SetThreadName(name);                                            \
     }                                                                          \
   } while (0)
+#if defined(TRACY_FIBERS)
+#define NX_PROFILE_FIBER_ENTER(name) TracyFiberEnter(name)
+#define NX_PROFILE_FIBER_LEAVE() TracyFiberLeave
+#else
+#define NX_PROFILE_FIBER_ENTER(name) ((void)(name))
+#define NX_PROFILE_FIBER_LEAVE() ((void)0)
+#endif
 #define NX_PROFILE_PLOT(name, value) TracyPlot(name, value)
 #define NX_PROFILE_MESSAGE(text) TracyMessageL(text)
 #define NX_PROFILE_ALLOC(ptr, size) TracyAlloc(ptr, size)
@@ -42,6 +49,8 @@
 /// Names the calling thread on first reach, for a thread whose creation we do
 /// not own - a device callback, where the callback body is the only hook.
 #define NX_PROFILE_SET_THREAD_NAME_ONCE(name) ((void)(name))
+#define NX_PROFILE_FIBER_ENTER(name) ((void)(name))
+#define NX_PROFILE_FIBER_LEAVE() ((void)0)
 #define NX_PROFILE_PLOT(name, value) ((void)(name), (void)(value))
 #define NX_PROFILE_MESSAGE(text) ((void)(text))
 #define NX_PROFILE_ALLOC(ptr, size) ((void)(ptr), (void)(size))

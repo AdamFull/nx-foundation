@@ -25,7 +25,7 @@ Most of it is header-only; the platform backends (`threading`, `platform`,
 | `containers/` | Custom container types. |
 | `strings/` | UTF-8 string, string view, `std::format` integration, interned ids. |
 | `fibers/` | Stackful context switching and fiber stacks, the base of the fiber job system. |
-| `threading/` | Threads, synchronization primitives, and the work-stealing thread pool. |
+| `threading/` | Threads, synchronization primitives, and the fiber-backed thread pool. |
 | `platform/` | OS-facing services: filesystem, virtual memory, process/memory/time queries. |
 | `diagnostics/` | Logging, assertions, and profiler instrumentation. |
 | `serialization/` | Data interchange helpers, including declarative command-line parsing. |
@@ -121,7 +121,7 @@ if (result.status == nx::cli::ParseStatus::Help)
 | --- | --- | --- |
 | `nx::thread` | `threading/thread.h` | A cross-platform OS thread with name, stack size, affinity and priority set at creation. Joins on destruction. Also `nx::this_thread` (id, yield, sleep, name, affinity, priority). |
 | `nx::cpu` | `threading/thread.h` | CPU topology queries: logical/physical core counts, SMT layout, hybrid P/E efficiency classes, cache hierarchy, NUMA node count. |
-| `nx::thread_pool` | `threading/thread_pool.h` | A priority-aware work-stealing pool with bounded background concurrency, `task_group` batches, cancellable futures and continuations, `when_all`/`when_any`, cooperative waiting, and opt-in statistics/timing. |
+| `nx::thread_pool` | `threading/thread_pool.h` | A priority-aware task pool on an `nx::fiber::Scheduler` of its own, with bounded background concurrency, `task_group` batches, cancellable futures and continuations, `when_all`/`when_any`, and opt-in statistics/timing. Waiting in a task suspends its fiber instead of occupying the worker. |
 | `nx::cancellation_source` / `nx::cancellation_token` | `threading/cancellation.h` | Shared cooperative cancellation for queued and running work. Tokens are cheap to copy and retain their cancellation generation when a source is reset. |
 | `nx::mutex` et al. | `threading/sync.h` | Futex-based synchronization: `spin_lock`, `mutex`, `recursive_mutex`, `cond_var`, `rw_lock` (writer-preferring), `semaphore`, `event`, `barrier`, `once_flag`/`call_once`, and `scoped_lock`/`scoped_shared_lock` guards. 4-8 bytes of state each, kernel wait only under contention. |
 | `nx::futex` | `threading/sync.h` | The raw 32-bit futex wait/wake primitive everything in `sync.h` is built on (WaitOnAddress / `SYS_futex`). |

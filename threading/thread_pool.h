@@ -3,6 +3,7 @@
 #include "core/foundation/containers/concurrent_queue.h"
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/callable.h"
+#include "core/foundation/fibers/scheduler.h"
 #include "core/foundation/threading/cancellation.h"
 #include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread.h"
@@ -93,6 +94,7 @@ struct future_state_base {
   thread_pool *pool = nullptr;
   std::exception_ptr error;
   std::atomic<future_continuation *> continuations{nullptr};
+  fiber::Counter done{1};
 };
 
 template <typename T> struct future_state : future_state_base {
@@ -145,33 +147,30 @@ using cancellable_result_t = typename cancellable_result<F>::type;
 } // namespace detail
 
 /// Completion counter for a batch of tasks: submit any number against a group,
-/// then wait(). Reusable afterwards. A group is bound to the first pool it is
-/// used with and must outlive its tasks.
+/// then wait(). Reusable afterwards, and must outlive its tasks. Waiting in a
+/// task suspends its fiber rather than blocking the worker.
 class task_group {
 public:
   task_group() = default;
   ~task_group() {
-    assert(m_pending.load(std::memory_order_acquire) == 0 &&
+    assert(m_pending.value() == 0 &&
            "task_group destroyed with tasks still pending");
   }
   task_group(const task_group &) = delete;
   task_group &operator=(const task_group &) = delete;
 
-  [[nodiscard]] bool done() const noexcept {
-    return m_pending.load(std::memory_order_acquire) == 0;
-  }
+  [[nodiscard]] bool done() const noexcept { return m_pending.value() == 0; }
 
-  void wait() noexcept;
+  void wait() noexcept { fiber::wait(m_pending); }
 
 private:
   friend class thread_pool;
 
-  std::atomic<u32> m_pending{0};
-  thread_pool *m_pool = nullptr;
+  fiber::Counter m_pending;
 };
 
-/// Move-only. get() waits (helping the pool) and moves the result out; once per
-/// valid future.
+/// Move-only. get() waits (suspending a waiting fiber) and moves the result
+/// out; once per valid future.
 template <typename T> class future {
 public:
   future() = default;
@@ -340,11 +339,15 @@ private:
   bool m_future_taken = false;
 };
 
+/// A task pool on an nx::fiber::Scheduler of its own. Tasks run on fibers, so
+/// a task that waits on a group, a future or a fiber primitive suspends
+/// instead of occupying its worker.
 class thread_pool {
 public:
   struct config {
     u32 thread_count = 0;
     const char *name = "nx-worker";
+    /// Not honoured by the fiber scheduler, which leaves placement to the OS.
     bool pin_threads = false;
     thread_priority priority = thread_priority::Normal;
     /// Zero reserves one worker from background work when possible. An
@@ -372,7 +375,7 @@ public:
   thread_pool &operator=(const thread_pool &) = delete;
 
   [[nodiscard]] u32 worker_count() const noexcept {
-    return nx::cast<u32>(m_workers.size());
+    return m_scheduler->worker_count();
   }
 
   [[nodiscard]] bool is_worker_thread() const noexcept;
@@ -604,37 +607,15 @@ public:
     group.wait();
   }
 
-  /// Blocks until the pool has no queued or running tasks, executing queued
-  /// tasks while it waits. Must not be called from inside a pool task (the
-  /// calling task itself would never count as finished); use a task_group there
-  /// instead.
+  /// Waits until the pool has no queued or running tasks. Must not be called
+  /// from inside a pool task (the calling task itself would never count as
+  /// finished); use a task_group there instead.
   void wait_idle() noexcept;
-
-  bool help_execute_one() noexcept;
 
 private:
   friend class task_group;
 
-  static constexpr usize LOCAL_QUEUE_SIZE = 256;
-  static constexpr usize SHARED_QUEUE_SIZE = 1024;
-  static constexpr u32 INVALID_WORKER = ~0u;
-
-  struct worker {
-    mpmc::Queue<detail::pool_task, LOCAL_QUEUE_SIZE>
-        queues[static_cast<usize>(task_priority::Count)];
-    thread th;
-    u32 index = 0;
-    u32 dispatches = 0;
-    u32 steal_cursor = 0;
-    char name[32] = {};
-  };
-
-  struct overflow_queue {
-    mutex lock;
-    vector<detail::pool_task> tasks;
-    usize head = 0;
-    std::atomic<u32> count{0};
-  };
+  struct task_node;
 
   struct alignas(64) lane_counters {
     std::atomic<u64> submitted{0};
@@ -649,47 +630,36 @@ private:
     std::atomic<u32> peak_active{0};
   };
 
+  static void run_node(void *arg) noexcept;
+
   void enqueue(detail::pool_task &&t);
-  bool try_get_task(detail::pool_task &out, u32 self_index, u32 &dispatches,
-                    u32 &steal_cursor) noexcept;
-  bool try_get_priority(detail::pool_task &out, u32 self_index,
-                        task_priority priority, u32 &steal_cursor,
-                        bool &stolen) noexcept;
-  void run_task(detail::pool_task &t) noexcept;
-  void worker_loop(worker &w) noexcept;
-  [[nodiscard]] bool try_reserve_background() noexcept;
-  void release_background() noexcept;
+  void dispatch(task_node *node) noexcept;
+  void pump_background() noexcept;
+  [[nodiscard]] task_node *acquire_node() noexcept;
+  void release_node(task_node *node) noexcept;
   void record_enqueued(task_priority priority) noexcept;
-  void record_started(task_priority priority, bool stolen) noexcept;
+  void record_started(task_priority priority) noexcept;
   void record_completed(task_priority priority, u64 execution_ns) noexcept;
   [[nodiscard]] bool is_execution_context() const noexcept;
 
-  small_vector<worker *, 32> m_workers;
-  mpmc::Queue<detail::pool_task, SHARED_QUEUE_SIZE>
-      m_shared_queues[static_cast<usize>(task_priority::Count)];
-  overflow_queue m_overflow[static_cast<usize>(task_priority::Count)];
+  unique_ptr<fiber::Scheduler> m_scheduler;
+  fiber::Counter m_unfinished;
+  mpmc::Queue<task_node *, 256> m_free_nodes;
   lane_counters m_counters[static_cast<usize>(task_priority::Count)];
 
-  std::atomic<u32> m_unfinished{0};
-  std::atomic<u32> m_signal{0};
-  std::atomic<u32> m_sleepers{0};
-  std::atomic<u32> m_background_queued{0};
+  mutex m_background_lock;
+  vector<task_node *> m_background_waiting;
+  usize m_background_head = 0;
+  std::atomic<u32> m_background_pending{0};
   std::atomic<u32> m_background_active{0};
   u32 m_background_limit = 1;
   bool m_collect_statistics = false;
   bool m_collect_timings = false;
-  std::atomic<bool> m_stop{false};
 };
 
 template <typename T> void future<T>::wait() noexcept {
-  if (!m_state)
-    return;
-  std::atomic<u32> &ready = m_state->ready;
-  while (ready.load(std::memory_order_acquire) == 0) {
-    if (m_state->pool && m_state->pool->help_execute_one())
-      continue;
-    futex::wait(&ready, 0, detail::WAIT_FOREVER);
-  }
+  if (m_state)
+    fiber::wait(m_state->done);
 }
 
 template <typename T> T future<T>::get() {

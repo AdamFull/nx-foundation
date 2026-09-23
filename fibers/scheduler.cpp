@@ -51,6 +51,10 @@ struct Fiber {
   Stack stack;
   SchedulerState *owner = nullptr;
   Fiber *next_parked = nullptr;
+  void *local = nullptr;
+#if NX_PROFILE_ENABLED
+  const char *profile_name = nullptr;
+#endif
   internal::Waiter waiter;
   u32 target = 0;
   Priority priority = Priority::Normal;
@@ -82,7 +86,8 @@ struct Worker {
   Fiber thread_fiber;
   Fiber *current = nullptr;
   clock::time_point main_deadline{};
-  char name[16] = {};
+  u32 dispatches = 0;
+  char name[32] = {};
   mpmc::Queue<Work, LOCAL_QUEUE> local[PRIORITY_COUNT];
   thread os_thread;
 };
@@ -189,6 +194,21 @@ namespace {
   state->loop(handoff.to);
 }
 
+#if NX_PROFILE_ENABLED
+// Tracy keeps the pointer for the rest of the process, so names are never
+// freed, and are numbered process-wide so two schedulers never share one.
+const char *profile_fiber_name() noexcept {
+  static std::atomic<u32> next{0};
+  char buffer[24];
+  format_to(buffer, "fiber {}", next.fetch_add(1, std::memory_order_relaxed));
+  const usize length = std::strlen(buffer) + 1;
+  auto *name = static_cast<char *>(mem_alloc(length, 1));
+  if (name)
+    std::memcpy(name, buffer, length);
+  return name;
+}
+#endif
+
 u32 resolve_worker_count(u32 requested) noexcept {
   if (requested)
     return requested;
@@ -264,7 +284,7 @@ SchedulerState::SchedulerState(const Scheduler::Config &requested) noexcept
     worker->thread_fiber.owner = this;
     worker->thread_fiber.affinity = i == 0 ? Affinity::Main : Affinity::Any;
     worker->current = &worker->thread_fiber;
-    format_to(worker->name, "nx-fiber-{}", i);
+    format_to(worker->name, "{}-{}", config.name ? config.name : "nx-fiber", i);
     workers.push_back(worker);
   }
 }
@@ -314,6 +334,9 @@ Fiber *SchedulerState::acquire_fiber() noexcept {
   fiber->stack = *stack;
   fiber->owner = this;
   fiber->context.reset(fiber->stack, &fiber_entry);
+#if NX_PROFILE_ENABLED
+  fiber->profile_name = profile_fiber_name();
+#endif
   fibers[index] = fiber;
   return fiber;
 }
@@ -474,6 +497,12 @@ void SchedulerState::switch_with(Handoff out) noexcept {
 // its stack; only then is it safe to let another thread resume that one.
 void SchedulerState::complete(const Handoff handoff) noexcept {
   current_worker()->current = handoff.to;
+#if NX_PROFILE_ENABLED
+  if (handoff.to->profile_name)
+    NX_PROFILE_FIBER_ENTER(handoff.to->profile_name);
+  else
+    NX_PROFILE_FIBER_LEAVE();
+#endif
   switch (handoff.after) {
   case After::Nothing:
     break;
@@ -576,6 +605,7 @@ void SchedulerState::loop(Fiber *self) noexcept {
     }
     self->priority = work.priority;
     self->affinity = work.affinity;
+    self->local = nullptr;
     execute(work);
   }
 }
@@ -594,11 +624,24 @@ Fiber *SchedulerState::next_work(Worker *worker, Work &work) noexcept {
       continue;
     }
     fire_timers();
-    for (usize priority = 0; priority < PRIORITY_COUNT; ++priority) {
-      if (ready[priority].try_pop(fiber))
+    // Strict priority, except that every 8th and 32nd pick probes a lower
+    // lane first, so sustained high-priority load cannot starve the rest.
+    static constexpr usize ORDERS[3][PRIORITY_COUNT] = {
+        {0, 1, 2}, {1, 0, 2}, {2, 0, 1}};
+    const u32 pick = worker->dispatches;
+    const usize *order = (pick & 31u) == 31u ? ORDERS[2]
+                         : (pick & 7u) == 7u ? ORDERS[1]
+                                             : ORDERS[0];
+    for (usize i = 0; i < PRIORITY_COUNT; ++i) {
+      const usize priority = order[i];
+      if (ready[priority].try_pop(fiber)) {
+        ++worker->dispatches;
         return fiber;
-      if (pop_work(worker, priority, work))
+      }
+      if (pop_work(worker, priority, work)) {
+        ++worker->dispatches;
         return work.fiber;
+      }
     }
     if (stopping.load(std::memory_order_acquire))
       return &worker->thread_fiber;
@@ -921,25 +964,35 @@ void resume(const Claimed &claimed) noexcept {
 } // namespace internal
 
 Scheduler::Scheduler(const Config &config) {
-  NX_ASSERT(current_worker() == nullptr,
-            "a thread can host only one fiber scheduler");
+  NX_ASSERT(!config.adopt_main_thread || current_worker() == nullptr,
+            "a thread can be the main thread of only one fiber scheduler");
   m_state = allocate<SchedulerState>(config);
   SchedulerState &state = *m_state;
-  set_current_worker(state.workers[0]);
+  if (config.adopt_main_thread)
+    set_current_worker(state.workers[0]);
   for (usize i = 1; i < state.workers.size(); ++i) {
     Worker *worker = state.workers[i];
-    worker->os_thread = thread([&state, worker] { state.worker_main(worker); },
-                               {.name = worker->name});
+    worker->os_thread =
+        thread([&state, worker] { state.worker_main(worker); },
+               {.name = worker->name, .priority = config.priority});
   }
 }
 
 Scheduler::~Scheduler() {
   SchedulerState &state = *m_state;
-  Worker *main = state.workers[0];
-  NX_ASSERT(state.this_worker() == main && main->current == &main->thread_fiber,
-            "the fiber scheduler must be destroyed by its main thread");
-  while (state.live_jobs.load(std::memory_order_acquire) != 0)
-    pump_main(std::chrono::milliseconds(1));
+  if (state.config.adopt_main_thread) {
+    Worker *main = state.workers[0];
+    NX_ASSERT(state.this_worker() == main &&
+                  main->current == &main->thread_fiber,
+              "the fiber scheduler must be destroyed by its main thread");
+    while (state.live_jobs.load(std::memory_order_acquire) != 0)
+      pump_main(std::chrono::milliseconds(1));
+  } else {
+    NX_ASSERT(state.this_worker() == nullptr,
+              "a fiber scheduler cannot be destroyed from its own workers");
+    while (state.live_jobs.load(std::memory_order_acquire) != 0)
+      this_thread::sleep_for(std::chrono::microseconds(200));
+  }
 
   state.stopping.store(true, std::memory_order_seq_cst);
   state.worker_epoch.fetch_add(1, std::memory_order_seq_cst);
@@ -948,7 +1001,8 @@ Scheduler::~Scheduler() {
     if (state.workers[i]->os_thread.joinable())
       state.workers[i]->os_thread.join();
 
-  set_current_worker(nullptr);
+  if (state.config.adopt_main_thread)
+    set_current_worker(nullptr);
   release(m_state);
 }
 
@@ -958,13 +1012,15 @@ void Scheduler::run(std::span<const Job> jobs, Counter *counter,
 }
 
 void Scheduler::run_on_main(std::span<const Job> jobs, Counter *counter) {
+  NX_ASSERT(m_state->config.adopt_main_thread,
+            "run_on_main needs a scheduler with a main thread");
   m_state->submit(jobs, counter, Priority::Normal, Affinity::Main);
 }
 
-void Scheduler::wait(Counter &counter, const u32 target) {
+void wait(Counter &counter, const u32 target) noexcept {
   if (counter.value() > target) {
-    if (Worker *worker = m_state->this_worker()) {
-      m_state->suspend_until(worker, counter, target);
+    if (Worker *worker = current_worker()) {
+      worker->state->suspend_until(worker, counter, target);
     } else {
       for (;;) {
         if (counter.m_value.load(std::memory_order_seq_cst) <= target)
@@ -990,6 +1046,8 @@ void Scheduler::yield() {
 void Scheduler::switch_to_main() {
   Worker *worker = m_state->this_worker();
   NX_ASSERT(worker, "switch_to_main outside a job");
+  NX_ASSERT(m_state->config.adopt_main_thread,
+            "switch_to_main needs a scheduler with a main thread");
   if (worker->is_main)
     return;
   worker->current->affinity = Affinity::Main;
@@ -1020,6 +1078,28 @@ void Scheduler::pump_main(const std::chrono::nanoseconds budget) {
     state.execute(work);
   if (work.fiber)
     state.push_fiber_work(work.fiber);
+}
+
+namespace {
+thread_local void *t_local = nullptr;
+
+NX_NO_INLINE void **local_slot() noexcept {
+  Worker *worker = current_worker();
+  return worker ? &worker->current->local : &t_local;
+}
+} // namespace
+
+void *fiber_local() noexcept { return *local_slot(); }
+
+void set_fiber_local(void *value) noexcept { *local_slot() = value; }
+
+bool Scheduler::on_worker_thread() const noexcept {
+  const Worker *worker = m_state->this_worker();
+  return worker && !worker->is_main;
+}
+
+u32 Scheduler::worker_count() const noexcept {
+  return nx::cast<u32>(m_state->workers.size() - 1);
 }
 
 bool Scheduler::on_main_thread() const noexcept {

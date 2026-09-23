@@ -2,6 +2,7 @@
 
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/threading/sync.h"
+#include "core/foundation/threading/thread.h"
 
 #include <atomic>
 #include <chrono>
@@ -36,6 +37,7 @@ public:
 private:
   friend class Scheduler;
   friend struct SchedulerState;
+  friend void wait(Counter &, u32) noexcept;
 
   std::atomic<u32> m_value;
   std::atomic<u32> m_decrementing{0};
@@ -43,6 +45,17 @@ private:
   spin_lock m_lock;
   Fiber *m_parked = nullptr;
 };
+
+/// Returns once counter.value() <= target. A fiber of any scheduler is
+/// suspended; the main thread keeps running main-affine work; any other thread
+/// blocks.
+void wait(Counter &counter, u32 target = 0) noexcept;
+
+/// A pointer that belongs to the running fiber and follows it across threads,
+/// for what a thread_local cannot hold. Cleared when a fiber starts a job; on
+/// a thread no scheduler owns it is per thread.
+[[nodiscard]] void *fiber_local() noexcept;
+void set_fiber_local(void *value) noexcept;
 
 /// False while the caller holds an nx::mutex or nx::rw_lock, is inside
 /// scoped_no_alloc or a no_suspend_scope; suspending a fiber then asserts.
@@ -66,9 +79,11 @@ struct Job {
 
 struct SchedulerState;
 
-/// Runs jobs on pooled fibers across worker threads. The constructing thread
-/// is the main thread: it runs no general jobs, only main-affine work, and
-/// only inside pump_main() or while it waits.
+/// Runs jobs on pooled fibers across worker threads. By default the
+/// constructing thread becomes the main thread: it runs no general jobs, only
+/// main-affine work, and only inside pump_main() or while it waits. Without a
+/// main thread, main-affine work is unavailable and the scheduler can be
+/// created and destroyed on any thread.
 class Scheduler {
 public:
   struct Config {
@@ -76,6 +91,9 @@ public:
     u32 max_fibers = 512;
     usize stack_size = 256 * 1024;
     usize stack_commit = 16 * 1024;
+    const char *name = "nx-fiber";
+    thread_priority priority = thread_priority::Normal;
+    bool adopt_main_thread = true;
   };
 
   struct Stats {
@@ -89,8 +107,8 @@ public:
 
   Scheduler() : Scheduler(Config{}) {}
   explicit Scheduler(const Config &config);
-  /// Runs every outstanding job to completion, then stops the workers. Must
-  /// be called on the main thread.
+  /// Runs every outstanding job to completion, then stops the workers. With
+  /// a main thread, must be called on it.
   ~Scheduler();
 
   Scheduler(const Scheduler &) = delete;
@@ -102,9 +120,7 @@ public:
            Priority priority = Priority::Normal);
   void run_on_main(std::span<const Job> jobs, Counter *counter = nullptr);
 
-  /// Returns once counter.value() <= target. A fiber is suspended; the main
-  /// thread keeps running main-affine work; any other thread blocks.
-  void wait(Counter &counter, u32 target = 0);
+  void wait(Counter &counter, u32 target = 0) { fiber::wait(counter, target); }
 
   void yield();
   void switch_to_main();
@@ -114,7 +130,9 @@ public:
   void pump_main(std::chrono::nanoseconds budget);
 
   [[nodiscard]] bool on_main_thread() const noexcept;
+  [[nodiscard]] bool on_worker_thread() const noexcept;
   [[nodiscard]] bool in_fiber() const noexcept;
+  [[nodiscard]] u32 worker_count() const noexcept;
   [[nodiscard]] Stats stats() const noexcept;
 
 private:

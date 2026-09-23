@@ -4,21 +4,9 @@
 #include "core/foundation/diagnostics/profiler.h"
 #include "core/foundation/platform/os.h"
 
-#include <cstdio>
 #include <exception>
 
 namespace nx {
-
-namespace {
-struct pool_tls {
-  thread_pool *pool = nullptr;
-  u32 index = 0;
-  u32 dispatches = 0;
-  u32 steal_cursor = 0;
-  u32 background_depth = 0;
-};
-thread_local pool_tls t_worker;
-} // namespace
 
 namespace detail {
 namespace {
@@ -33,7 +21,7 @@ void future_state_finish(future_state_base *state, const u32 status) noexcept {
   assert((status >= 1 && status <= 3) && "invalid future completion status");
 
   state->ready.store(status, std::memory_order_release);
-  futex::wake_all(&state->ready);
+  state->done.decrement();
 
   future_continuation *list = state->continuations.exchange(
       closed_continuations(), std::memory_order_acq_rel);
@@ -82,102 +70,27 @@ void future_state_continue(future_state_base *state,
 }
 } // namespace detail
 
-void task_group::wait() noexcept {
-  for (;;) {
-    const u32 pending = m_pending.load(std::memory_order_acquire);
-    if (pending == 0)
-      return;
-    if (m_pool && m_pool->help_execute_one())
-      continue;
-    futex::wait(&m_pending, pending, detail::WAIT_FOREVER);
-  }
-}
-
-thread_pool::thread_pool(const config &cfg) {
-  const cpu::topology_info &topo = cpu::topology();
-  m_collect_statistics = cfg.collect_statistics || cfg.collect_timings;
-  m_collect_timings = cfg.collect_timings;
-
-  u32 count = cfg.thread_count;
-  if (count == 0)
-    count = topo.physical_count > 1 ? topo.physical_count - 1 : 1;
-
-  // Create every worker before starting any thread: worker_loop iterates
-  // m_workers for stealing and must see the final layout.
-  m_workers.reserve(count);
-  for (u32 i = 0; i < count; ++i) {
-    auto *w = allocate<worker>();
-    if (!w)
-      break;
-    w->index = i;
-    w->steal_cursor = i + 1;
-    snprintf(w->name, sizeof(w->name), "%s-%u", cfg.name ? cfg.name : "nx", i);
-    m_workers.push_back(w);
-  }
-
-  bool start_failed = false;
-  for (worker *w : m_workers) {
-    thread_options opts;
-    opts.name = w->name;
-    opts.priority = cfg.priority;
-    if (cfg.pin_threads && !topo.cores.empty()) {
-      const cpu::core_info &core = topo.cores[w->index % topo.cores.size()];
-      opts.affinity_mask = core.logical_mask;
-    }
-    w->th = thread([this, w] { worker_loop(*w); }, opts);
-    if (!w->th.joinable()) {
-      start_failed = true;
-      break;
-    }
-  }
-
-  if (start_failed) {
-    m_stop.store(true, std::memory_order_release);
-    m_signal.fetch_add(1, std::memory_order_seq_cst);
-    futex::wake_all(&m_signal);
-    for (worker *w : m_workers)
-      if (w->th.joinable())
-        w->th.join();
-    for (worker *w : m_workers)
-      release(w);
-    m_workers.clear();
-    m_stop.store(false, std::memory_order_relaxed);
-  }
-
-  const u32 workers = nx::cast<u32>(m_workers.size());
-  if (workers == 0) {
-    m_background_limit = 0;
-  } else if (cfg.max_background_concurrency == 0) {
-    m_background_limit = workers > 1 ? workers - 1 : 1;
-  } else {
-    m_background_limit = nx::min(cfg.max_background_concurrency, workers);
-  }
-}
-
-thread_pool::~thread_pool() {
-  wait_idle();
-
-  m_stop.store(true, std::memory_order_release);
-  m_signal.fetch_add(1, std::memory_order_seq_cst);
-  futex::wake_all(&m_signal);
-
-  for (worker *w : m_workers)
-    if (w->th.joinable())
-      w->th.join();
-  for (worker *w : m_workers)
-    release(w);
-  m_workers.clear();
-}
-
-bool thread_pool::is_worker_thread() const noexcept {
-  return t_worker.pool == this && t_worker.index != INVALID_WORKER;
-}
-
-bool thread_pool::is_execution_context() const noexcept {
-  return t_worker.pool == this;
-}
+struct thread_pool::task_node {
+  detail::pool_task task;
+  thread_pool *pool = nullptr;
+  bool pooled = true;
+};
 
 namespace {
+
+constexpr u32 PRESEEDED_NODES = 128;
+
+fiber::Priority lane(const task_priority priority) noexcept {
+  switch (priority) {
+  case task_priority::Critical:
+    return fiber::Priority::High;
+  case task_priority::Background:
+    return fiber::Priority::Low;
+  default:
+    return fiber::Priority::Normal;
+  }
+}
+
 template <typename T>
 void update_peak(std::atomic<T> &peak, const T value) noexcept {
   T observed = peak.load(std::memory_order_relaxed);
@@ -186,7 +99,56 @@ void update_peak(std::atomic<T> &peak, const T value) noexcept {
                                      std::memory_order_relaxed)) {
   }
 }
+
 } // namespace
+
+thread_pool::thread_pool(const config &cfg) {
+  m_collect_statistics = cfg.collect_statistics || cfg.collect_timings;
+  m_collect_timings = cfg.collect_timings;
+
+  u32 count = cfg.thread_count;
+  if (count == 0) {
+    const cpu::topology_info &topo = cpu::topology();
+    count = topo.physical_count > 1 ? topo.physical_count - 1 : 1;
+  }
+
+  // Tasks used to run on 1 MiB OS thread stacks; fiber stacks only commit
+  // what they touch, so matching that costs address space, not memory.
+  m_scheduler = make_unique<fiber::Scheduler>(fiber::Scheduler::Config{
+      .worker_count = count,
+      .stack_size = 1024 * 1024,
+      .name = cfg.name ? cfg.name : "nx-worker",
+      .priority = cfg.priority,
+      .adopt_main_thread = false,
+  });
+
+  const u32 workers = worker_count();
+  if (cfg.max_background_concurrency == 0)
+    m_background_limit = workers > 1 ? workers - 1 : 1;
+  else
+    m_background_limit = nx::min(cfg.max_background_concurrency, workers);
+
+  for (u32 i = 0; i < PRESEEDED_NODES; ++i)
+    if (task_node *node = allocate<task_node>();
+        !node || !m_free_nodes.try_push(node))
+      release(node);
+}
+
+thread_pool::~thread_pool() {
+  wait_idle();
+  m_scheduler.reset();
+  for (task_node *node = nullptr; m_free_nodes.try_pop(node);)
+    release(node);
+}
+
+bool thread_pool::is_worker_thread() const noexcept {
+  return m_scheduler->on_worker_thread();
+}
+
+bool thread_pool::is_execution_context() const noexcept {
+  const auto *node = static_cast<const task_node *>(fiber::fiber_local());
+  return node && node->pool == this;
+}
 
 thread_pool_statistics thread_pool::statistics() const noexcept {
   thread_pool_statistics out;
@@ -200,71 +162,71 @@ thread_pool_statistics thread_pool::statistics() const noexcept {
 
   for (usize i = 0; i < task_priority_index(task_priority::Count); ++i) {
     const lane_counters &source = m_counters[i];
-    task_lane_statistics &lane = out.lanes[i];
-    lane.submitted = source.submitted.load(std::memory_order_relaxed);
-    lane.started = source.started.load(std::memory_order_relaxed);
-    lane.completed = source.completed.load(std::memory_order_relaxed);
-    lane.stolen = source.stolen.load(std::memory_order_relaxed);
-    lane.overflowed = source.overflowed.load(std::memory_order_relaxed);
-    lane.execution_ns = source.execution_ns.load(std::memory_order_relaxed);
-    lane.queued = source.queued.load(std::memory_order_relaxed);
-    lane.peak_queued = source.peak_queued.load(std::memory_order_relaxed);
-    lane.active = source.active.load(std::memory_order_relaxed);
-    lane.peak_active = source.peak_active.load(std::memory_order_relaxed);
+    task_lane_statistics &lane_stats = out.lanes[i];
+    lane_stats.submitted = source.submitted.load(std::memory_order_relaxed);
+    lane_stats.started = source.started.load(std::memory_order_relaxed);
+    lane_stats.completed = source.completed.load(std::memory_order_relaxed);
+    lane_stats.stolen = source.stolen.load(std::memory_order_relaxed);
+    lane_stats.overflowed = source.overflowed.load(std::memory_order_relaxed);
+    lane_stats.execution_ns =
+        source.execution_ns.load(std::memory_order_relaxed);
+    lane_stats.queued = source.queued.load(std::memory_order_relaxed);
+    lane_stats.peak_queued = source.peak_queued.load(std::memory_order_relaxed);
+    lane_stats.active = source.active.load(std::memory_order_relaxed);
+    lane_stats.peak_active = source.peak_active.load(std::memory_order_relaxed);
   }
   return out;
 }
 
 void thread_pool::reset_statistics() noexcept {
-  assert(m_unfinished.load(std::memory_order_acquire) == 0 &&
+  assert(m_unfinished.value() == 0 &&
          "thread-pool statistics may only be reset while idle");
   if (!m_collect_statistics)
     return;
-  for (lane_counters &lane : m_counters) {
-    lane.submitted.store(0, std::memory_order_relaxed);
-    lane.started.store(0, std::memory_order_relaxed);
-    lane.completed.store(0, std::memory_order_relaxed);
-    lane.stolen.store(0, std::memory_order_relaxed);
-    lane.overflowed.store(0, std::memory_order_relaxed);
-    lane.execution_ns.store(0, std::memory_order_relaxed);
-    lane.queued.store(0, std::memory_order_relaxed);
-    lane.peak_queued.store(0, std::memory_order_relaxed);
-    lane.active.store(0, std::memory_order_relaxed);
-    lane.peak_active.store(0, std::memory_order_relaxed);
+  for (lane_counters &counters : m_counters) {
+    counters.submitted.store(0, std::memory_order_relaxed);
+    counters.started.store(0, std::memory_order_relaxed);
+    counters.completed.store(0, std::memory_order_relaxed);
+    counters.stolen.store(0, std::memory_order_relaxed);
+    counters.overflowed.store(0, std::memory_order_relaxed);
+    counters.execution_ns.store(0, std::memory_order_relaxed);
+    counters.queued.store(0, std::memory_order_relaxed);
+    counters.peak_queued.store(0, std::memory_order_relaxed);
+    counters.active.store(0, std::memory_order_relaxed);
+    counters.peak_active.store(0, std::memory_order_relaxed);
   }
 }
 
 void thread_pool::record_enqueued(const task_priority priority) noexcept {
   if (!m_collect_statistics)
     return;
-  lane_counters &lane = m_counters[task_priority_index(priority)];
-  lane.submitted.fetch_add(1, std::memory_order_relaxed);
-  const u32 queued = lane.queued.fetch_add(1, std::memory_order_relaxed) + 1;
-  update_peak(lane.peak_queued, queued);
+  lane_counters &counters = m_counters[task_priority_index(priority)];
+  counters.submitted.fetch_add(1, std::memory_order_relaxed);
+  const u32 queued =
+      counters.queued.fetch_add(1, std::memory_order_relaxed) + 1;
+  update_peak(counters.peak_queued, queued);
 }
 
-void thread_pool::record_started(const task_priority priority,
-                                 const bool stolen) noexcept {
+void thread_pool::record_started(const task_priority priority) noexcept {
   if (!m_collect_statistics)
     return;
-  lane_counters &lane = m_counters[task_priority_index(priority)];
-  lane.queued.fetch_sub(1, std::memory_order_relaxed);
-  lane.started.fetch_add(1, std::memory_order_relaxed);
-  if (stolen)
-    lane.stolen.fetch_add(1, std::memory_order_relaxed);
-  const u32 active = lane.active.fetch_add(1, std::memory_order_relaxed) + 1;
-  update_peak(lane.peak_active, active);
+  lane_counters &counters = m_counters[task_priority_index(priority)];
+  counters.queued.fetch_sub(1, std::memory_order_relaxed);
+  counters.started.fetch_add(1, std::memory_order_relaxed);
+  const u32 active =
+      counters.active.fetch_add(1, std::memory_order_relaxed) + 1;
+  update_peak(counters.peak_active, active);
 }
 
 void thread_pool::record_completed(const task_priority priority,
                                    const u64 execution_ns) noexcept {
   if (!m_collect_statistics)
     return;
-  lane_counters &lane = m_counters[task_priority_index(priority)];
-  lane.completed.fetch_add(1, std::memory_order_relaxed);
-  lane.active.fetch_sub(1, std::memory_order_relaxed);
+  lane_counters &counters = m_counters[task_priority_index(priority)];
+  counters.completed.fetch_add(1, std::memory_order_relaxed);
+  counters.active.fetch_sub(1, std::memory_order_relaxed);
   if (m_collect_timings)
-    lane.execution_ns.fetch_add(execution_ns, std::memory_order_relaxed);
+    counters.execution_ns.fetch_add(execution_ns, std::memory_order_relaxed);
 }
 
 void thread_pool::submit(task_group &group, detail::task_fn fn) {
@@ -273,182 +235,112 @@ void thread_pool::submit(task_group &group, detail::task_fn fn) {
 
 void thread_pool::submit(task_group &group, const task_priority priority,
                          detail::task_fn fn) {
-  assert((group.m_pool == nullptr || group.m_pool == this) &&
-         "task_group is already bound to a different pool");
-  group.m_pool = this;
   enqueue({std::move(fn), &group, priority});
 }
 
+thread_pool::task_node *thread_pool::acquire_node() noexcept {
+  task_node *node = nullptr;
+  if (m_free_nodes.try_pop(node))
+    return node;
+  return allocate<task_node>();
+}
+
+void thread_pool::release_node(task_node *node) noexcept {
+  if (node->pooled && !m_free_nodes.try_push(node))
+    release(node);
+}
+
 void thread_pool::enqueue(detail::pool_task &&t) {
-  usize priority = static_cast<usize>(t.priority);
-  if (priority >= static_cast<usize>(task_priority::Count)) {
+  if (static_cast<usize>(t.priority) >=
+      static_cast<usize>(task_priority::Count)) {
     assert(false && "invalid thread-pool task priority");
     t.priority = task_priority::Normal;
-    priority = static_cast<usize>(t.priority);
   }
 
-  m_unfinished.fetch_add(1, std::memory_order_relaxed);
+  m_unfinished.add(1);
   if (t.group)
-    t.group->m_pending.fetch_add(1, std::memory_order_relaxed);
-  if (t.priority == task_priority::Background)
-    m_background_queued.fetch_add(1, std::memory_order_release);
+    t.group->m_pending.add(1);
   record_enqueued(t.priority);
 
-  // Construction can legitimately end with no workers when the platform
-  // refuses a thread or the worker allocation fails. Running inline is slower,
-  // but it preserves async progress instead of leaving futures pending forever.
-  if (m_workers.empty()) {
-    if (t.priority == task_priority::Background)
-      m_background_queued.fetch_sub(1, std::memory_order_relaxed);
-    record_started(t.priority, false);
-    run_task(t);
+  task_node *node = acquire_node();
+  if (!node) {
+    // Out of memory: run it here rather than lose it.
+    task_node local{std::move(t), this, false};
+    run_node(&local);
     return;
   }
+  node->task = std::move(t);
+  node->pool = this;
+  node->task.holds_background_slot = false;
 
-  worker *self = t_worker.pool == this && t_worker.index != INVALID_WORKER
-                     ? m_workers[t_worker.index]
-                     : nullptr;
-  if (!(self && self->queues[priority].try_push(std::move(t))) &&
-      !m_shared_queues[priority].try_push(std::move(t))) {
-    overflow_queue &overflow = m_overflow[priority];
-    scoped_lock lock(overflow.lock);
-    overflow.tasks.push_back(std::move(t));
-    overflow.count.fetch_add(1, std::memory_order_release);
-    if (m_collect_statistics)
-      m_counters[priority].overflowed.fetch_add(1, std::memory_order_relaxed);
-  }
-
-  m_signal.fetch_add(1, std::memory_order_seq_cst);
-  if (m_sleepers.load(std::memory_order_seq_cst) > 0)
-    futex::wake(&m_signal, 1);
-}
-
-bool thread_pool::try_reserve_background() noexcept {
-  u32 active = m_background_active.load(std::memory_order_relaxed);
-  while (active < m_background_limit) {
-    if (m_background_active.compare_exchange_weak(active, active + 1,
-                                                  std::memory_order_acquire,
-                                                  std::memory_order_relaxed))
-      return true;
-  }
-  return false;
-}
-
-void thread_pool::release_background() noexcept {
-  m_background_active.fetch_sub(1, std::memory_order_release);
-  if (m_background_queued.load(std::memory_order_acquire) == 0)
+  if (node->task.priority != task_priority::Background) {
+    dispatch(node);
     return;
-  m_signal.fetch_add(1, std::memory_order_seq_cst);
-  if (m_sleepers.load(std::memory_order_seq_cst) > 0)
-    futex::wake(&m_signal, 1);
+  }
+  // Background work nested in background work skips the limit: the outer task
+  // holds a slot while it waits on the inner one.
+  const auto *current = static_cast<const task_node *>(fiber::fiber_local());
+  if (current && current->pool == this &&
+      current->task.priority == task_priority::Background) {
+    dispatch(node);
+    return;
+  }
+  {
+    scoped_lock guard(m_background_lock);
+    m_background_waiting.push_back(node);
+  }
+  m_background_pending.fetch_add(1, std::memory_order_seq_cst);
+  pump_background();
 }
 
-bool thread_pool::try_get_priority(detail::pool_task &out, const u32 self_index,
-                                   const task_priority priority,
-                                   u32 &steal_cursor, bool &stolen) noexcept {
-  const bool background = priority == task_priority::Background;
-  if (background && m_background_queued.load(std::memory_order_acquire) == 0)
-    return false;
-  const bool nested_background =
-      background && t_worker.pool == this && t_worker.background_depth != 0;
-  if (background && !nested_background && !try_reserve_background())
-    return false;
+void thread_pool::dispatch(task_node *node) noexcept {
+  const fiber::Job job{&thread_pool::run_node, node};
+  m_scheduler->run({&job, 1}, nullptr, lane(node->task.priority));
+}
 
-  bool found = false;
-  const usize p = static_cast<usize>(priority);
-  if (self_index != INVALID_WORKER &&
-      m_workers[self_index]->queues[p].try_pop(out)) {
-    found = true;
-  } else if (m_shared_queues[p].try_pop(out)) {
-    found = true;
-  }
+// Pushes and slot releases both end here, and a pump that takes a slot but
+// finds nothing re-checks, so a queued background task is never stranded.
+void thread_pool::pump_background() noexcept {
+  for (;;) {
+    u32 active = m_background_active.load(std::memory_order_relaxed);
+    do {
+      if (active >= m_background_limit)
+        return;
+    } while (!m_background_active.compare_exchange_weak(
+        active, active + 1, std::memory_order_seq_cst));
 
-  overflow_queue &overflow = m_overflow[p];
-  if (!found && overflow.count.load(std::memory_order_acquire) > 0) {
-    scoped_lock lock(overflow.lock);
-    if (overflow.head < overflow.tasks.size()) {
-      out = std::move(overflow.tasks[overflow.head++]);
-      overflow.count.fetch_sub(1, std::memory_order_relaxed);
-      if (overflow.head == overflow.tasks.size()) {
-        overflow.tasks.clear();
-        overflow.head = 0;
-      }
-      found = true;
-    }
-  }
-
-  const u32 n = nx::cast<u32>(m_workers.size());
-  if (!found && n != 0) {
-    const u32 start = steal_cursor++;
-    for (u32 i = 0; i < n; ++i) {
-      const u32 victim = (start + i) % n;
-      if (victim == self_index)
-        continue;
-      if (m_workers[victim]->queues[p].try_pop(out)) {
-        stolen = true;
-        found = true;
-        break;
+    task_node *node = nullptr;
+    {
+      scoped_lock guard(m_background_lock);
+      if (m_background_head < m_background_waiting.size()) {
+        node = m_background_waiting[m_background_head++];
+        if (m_background_head == m_background_waiting.size()) {
+          m_background_waiting.clear();
+          m_background_head = 0;
+        }
       }
     }
-  }
-
-  if (!found) {
-    if (background && !nested_background)
-      m_background_active.fetch_sub(1, std::memory_order_release);
-    return false;
-  }
-  if (background)
-    m_background_queued.fetch_sub(1, std::memory_order_relaxed);
-  out.holds_background_slot = background && !nested_background;
-  return true;
-}
-
-bool thread_pool::try_get_task(detail::pool_task &out, const u32 self_index,
-                               u32 &dispatches, u32 &steal_cursor) noexcept {
-  task_priority order[3];
-  // Priority is strict most of the time, with deterministic aging probes so a
-  // sustained stream of critical work cannot permanently starve normal or
-  // background maintenance.
-  if ((dispatches & 31u) == 31u) {
-    order[0] = task_priority::Background;
-    order[1] = task_priority::Critical;
-    order[2] = task_priority::Normal;
-  } else if ((dispatches & 7u) == 7u) {
-    order[0] = task_priority::Normal;
-    order[1] = task_priority::Critical;
-    order[2] = task_priority::Background;
-  } else {
-    order[0] = task_priority::Critical;
-    order[1] = task_priority::Normal;
-    order[2] = task_priority::Background;
-  }
-  for (const task_priority priority : order) {
-    bool stolen = false;
-    if (try_get_priority(out, self_index, priority, steal_cursor, stolen)) {
-      ++dispatches;
-      record_started(priority, stolen);
-      return true;
+    if (node) {
+      m_background_pending.fetch_sub(1, std::memory_order_seq_cst);
+      node->task.holds_background_slot = true;
+      dispatch(node);
+      continue;
     }
+    m_background_active.fetch_sub(1, std::memory_order_seq_cst);
+    if (m_background_pending.load(std::memory_order_seq_cst) == 0)
+      return;
   }
-  return false;
 }
 
-void thread_pool::run_task(detail::pool_task &t) noexcept {
-  // Waiters may execute work on a non-worker thread. Install an execution
-  // context while the callable runs so nested submissions/waits observe the
-  // correct pool without pretending the helper owns a worker-local queue.
-  thread_pool *const previous_pool = t_worker.pool;
-  const u32 previous_index = t_worker.index;
-  const u32 previous_background_depth = t_worker.background_depth;
-  if (previous_pool != this) {
-    t_worker.pool = this;
-    t_worker.index = INVALID_WORKER;
-    t_worker.background_depth = 0;
-  }
-  if (t.priority == task_priority::Background)
-    ++t_worker.background_depth;
+void thread_pool::run_node(void *arg) noexcept {
+  auto *const node = static_cast<task_node *>(arg);
+  thread_pool &pool = *node->pool;
+  detail::pool_task &t = node->task;
 
-  const u64 started_ns = m_collect_timings ? os::ticks_ns() : 0;
+  void *const outer = fiber::fiber_local();
+  fiber::set_fiber_local(node);
+  pool.record_started(t.priority);
+  const u64 started_ns = pool.m_collect_timings ? os::ticks_ns() : 0;
   if (t.fn) {
     try {
       switch (t.priority) {
@@ -476,91 +368,30 @@ void thread_pool::run_task(detail::pool_task &t) noexcept {
       nx::loge("thread pool: unhandled non-standard task exception");
     }
   }
-
-  const u64 execution_ns = m_collect_timings ? os::ticks_ns() - started_ns : 0;
-
+  const u64 execution_ns =
+      pool.m_collect_timings ? os::ticks_ns() - started_ns : 0;
   t.fn = {};
+  pool.record_completed(t.priority, execution_ns);
+  fiber::set_fiber_local(outer);
 
-  record_completed(t.priority, execution_ns);
-  if (t.priority == task_priority::Background)
-    --t_worker.background_depth;
-  if (t.holds_background_slot) {
-    t.holds_background_slot = false;
-    release_background();
+  task_group *const group = t.group;
+  const bool held_slot = t.holds_background_slot;
+  pool.release_node(node);
+  if (held_slot) {
+    pool.m_background_active.fetch_sub(1, std::memory_order_seq_cst);
+    pool.pump_background();
   }
-
-  if (previous_pool != this) {
-    t_worker.pool = previous_pool;
-    t_worker.index = previous_index;
-    t_worker.background_depth = previous_background_depth;
-  }
-
-  if (task_group *group = t.group) {
-    t.group = nullptr;
-    if (group->m_pending.fetch_sub(1, std::memory_order_acq_rel) == 1)
-      futex::wake_all(&group->m_pending);
-  }
-  if (m_unfinished.fetch_sub(1, std::memory_order_acq_rel) == 1)
-    futex::wake_all(&m_unfinished);
-}
-
-bool thread_pool::help_execute_one() noexcept {
-  const bool own_worker =
-      t_worker.pool == this && t_worker.index != INVALID_WORKER;
-  const u32 self = own_worker ? t_worker.index : INVALID_WORKER;
-  detail::pool_task t;
-  u32 &dispatches =
-      own_worker ? m_workers[self]->dispatches : t_worker.dispatches;
-  u32 &steal_cursor =
-      own_worker ? m_workers[self]->steal_cursor : t_worker.steal_cursor;
-  if (!try_get_task(t, self, dispatches, steal_cursor))
-    return false;
-  run_task(t);
-  return true;
-}
-
-void thread_pool::worker_loop(worker &w) noexcept {
-  t_worker.pool = this;
-  t_worker.index = w.index;
-  t_worker.dispatches = 0;
-  t_worker.steal_cursor = w.steal_cursor;
-  t_worker.background_depth = 0;
-  NX_PROFILE_SET_THREAD_NAME(w.name);
-
-  detail::pool_task t;
-  for (;;) {
-    const u32 signal = m_signal.load(std::memory_order_acquire);
-    if (try_get_task(t, w.index, w.dispatches, w.steal_cursor)) {
-      run_task(t);
-      continue;
-    }
-    if (m_stop.load(std::memory_order_acquire))
-      break;
-
-    m_sleepers.fetch_add(1, std::memory_order_seq_cst);
-    futex::wait(&m_signal, signal, detail::WAIT_FOREVER);
-    m_sleepers.fetch_sub(1, std::memory_order_relaxed);
-  }
-
-  t_worker.pool = nullptr;
-  t_worker.index = 0;
-  t_worker.dispatches = 0;
-  t_worker.steal_cursor = 0;
-  t_worker.background_depth = 0;
+  if (group)
+    group->m_pending.decrement();
+  // Last: a waiter may destroy the pool as soon as this reaches zero.
+  pool.m_unfinished.decrement();
 }
 
 void thread_pool::wait_idle() noexcept {
   assert(!is_execution_context() &&
          "wait_idle from inside a pool task can never finish; wait on a "
          "task_group instead");
-  for (;;) {
-    const u32 unfinished = m_unfinished.load(std::memory_order_acquire);
-    if (unfinished == 0)
-      return;
-    if (help_execute_one())
-      continue;
-    futex::wait(&m_unfinished, unfinished, detail::WAIT_FOREVER);
-  }
+  fiber::wait(m_unfinished);
 }
 
 } // namespace nx
