@@ -54,6 +54,7 @@ set(NX_FOUNDATION_HEADERS
   serialization/reflect_binary.h
 
   fibers/context.h
+  fibers/scheduler.h
   fibers/stack.h
 
   threading/cancellation.h
@@ -87,6 +88,7 @@ set(NX_FOUNDATION_SOURCES
   core/foundation.cpp
   core/random.cpp
   fibers/context.cpp
+  fibers/scheduler.cpp
   fibers/stack.cpp
   threading/sync.cpp
   threading/thread.cpp

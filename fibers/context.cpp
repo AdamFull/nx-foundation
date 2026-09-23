@@ -13,6 +13,7 @@ void nx_fiber_start();
 
 #if NX_ASAN_ENABLED
 extern "C" {
+void __asan_unpoison_memory_region(void const volatile *addr, usize size);
 void __sanitizer_start_switch_fiber(void **fake_stack_save, const void *bottom,
                                     usize size);
 void __sanitizer_finish_switch_fiber(void *fake_stack_save,
@@ -152,6 +153,8 @@ void Context::reset(const Stack &stack, const EntryFn entry) noexcept {
   m_stack_size = stack.size();
 #if NX_ASAN_ENABLED
   m_asan_fake_stack = nullptr;
+  // A fiber that never returned leaves its frames' redzones poisoned.
+  __asan_unpoison_memory_region(stack.limit, stack.size());
 #endif
 #if NX_TSAN_ENABLED
   if (m_owns_tsan_fiber)

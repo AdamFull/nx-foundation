@@ -133,8 +133,12 @@ if (result.status == nx::cli::ParseStatus::Help)
 | `nx::fiber::Context` | `fibers/context.h` | A suspended or running execution context. `switch_to(from, to, data)` suspends one and resumes the other, passing a pointer both ways; `exit_to` leaves a fiber for good. Saves the ABI's callee-saved registers and FP control state; on Windows it also swaps the TIB stack bounds, so SEH, `__chkstk` and guard-page growth work on fiber stacks. Carries unwind info so debuggers walk fiber stacks, and ASan/TSan annotations. |
 | `nx::fiber::StackPool` / `nx::fiber::Stack` | `fibers/stack.h` | Guard-paged fiber stacks that only consume memory as deep as they are used (Windows commits on demand; POSIX faults pages lazily), recycled most-recent-first with a bounded cache and a `trim()` that returns grown pages to the OS. |
 
+| `nx::fiber::Scheduler` | `fibers/scheduler.h` | The fiber job system. Worker threads run jobs (`{entry, arg}`, three priorities, per-worker queues with stealing) on pooled fibers. `wait(counter)` suspends the calling fiber instead of its thread. The constructing thread is the main thread: it runs only main-affine work (`run_on_main`, `switch_to_main`), inside `pump_main(budget)` or while it waits. Destruction finishes outstanding jobs. |
+| `nx::fiber::Counter` | `fibers/scheduler.h` | Outstanding-work count that jobs decrement on completion and fibers wait on. Any thread may decrement it, including I/O completion threads the scheduler does not own. |
+
 A fiber can resume on a different OS thread than the one it suspended on. Code
-that switches must not keep a `thread_local` address across the switch.
+that switches or waits must not keep a `thread_local` address across the call,
+and must not hold an OS-level lock (`nx::mutex`) across a wait.
 
 ## Platform
 

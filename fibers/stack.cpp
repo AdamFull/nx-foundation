@@ -9,11 +9,6 @@
 #include <sys/mman.h>
 #endif
 
-#if NX_ASAN_ENABLED
-extern "C" void __asan_unpoison_memory_region(void const volatile *addr,
-                                              usize size);
-#endif
-
 namespace nx::fiber {
 
 namespace {
@@ -104,9 +99,6 @@ result<Stack, StackError> StackPool::acquire() noexcept {
       m_cached.pop_back();
       m_stats.cached = nx::cast<u32>(m_cached.size());
       m_stats.peak_live = max(m_stats.peak_live, ++m_stats.live);
-#if NX_ASAN_ENABLED
-      __asan_unpoison_memory_region(stack.limit, stack.size());
-#endif
       return stack;
     }
   }
