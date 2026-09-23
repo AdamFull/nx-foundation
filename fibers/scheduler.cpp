@@ -43,7 +43,8 @@ WaitResult block_thread(Waiter &waiter, spin_lock *lock, WaitList *list,
                         clock::time_point deadline) noexcept;
 }
 
-enum class Affinity : u8 { Any, Main };
+enum class Affinity : u8 { Any, Main, Blocking };
+enum class Role : u8 { Main, General, Blocking };
 enum class After : u8 { Nothing, Release, Ready, Yield, Park, Enqueue };
 
 struct Fiber {
@@ -82,7 +83,7 @@ struct Handoff {
 struct Worker {
   SchedulerState *state = nullptr;
   usize index = 0;
-  bool is_main = false;
+  Role role = Role::General;
   Fiber thread_fiber;
   Fiber *current = nullptr;
   clock::time_point main_deadline{};
@@ -157,6 +158,8 @@ struct SchedulerState {
   void park_worker() noexcept;
   void wake_main() noexcept;
   void park_main(Worker *worker) noexcept;
+  void wake_blocking() noexcept;
+  void park_blocking() noexcept;
   void worker_main(Worker *worker) noexcept;
 
   Scheduler::Config config;
@@ -170,6 +173,7 @@ struct SchedulerState {
   mpmc::Queue<Work, GLOBAL_QUEUE> global[PRIORITY_COUNT];
   mpmc::Queue<Fiber *, FIBER_QUEUE> main_ready;
   mpmc::Queue<Work, MAIN_QUEUE> main_work;
+  mpmc::Queue<Fiber *, FIBER_QUEUE> blocking_ready;
 
   std::atomic<u32> worker_epoch{0};
   std::atomic<u32> sleepers{0};
@@ -179,6 +183,8 @@ struct SchedulerState {
   std::atomic<u32> keeper{0};
   thread_parker main_parker;
   std::atomic<u32> main_sleeping{0};
+  std::atomic<u32> blocking_epoch{0};
+  std::atomic<u32> blocking_sleepers{0};
   std::atomic<u32> live_jobs{0};
   std::atomic<u32> limit_hits{0};
   std::atomic<u64> jobs_run{0};
@@ -272,24 +278,32 @@ SchedulerState::SchedulerState(const Scheduler::Config &requested) noexcept
                                  .max_cached = requested.max_fibers}) {
   const u32 worker_count = resolve_worker_count(config.worker_count);
   config.worker_count = worker_count;
-  config.max_fibers = clamp<u32>(config.max_fibers, worker_count + 2,
-                                 nx::cast<u32>(FIBER_QUEUE) - worker_count - 1);
+  const u32 threads = worker_count + config.blocking_threads;
+  config.max_fibers = clamp<u32>(config.max_fibers, threads + 2,
+                                 nx::cast<u32>(FIBER_QUEUE) - threads - 1);
   fibers = static_cast<Fiber **>(
       mem_alloc(sizeof(Fiber *) * config.max_fibers, alignof(Fiber *)));
   std::memset(fibers, 0, sizeof(Fiber *) * config.max_fibers);
-  timers = static_cast<Fiber **>(
-      mem_alloc(sizeof(Fiber *) * (config.max_fibers + worker_count + 1),
-                alignof(Fiber *)));
+  timers = static_cast<Fiber **>(mem_alloc(
+      sizeof(Fiber *) * (config.max_fibers + threads + 1), alignof(Fiber *)));
 
-  for (u32 i = 0; i <= worker_count; ++i) {
+  const char *name = config.name ? config.name : "nx-fiber";
+  for (u32 i = 0; i <= threads; ++i) {
     Worker *worker = allocate<Worker>();
     worker->state = this;
     worker->index = i;
-    worker->is_main = i == 0;
+    worker->role = i == 0              ? Role::Main
+                   : i <= worker_count ? Role::General
+                                       : Role::Blocking;
     worker->thread_fiber.owner = this;
-    worker->thread_fiber.affinity = i == 0 ? Affinity::Main : Affinity::Any;
+    worker->thread_fiber.affinity = i == 0              ? Affinity::Main
+                                    : i <= worker_count ? Affinity::Any
+                                                        : Affinity::Blocking;
     worker->current = &worker->thread_fiber;
-    format_to(worker->name, "{}-{}", config.name ? config.name : "nx-fiber", i);
+    if (worker->role == Role::Blocking)
+      format_to(worker->name, "{}-blocking-{}", name, i - worker_count - 1);
+    else
+      format_to(worker->name, "{}-{}", name, i);
     workers.push_back(worker);
   }
 }
@@ -347,8 +361,10 @@ Fiber *SchedulerState::acquire_fiber() noexcept {
 }
 
 bool SchedulerState::pop_ready(Worker *worker, Fiber *&fiber) noexcept {
-  if (worker->is_main)
+  if (worker->role == Role::Main)
     return main_ready.try_pop(fiber);
+  if (worker->role == Role::Blocking)
+    return blocking_ready.try_pop(fiber);
   for (auto &queue : ready)
     if (queue.try_pop(fiber))
       return true;
@@ -369,15 +385,17 @@ bool SchedulerState::pop_work(Worker *worker, const usize priority,
   const usize count = workers.size();
   for (usize i = 1; i < count; ++i) {
     Worker *victim = workers[(worker->index + i) % count];
-    if (!victim->is_main && victim->local[priority].try_pop(work))
+    if (victim->role == Role::General && victim->local[priority].try_pop(work))
       return true;
   }
   return false;
 }
 
 bool SchedulerState::pop_any_work(Worker *worker, Work &work) noexcept {
-  if (worker->is_main)
+  if (worker->role == Role::Main)
     return main_work.try_pop(work);
+  if (worker->role == Role::Blocking)
+    return false;
   for (usize priority = 0; priority < PRIORITY_COUNT; ++priority)
     if (pop_work(worker, priority, work))
       return true;
@@ -412,7 +430,7 @@ void SchedulerState::submit(std::span<const Job> jobs, Counter *counter,
       while (!main_work.try_push(work)) {
         wake_main();
         Worker *worker = this_worker();
-        if (worker && worker->is_main) {
+        if (worker && worker->role == Role::Main) {
           execute(work);
           break;
         }
@@ -422,7 +440,8 @@ void SchedulerState::submit(std::span<const Job> jobs, Counter *counter,
     }
     // Re-read per job: running an overflowing job inline may migrate us.
     Worker *worker = this_worker();
-    if ((worker && !worker->is_main && worker->local[lane].try_push(work)) ||
+    if ((worker && worker->role == Role::General &&
+         worker->local[lane].try_push(work)) ||
         global[lane].try_push(work)) {
       ++queued;
       continue;
@@ -441,6 +460,10 @@ void SchedulerState::push_fiber_work(Fiber *fiber) noexcept {
   Work work;
   work.fiber = fiber;
   work.priority = fiber->priority;
+  if (fiber->affinity == Affinity::Blocking) {
+    make_ready(fiber);
+    return;
+  }
   if (fiber->affinity == Affinity::Main) {
     while (!main_work.try_push(work))
       detail::cpu_relax();
@@ -455,6 +478,12 @@ void SchedulerState::push_fiber_work(Fiber *fiber) noexcept {
 }
 
 void SchedulerState::make_ready(Fiber *fiber) noexcept {
+  if (fiber->affinity == Affinity::Blocking) {
+    while (!blocking_ready.try_push(fiber))
+      detail::cpu_relax();
+    wake_blocking();
+    return;
+  }
   if (fiber->affinity == Affinity::Main) {
     while (!main_ready.try_push(fiber))
       detail::cpu_relax();
@@ -618,7 +647,7 @@ void SchedulerState::loop(Fiber *self) noexcept {
 Fiber *SchedulerState::next_work(Worker *worker, Work &work) noexcept {
   for (u32 idle = 0;; ++idle) {
     Fiber *fiber = nullptr;
-    if (worker->is_main) {
+    if (worker->role == Role::Main) {
       if (main_ready.try_pop(fiber))
         return fiber;
       if (main_work.try_pop(work))
@@ -626,6 +655,17 @@ Fiber *SchedulerState::next_work(Worker *worker, Work &work) noexcept {
       if (clock::now() >= worker->main_deadline)
         return &worker->thread_fiber;
       park_main(worker);
+      continue;
+    }
+    if (worker->role == Role::Blocking) {
+      if (blocking_ready.try_pop(fiber))
+        return fiber;
+      if (stopping.load(std::memory_order_acquire))
+        return &worker->thread_fiber;
+      if (idle < IDLE_SPINS)
+        detail::cpu_relax();
+      else
+        park_blocking();
       continue;
     }
     fire_timers();
@@ -714,6 +754,24 @@ void SchedulerState::park_main(Worker *worker) noexcept {
   if (main_ready.empty_approx() && main_work.empty_approx())
     main_parker.park_until(worker->main_deadline);
   main_sleeping.store(0, std::memory_order_relaxed);
+}
+
+void SchedulerState::wake_blocking() noexcept {
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  if (blocking_sleepers.load(std::memory_order_seq_cst) != 0) {
+    blocking_epoch.fetch_add(1, std::memory_order_seq_cst);
+    futex::wake(&blocking_epoch, 1);
+  }
+}
+
+void SchedulerState::park_blocking() noexcept {
+  const u32 epoch = blocking_epoch.load(std::memory_order_seq_cst);
+  blocking_sleepers.fetch_add(1, std::memory_order_seq_cst);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  if (blocking_ready.empty_approx() &&
+      !stopping.load(std::memory_order_seq_cst))
+    futex::wait(&blocking_epoch, epoch, detail::WAIT_FOREVER);
+  blocking_sleepers.fetch_sub(1, std::memory_order_seq_cst);
 }
 
 void SchedulerState::worker_main(Worker *worker) noexcept {
@@ -1010,6 +1068,8 @@ Scheduler::~Scheduler() {
   state.stopping.store(true, std::memory_order_seq_cst);
   state.worker_epoch.fetch_add(1, std::memory_order_seq_cst);
   futex::wake_all(&state.worker_epoch);
+  state.blocking_epoch.fetch_add(1, std::memory_order_seq_cst);
+  futex::wake_all(&state.blocking_epoch);
   state.keeper_parker.unpark();
   for (usize i = 1; i < state.workers.size(); ++i)
     if (state.workers[i]->os_thread.joinable())
@@ -1029,6 +1089,26 @@ void Scheduler::run_on_main(std::span<const Job> jobs, Counter *counter) {
   NX_ASSERT(m_state->config.adopt_main_thread,
             "run_on_main needs a scheduler with a main thread");
   m_state->submit(jobs, counter, Priority::Normal, Affinity::Main);
+}
+
+// The fiber itself moves, so fn runs on its stack with its fiber_local, and
+// may suspend there without holding the service thread.
+void run_blocking(const function_ref<void()> fn) noexcept {
+  Worker *worker = current_worker();
+  if (!worker || worker->role == Role::Blocking ||
+      worker->current == &worker->thread_fiber ||
+      worker->state->config.blocking_threads == 0) {
+    fn();
+    return;
+  }
+  Fiber *self = worker->current;
+  SchedulerState *state = self->owner;
+  const Affinity home = self->affinity;
+  self->affinity = Affinity::Blocking;
+  state->suspend(After::Ready);
+  fn();
+  self->affinity = home;
+  state->suspend(After::Ready);
 }
 
 void wait(Counter &counter, const u32 target) noexcept {
@@ -1062,7 +1142,7 @@ void Scheduler::switch_to_main() {
   NX_ASSERT(worker, "switch_to_main outside a job");
   NX_ASSERT(m_state->config.adopt_main_thread,
             "switch_to_main needs a scheduler with a main thread");
-  if (worker->is_main)
+  if (worker->role == Role::Main)
     return;
   worker->current->affinity = Affinity::Main;
   m_state->suspend(After::Ready);
@@ -1071,7 +1151,7 @@ void Scheduler::switch_to_main() {
 void Scheduler::switch_to_workers() {
   Worker *worker = m_state->this_worker();
   NX_ASSERT(in_fiber(), "switch_to_workers outside a job");
-  if (!worker || !worker->is_main)
+  if (!worker || worker->role != Role::Main)
     return;
   worker->current->affinity = Affinity::Any;
   m_state->suspend(After::Ready);
@@ -1080,7 +1160,8 @@ void Scheduler::switch_to_workers() {
 void Scheduler::pump_main(const std::chrono::nanoseconds budget) {
   SchedulerState &state = *m_state;
   Worker *main = state.this_worker();
-  NX_ASSERT(main && main->is_main && main->current == &main->thread_fiber,
+  NX_ASSERT(main && main->role == Role::Main &&
+                main->current == &main->thread_fiber,
             "pump_main belongs to the main thread outside any job");
   main->main_deadline = clock::now() + budget;
   if (Fiber *next = state.next_to_resume(main)) {
@@ -1109,16 +1190,16 @@ void set_fiber_local(void *value) noexcept { *local_slot() = value; }
 
 bool Scheduler::on_worker_thread() const noexcept {
   const Worker *worker = m_state->this_worker();
-  return worker && !worker->is_main;
+  return worker && worker->role == Role::General;
 }
 
 u32 Scheduler::worker_count() const noexcept {
-  return nx::cast<u32>(m_state->workers.size() - 1);
+  return m_state->config.worker_count;
 }
 
 bool Scheduler::on_main_thread() const noexcept {
   const Worker *worker = m_state->this_worker();
-  return worker && worker->is_main;
+  return worker && worker->role == Role::Main;
 }
 
 bool Scheduler::in_fiber() const noexcept {
@@ -1129,7 +1210,8 @@ bool Scheduler::in_fiber() const noexcept {
 Scheduler::Stats Scheduler::stats() const noexcept {
   const SchedulerState &state = *m_state;
   Stats stats;
-  stats.workers = nx::cast<u32>(state.workers.size() - 1);
+  stats.workers = state.config.worker_count;
+  stats.blocking_threads = state.config.blocking_threads;
   stats.fibers_created = min(state.fiber_count.load(std::memory_order_relaxed),
                              state.config.max_fibers);
   stats.fibers_free =

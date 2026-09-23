@@ -120,6 +120,7 @@ thread_pool::thread_pool(const config &cfg) {
       .name = cfg.name ? cfg.name : "nx-worker",
       .priority = cfg.priority,
       .adopt_main_thread = false,
+      .blocking_threads = cfg.blocking_threads,
   });
 
   const u32 workers = worker_count();

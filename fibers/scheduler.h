@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/foundation/core/callable.h"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread.h"
@@ -57,6 +58,12 @@ void wait(Counter &counter, u32 target = 0) noexcept;
 [[nodiscard]] void *fiber_local() noexcept;
 void set_fiber_local(void *value) noexcept;
 
+/// Runs fn, which may block in the OS or a driver, on one of the scheduler's
+/// blocking-service threads; the calling fiber moves there and back, so its
+/// worker runs other jobs meanwhile. Outside a fiber, on one of those threads
+/// or on a scheduler without any, fn runs in place. fn must not throw.
+void run_blocking(function_ref<void()> fn) noexcept;
+
 /// False while the caller holds an nx::mutex or nx::rw_lock, is inside
 /// scoped_no_alloc or a no_suspend_scope; suspending a fiber then asserts.
 /// Always true in release builds.
@@ -94,10 +101,13 @@ public:
     const char *name = "nx-fiber";
     thread_priority priority = thread_priority::Normal;
     bool adopt_main_thread = true;
+    /// Threads that run only run_blocking calls, on top of the workers.
+    u32 blocking_threads = 0;
   };
 
   struct Stats {
     u32 workers = 0;
+    u32 blocking_threads = 0;
     u32 fibers_created = 0;
     u32 fibers_free = 0;
     u32 fiber_limit_hits = 0;

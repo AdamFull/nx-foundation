@@ -353,6 +353,8 @@ public:
     /// Zero reserves one worker from background work when possible. An
     /// explicit value is clamped to the number of workers.
     u32 max_background_concurrency = 0;
+    /// Service threads for nx::fiber::run_blocking from this pool's tasks.
+    u32 blocking_threads = 2;
     /// Relaxed counters are enabled by default in debug and opt-in in release.
 #if defined(NX_DEBUG)
     bool collect_statistics = true;
