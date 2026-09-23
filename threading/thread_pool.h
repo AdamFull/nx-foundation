@@ -612,6 +612,11 @@ public:
     group.wait();
   }
 
+  /// Runs @p job on the low-priority lane, counted on @p counter, outside the
+  /// background limit and wait_idle(). It does not allocate, so any thread
+  /// may call it, including one inside scoped_no_alloc.
+  void run_low(fiber::Job job, fiber::Counter &counter) noexcept;
+
   /// Waits until the pool has no queued or running tasks. Must not be called
   /// from inside a pool task (the calling task itself would never count as
   /// finished); use a task_group there instead.

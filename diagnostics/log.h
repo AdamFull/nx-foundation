@@ -5,6 +5,10 @@
 
 #include <atomic>
 
+namespace nx {
+class thread_pool;
+}
+
 namespace nx::log {
 
 /// Severity ordering. A record is emitted only when its level is at least the
@@ -101,7 +105,16 @@ struct Config {
 
 void init(const Config &config = {});
 void shutdown();
+/// Writes every queued record on the calling thread, then flushes the sinks.
 void flush();
+
+/// After init(), records queue and a low-priority job on @p pool writes them.
+/// Without an attached pool, or when the queue is full, the thread that logs
+/// writes them itself. Attaching while another pool is attached does nothing.
+void attach_drain_pool(thread_pool &pool);
+/// Returns once no drain job of @p pool is running and every queued record is
+/// written. Does nothing unless @p pool is the attached one.
+void detach_drain_pool(thread_pool &pool);
 
 /// Adds a sink; the logger takes ownership and destroys it (via nx::release)
 /// on remove_sink()/shutdown(). The sink must therefore be created with
@@ -119,8 +132,8 @@ Sink *make_android_sink();
 namespace detail {
 inline std::atomic<u8> g_global_level{nx::cast<u8>(DEFAULT_LEVEL)};
 
-/// Copies a preformatted, null-terminated message into a Record and enqueues
-/// it (or writes synchronously on overflow / before init()).
+/// Copies a preformatted, null-terminated message into a Record and queues it
+/// for the drain job, or writes it on this thread (see attach_drain_pool).
 void submit(Level level, Category category, const char *message) noexcept;
 }
 

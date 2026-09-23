@@ -943,6 +943,8 @@ bool report(const Fatal &fatal) {
   State &s = state();
   if (s.directory_length == 0)
     return false;
+  // The log tail only holds records a sink has seen.
+  log::flush();
 
   char stamp[64] = {};
   stamp_now(stamp, sizeof(stamp));

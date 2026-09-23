@@ -294,6 +294,11 @@ void thread_pool::enqueue(detail::pool_task &&t) {
   pump_background();
 }
 
+void thread_pool::run_low(const fiber::Job job,
+                          fiber::Counter &counter) noexcept {
+  m_scheduler->run({&job, 1}, &counter, fiber::Priority::Low);
+}
+
 void thread_pool::dispatch(task_node *node) noexcept {
   const fiber::Job job{&thread_pool::run_node, node};
   m_scheduler->run({&job, 1}, nullptr, lane(node->task.priority));

@@ -5,6 +5,7 @@
 #include "core/foundation/core/hash.h"
 #include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread.h"
+#include "core/foundation/threading/thread_pool.h"
 
 #include <chrono>
 #include <cstdio>
@@ -251,14 +252,19 @@ private:
 
 struct Logger {
   mpmc::Queue<Record, LOG_QUEUE_CAPACITY> *queue = nullptr;
-  nx::thread worker;
-
-  std::atomic<u32> signal{0};
-  std::atomic<u32> sleeping{0};
   std::atomic<u64> enqueued{0};
   std::atomic<u64> processed{0};
   std::atomic<bool> running{false};
-  std::atomic<bool> stop{false};
+
+  /// Guards attaching and detaching the pool.
+  mutex pool_mutex;
+  std::atomic<thread_pool *> pool{nullptr};
+  /// Loggers between reading `pool` and scheduling the drain job.
+  std::atomic<u32> submitting{0};
+  std::atomic<bool> drain_scheduled{false};
+  fiber::Counter draining;
+  /// One writer at a time keeps records in submission order.
+  mutex write_mutex;
 
   mutex sink_mutex;
   small_vector<Sink *, 8> sinks;
@@ -282,34 +288,49 @@ void write_record(Logger &l, const Record &r) noexcept {
     s->write(r);
 }
 
+/// Caller holds write_mutex.
 void drain(Logger &l) noexcept {
   Record r;
-  while (l.queue->try_pop(r)) {
+  while (l.queue != nullptr && l.queue->try_pop(r)) {
     write_record(l, r);
-    l.processed.fetch_add(1, std::memory_order_release);
+    l.processed.fetch_add(1, std::memory_order_seq_cst);
   }
 }
 
-void worker_main(Logger &l) noexcept {
+void write_now(Logger &l, const Record &r) noexcept {
+  scoped_lock lock(l.write_mutex);
+  drain(l);
+  write_record(l, r);
+}
+
+void drain_job(void *arg) noexcept {
+  Logger &l = *static_cast<Logger *>(arg);
   for (;;) {
-    const u32 sig = l.signal.load(std::memory_order_acquire);
-    drain(l);
-
-    if (l.stop.load(std::memory_order_acquire)) {
+    {
+      scoped_lock lock(l.write_mutex);
       drain(l);
-      break;
     }
-
-    // Re-check signal after registering as a sleeper so a submit() that raced
-    // the drain cannot leave a record stranded until the next wake.
-    l.sleeping.fetch_add(1, std::memory_order_seq_cst);
-    if (l.signal.load(std::memory_order_acquire) == sig &&
-        !l.stop.load(std::memory_order_acquire))
-      futex::wait(&l.signal, sig, nx::detail::WAIT_FOREVER);
-    l.sleeping.fetch_sub(1, std::memory_order_relaxed);
+    l.drain_scheduled.store(false, std::memory_order_seq_cst);
+    // A record queued while the flag was still set left its drain to us.
+    if (l.processed.load(std::memory_order_seq_cst) >=
+            l.enqueued.load(std::memory_order_seq_cst) ||
+        l.drain_scheduled.exchange(true, std::memory_order_seq_cst))
+      return;
   }
 }
 
+bool try_queue(Logger &l, const Record &r) noexcept {
+  l.submitting.fetch_add(1, std::memory_order_seq_cst);
+  thread_pool *const pool = l.pool.load(std::memory_order_seq_cst);
+  const bool queued = pool != nullptr && l.queue->try_push(r);
+  if (queued) {
+    l.enqueued.fetch_add(1, std::memory_order_seq_cst);
+    if (!l.drain_scheduled.exchange(true, std::memory_order_seq_cst))
+      pool->run_low({&drain_job, &l}, l.draining);
+  }
+  l.submitting.fetch_sub(1, std::memory_order_release);
+  return queued;
+}
 }
 
 const char *level_name(Level level) noexcept {
@@ -423,36 +444,39 @@ void init(const Config &config) {
                             config.file_max_files));
 
   l.queue = allocate<mpmc::Queue<Record, LOG_QUEUE_CAPACITY>>();
-  if (l.queue == nullptr) {
-    l.running.store(true, std::memory_order_release);
-    return;
-  }
-
-  l.stop.store(false, std::memory_order_relaxed);
-  l.worker = nx::thread([&l] { worker_main(l); }, {.name = "nx-log"});
-  if (!l.worker.joinable()) {
-    release(l.queue);
-    l.queue = nullptr;
-    l.running.store(true, std::memory_order_release);
-    return;
-  }
   l.running.store(true, std::memory_order_release);
 }
 
-void shutdown_impl(Logger &l) noexcept {
-  if (l.running.load(std::memory_order_acquire)) {
-    l.stop.store(true, std::memory_order_release);
-    l.signal.fetch_add(1, std::memory_order_seq_cst);
-    futex::wake_all(&l.signal);
-    if (l.worker.joinable())
-      l.worker.join();
-    l.running.store(false, std::memory_order_release);
+void attach_drain_pool(thread_pool &pool) {
+  Logger &l = logger();
+  scoped_lock lock(l.pool_mutex);
+  if (l.queue == nullptr || l.pool.load(std::memory_order_relaxed) != nullptr)
+    return;
+  l.pool.store(&pool, std::memory_order_seq_cst);
+}
 
-    if (l.queue) {
-      drain(l);
-      release(l.queue);
-      l.queue = nullptr;
-    }
+void detach_drain_pool(thread_pool &pool) {
+  Logger &l = logger();
+  scoped_lock lock(l.pool_mutex);
+  if (l.pool.load(std::memory_order_relaxed) != &pool)
+    return;
+  l.pool.store(nullptr, std::memory_order_seq_cst);
+  while (l.submitting.load(std::memory_order_seq_cst) != 0)
+    this_thread::yield();
+  fiber::wait(l.draining);
+  scoped_lock write(l.write_mutex);
+  drain(l);
+}
+
+void shutdown_impl(Logger &l) noexcept {
+  if (thread_pool *const pool = l.pool.load(std::memory_order_acquire))
+    detach_drain_pool(*pool);
+  if (l.running.load(std::memory_order_acquire)) {
+    l.running.store(false, std::memory_order_release);
+    scoped_lock write(l.write_mutex);
+    drain(l);
+    release(l.queue);
+    l.queue = nullptr;
   }
 
   scoped_lock lock(l.sink_mutex);
@@ -469,10 +493,9 @@ void shutdown() { shutdown_impl(logger()); }
 
 void flush() {
   Logger &l = logger();
-  if (l.running.load(std::memory_order_acquire)) {
-    const u64 target = l.enqueued.load(std::memory_order_acquire);
-    while (l.processed.load(std::memory_order_acquire) < target)
-      this_thread::yield();
+  {
+    scoped_lock write(l.write_mutex);
+    drain(l);
   }
   scoped_lock lock(l.sink_mutex);
   for (Sink *s : l.sinks)
@@ -499,16 +522,9 @@ void submit(Level level, Category category, const char *message) noexcept {
   r.message[n] = '\0';
   r.length = nx::cast<u16>(n);
 
-  if (l.running.load(std::memory_order_acquire) && l.queue) {
-    if (l.queue->try_push(r)) {
-      l.enqueued.fetch_add(1, std::memory_order_release);
-      l.signal.fetch_add(1, std::memory_order_release);
-      if (l.sleeping.load(std::memory_order_acquire) > 0)
-        futex::wake(&l.signal, 1);
-      return;
-    }
-  }
-  write_record(l, r);
+  if (l.running.load(std::memory_order_acquire) && try_queue(l, r))
+    return;
+  write_now(l, r);
 }
 
 }
