@@ -10,6 +10,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <exception>
 #include <optional>
 #include <stdexcept>
@@ -355,6 +356,10 @@ public:
     u32 max_background_concurrency = 0;
     /// Service threads for nx::fiber::run_blocking from this pool's tasks.
     u32 blocking_threads = 2;
+    /// The constructing thread becomes the pool's main thread. It runs no
+    /// tasks, only run_on_main() work, inside pump_main() or while it waits,
+    /// and it must destroy the pool.
+    bool adopt_main_thread = false;
     /// Relaxed counters are enabled by default in debug and opt-in in release.
 #if defined(NX_DEBUG)
     bool collect_statistics = true;
@@ -384,6 +389,18 @@ public:
   }
 
   [[nodiscard]] bool is_worker_thread() const noexcept;
+  [[nodiscard]] bool has_main_thread() const noexcept {
+    return m_has_main_thread;
+  }
+
+  /// Runs @p fn on the main thread and returns once it has. A task moves
+  /// there and back; the main thread, or a pool without one, runs it in
+  /// place; any other thread queues it and waits. An exception from @p fn
+  /// is rethrown here.
+  void run_on_main(function_ref<void()> fn);
+  /// On the main thread outside any task: runs main-thread work until none
+  /// is left and @p budget has passed.
+  void pump_main(std::chrono::nanoseconds budget);
 
   [[nodiscard]] thread_pool_statistics statistics() const noexcept;
   /// Reset is only valid while the pool is idle.
@@ -652,6 +669,7 @@ private:
   void record_completed(task_priority priority, u64 execution_ns) noexcept;
   [[nodiscard]] bool is_execution_context() const noexcept;
 
+  bool m_has_main_thread = false;
   unique_ptr<fiber::Scheduler> m_scheduler;
   fiber::Counter m_unfinished;
   mpmc::Queue<task_node *, 256> m_free_nodes;

@@ -105,6 +105,7 @@ void update_peak(std::atomic<T> &peak, const T value) noexcept {
 thread_pool::thread_pool(const config &cfg) {
   m_collect_statistics = cfg.collect_statistics || cfg.collect_timings;
   m_collect_timings = cfg.collect_timings;
+  m_has_main_thread = cfg.adopt_main_thread;
 
   u32 count = cfg.thread_count;
   if (count == 0) {
@@ -119,7 +120,7 @@ thread_pool::thread_pool(const config &cfg) {
       .stack_size = 1024 * 1024,
       .name = cfg.name ? cfg.name : "nx-worker",
       .priority = cfg.priority,
-      .adopt_main_thread = false,
+      .adopt_main_thread = cfg.adopt_main_thread,
       .blocking_threads = cfg.blocking_threads,
   });
 
@@ -292,6 +293,48 @@ void thread_pool::enqueue(detail::pool_task &&t) {
   }
   m_background_pending.fetch_add(1, std::memory_order_seq_cst);
   pump_background();
+}
+
+void thread_pool::run_on_main(const function_ref<void()> fn) {
+  if (!m_has_main_thread || m_scheduler->on_main_thread()) {
+    fn();
+    return;
+  }
+  std::exception_ptr error;
+  // A worker's fiber moves; anything else, a blocking-service thread
+  // included, must not lose its own affinity, so it queues the call.
+  if (m_scheduler->on_worker_thread() && m_scheduler->in_fiber()) {
+    m_scheduler->switch_to_main();
+    try {
+      fn();
+    } catch (...) {
+      error = std::current_exception();
+    }
+    m_scheduler->switch_to_workers();
+  } else {
+    struct Call {
+      function_ref<void()> fn;
+      std::exception_ptr *error;
+    } call{fn, &error};
+    const fiber::Job job{[](void *arg) noexcept {
+                           auto &c = *static_cast<Call *>(arg);
+                           try {
+                             c.fn();
+                           } catch (...) {
+                             *c.error = std::current_exception();
+                           }
+                         },
+                         &call};
+    fiber::Counter done;
+    m_scheduler->run_on_main({&job, 1}, &done);
+    fiber::wait(done);
+  }
+  if (error)
+    std::rethrow_exception(error);
+}
+
+void thread_pool::pump_main(const std::chrono::nanoseconds budget) {
+  m_scheduler->pump_main(budget);
 }
 
 void thread_pool::run_low(const fiber::Job job,
