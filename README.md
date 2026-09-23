@@ -142,8 +142,11 @@ if (result.status == nx::cli::ParseStatus::Help)
 A fiber can resume on a different OS thread than the one it suspended on. Code
 that switches or waits must not keep a `thread_local` address across the call,
 and must not hold an OS-level lock (`nx::mutex`, `nx::rw_lock`) across a wait.
-Debug builds assert this, and `nx::fiber::no_suspend_scope` extends the same
-check to other thread-affine resources.
+Debug builds assert the lock rule, and `nx::fiber::no_suspend_scope` extends
+the same check to other thread-affine resources. MSVC builds add `/GT`, so the
+optimizer does not reuse a thread-local address across a call. Clang has no
+such switch, which is why the scheduler reads its own thread-locals through
+non-inlined calls.
 
 ## Platform
 
