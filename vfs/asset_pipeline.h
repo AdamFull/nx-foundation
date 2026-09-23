@@ -3,6 +3,8 @@
 #include "core/foundation/containers/slot_map.h"
 #include "core/foundation/containers/string_map.h"
 #include "core/foundation/core/callable.h"
+#include "core/foundation/core/scope_guard.h"
+#include "core/foundation/fibers/sync.h"
 #include "core/foundation/threading/thread_pool.h"
 #include "core/foundation/threading/workload.h"
 #include "core/foundation/vfs/async_io.h"
@@ -185,10 +187,14 @@ public:
   StagedAssetPipeline(const StagedAssetPipeline &) = delete;
   StagedAssetPipeline &operator=(const StagedAssetPipeline &) = delete;
 
-  void bind(AsyncIoService &io, nx::thread_pool &workers) noexcept {
+  /// @p progress, if given, is set whenever a stage ends, for an owner that
+  /// waits between pumps; it must outlive the pipeline's jobs.
+  void bind(AsyncIoService &io, nx::thread_pool &workers,
+            fiber::event *progress = nullptr) noexcept {
     assert(m_entries.empty() && "cannot rebind an active asset pipeline");
     m_io = &io;
     m_workers = &workers;
+    m_progress = progress;
   }
 
   /// Limits may change between pump calls. Zero pauses new work; max usize is
@@ -674,6 +680,7 @@ private:
           {.priority = execution_priority, .cancellation = cancellation},
           [this, operation, cancellation,
            ticket](AsyncIoContext &context) mutable {
+            const auto signal = nx::scoped_exit([this] { notify_progress(); });
             return nx::measure_workload(
                 m_acquire_workload, ticket, cancellation,
                 [&] {
@@ -771,6 +778,7 @@ private:
       nx::future<Prepared> future = m_workers->async(
           execution_priority, cancellation,
           [this, operation, source, cancellation, ticket]() mutable {
+            const auto signal = nx::scoped_exit([this] { notify_progress(); });
             return nx::measure_workload(
                 m_prepare_workload, ticket, cancellation,
                 [&] {
@@ -821,6 +829,11 @@ private:
       assert(m_preparing != 0);
       --m_preparing;
     }
+  }
+
+  void notify_progress() const noexcept {
+    if (m_progress != nullptr)
+      m_progress->set();
   }
 
   void supersede(Entry &entry) noexcept {
@@ -882,6 +895,7 @@ private:
 
   AsyncIoService *m_io = nullptr;
   nx::thread_pool *m_workers = nullptr;
+  fiber::event *m_progress = nullptr;
   nx::slot_map<Entry, AssetLoadHandle> m_entries;
   nx::string_map<AssetLoadHandle> m_current;
   nx::workload_tracker m_acquire_workload;
