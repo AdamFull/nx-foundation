@@ -2,6 +2,7 @@
 #include "core/foundation/vfs/native_async_io.h"
 #include "core/foundation/vfs/vfs_internal.h"
 
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <limits>
@@ -37,6 +38,17 @@ constexpr usize READ_CHUNK = 256u * 1024u;
 }
 
 } // namespace
+
+struct AsyncIoService::BudgetWaiter {
+  fiber::Counter pending{1};
+  std::atomic<bool> woken{false};
+
+  // Released bytes and cancellation may both wake the same waiter.
+  void wake() noexcept {
+    if (!woken.exchange(true, std::memory_order_acq_rel))
+      pending.decrement();
+  }
+};
 
 struct AsyncIoService::NativeRequest {
   NativeRequest(thread_pool *pool, nx::string native_path,
@@ -416,8 +428,8 @@ void AsyncIoService::complete_native(NativeRequest *request,
     assert(request->charged <= m_bytes_in_flight);
     m_bytes_in_flight -= request->charged;
     update_visible_budget_locked();
+    wake_budget_waiters_locked();
   }
-  m_budget_changed.notify_all();
 
   if (cancelled)
     request->completion.set_cancelled();
@@ -524,20 +536,63 @@ void AsyncIoService::update_visible_budget_locked() noexcept {
   }
 }
 
+void AsyncIoService::wake_budget_waiters_locked() noexcept {
+  for (BudgetWaiter *waiter : m_budget_waiters)
+    waiter->wake();
+  m_budget_waiters.clear();
+}
+
+// Only a request holding a slot waits here. It gives the slot up while it
+// waits: the request holding the bytes it wants may need one to finish.
 u64 AsyncIoService::acquire_bytes(const u64 bytes,
                                   const cancellation_token &cancellation) {
   if (bytes == 0 || m_byte_limit == 0)
     return 0;
   const u64 charged = nx::min(bytes, m_byte_limit);
-  nx::scoped_lock lock(m_budget_lock);
-  while (charged > m_byte_limit - nx::min(m_byte_limit, m_bytes_in_flight)) {
+  const auto charge_if_room = [&]() {
+    if (charged > m_byte_limit - nx::min(m_byte_limit, m_bytes_in_flight))
+      return false;
+    m_bytes_in_flight += charged;
+    update_visible_budget_locked();
+    return true;
+  };
+  {
+    nx::scoped_lock lock(m_budget_lock);
+    if (charge_if_room())
+      return charged;
+  }
+
+  release_admission();
+  bool granted = false;
+  for (;;) {
+    BudgetWaiter waiter;
+    {
+      nx::scoped_lock lock(m_budget_lock);
+      if (cancellation.stop_requested() ||
+          m_stopping.load(std::memory_order_acquire))
+        break;
+      granted = charge_if_room();
+      if (granted)
+        break;
+      m_budget_waiters.push_back(&waiter);
+    }
+    {
+      const cancellation_callback on_cancel(
+          cancellation,
+          cancellation_callback::Fn([&waiter] { waiter.wake(); }));
+      fiber::wait(waiter.pending);
+    }
+    nx::scoped_lock lock(m_budget_lock);
+    const auto found =
+        std::find(m_budget_waiters.begin(), m_budget_waiters.end(), &waiter);
+    if (found != m_budget_waiters.end())
+      m_budget_waiters.erase(found);
+  }
+  reacquire_admission();
+  if (!granted) {
     cancellation.throw_if_requested();
     throw_if_stopping();
-    (void)m_budget_changed.wait_for(m_budget_lock,
-                                    std::chrono::milliseconds(2));
   }
-  m_bytes_in_flight += charged;
-  update_visible_budget_locked();
   return charged;
 }
 
@@ -549,8 +604,8 @@ void AsyncIoService::release_bytes(const u64 bytes) noexcept {
     assert(bytes <= m_bytes_in_flight);
     m_bytes_in_flight -= bytes;
     update_visible_budget_locked();
+    wake_budget_waiters_locked();
   }
-  m_budget_changed.notify_all();
   if (!m_stopping.load(std::memory_order_acquire))
     pump_native();
 }
@@ -584,7 +639,10 @@ void AsyncIoService::shutdown() noexcept {
   if (!m_workers)
     return;
   m_stopping.store(true, std::memory_order_release);
-  m_budget_changed.notify_all();
+  {
+    nx::scoped_lock lock(m_budget_lock);
+    wake_budget_waiters_locked();
+  }
 
   for (;;) {
     NativeRequest *pending = nullptr;

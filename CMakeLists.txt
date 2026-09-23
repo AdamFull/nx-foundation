@@ -93,6 +93,7 @@ set(NX_FOUNDATION_SOURCES
   fibers/scheduler.cpp
   fibers/stack.cpp
   fibers/sync.cpp
+  threading/cancellation.cpp
   threading/sync.cpp
   threading/thread.cpp
   threading/thread_pool.cpp

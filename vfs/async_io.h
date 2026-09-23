@@ -260,6 +260,7 @@ private:
   friend class AsyncIoReservation;
 
   struct NativeRequest;
+  struct BudgetWaiter;
 
   [[nodiscard]] u64 acquire_bytes(u64 bytes,
                                   const cancellation_token &cancellation);
@@ -280,12 +281,14 @@ private:
                        bool cancelled) noexcept;
   [[nodiscard]] NativeRequest *take_ready_native_locked() noexcept;
   void update_visible_budget_locked() noexcept;
+  void wake_budget_waiters_locked() noexcept;
 
   thread_pool *m_workers = nullptr;
   nx::unique_ptr<detail::NativeAsyncIo> m_native;
   workload_tracker m_workload;
   mutable nx::mutex m_budget_lock;
-  nx::cond_var m_budget_changed;
+  /// Requests waiting for bytes; woken whenever bytes are released.
+  nx::vector<BudgetWaiter *> m_budget_waiters;
   std::atomic<bool> m_stopping{false};
   const u64 m_byte_limit = 0;
   u64 m_bytes_in_flight = 0;
