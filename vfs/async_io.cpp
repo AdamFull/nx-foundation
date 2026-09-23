@@ -211,18 +211,14 @@ io_result<nx::blob<u8>> AsyncIoContext::read_range(const path_view path,
   return result;
 }
 
-AsyncIoService::AsyncIoService(const AsyncIoConfig &config)
-    : m_byte_limit(config.byte_limit),
+AsyncIoService::AsyncIoService(thread_pool &workers,
+                               const AsyncIoConfig &config)
+    : m_workers(&workers), m_byte_limit(config.byte_limit),
       m_native_limit(nx::max(1u, config.max_concurrent_requests)) {
-  const u32 concurrency = nx::max(1u, config.max_concurrent_requests);
-  m_pool = nx::make_unique<thread_pool>(thread_pool::config{
-      .thread_count = concurrency,
-      .name = config.thread_name != nullptr ? config.thread_name : "nx-io",
-      // Keep one lane available to visible/critical work when possible. This
-      // prevents speculative streaming from occupying every blocking worker.
-      .max_background_concurrency = 0,
-      .collect_statistics = config.collect_statistics,
-  });
+  const u32 blocking = workers.blocking_thread_count();
+  m_fallback_limit = nx::max(1u, config.max_concurrent_requests);
+  if (blocking > 1)
+    m_fallback_limit = nx::min(m_fallback_limit, blocking - 1);
   if (config.enable_native_backend)
     m_native = detail::make_native_async_io(config.thread_name);
 }
@@ -237,7 +233,7 @@ future<io_result<nx::blob<u8>>> AsyncIoService::read(const path_view path,
       native.info.size <= std::numeric_limits<usize>::max() &&
       (max_bytes == 0 || native.info.size <= max_bytes)) {
     return enqueue_native(std::move(native.path), 0, native.info.size,
-                          std::move(request), true, true, m_pool.get());
+                          std::move(request), true, true, m_workers);
   }
   return async(std::move(request), [path = nx::string(path.native()),
                                     max_bytes](AsyncIoContext &context) {
@@ -253,7 +249,7 @@ AsyncIoService::read_range(const path_view path, const u64 offset,
       offset <= native.info.size && size <= native.info.size - offset &&
       size <= std::numeric_limits<usize>::max()) {
     return enqueue_native(std::move(native.path), offset, size,
-                          std::move(request), false, true, m_pool.get());
+                          std::move(request), false, true, m_workers);
   }
   request.reservation_bytes = size;
   return async(std::move(request), [path = nx::string(path.native()), offset,
@@ -267,7 +263,7 @@ AsyncIoService::enqueue_native(nx::string path, const u64 offset,
                                const u64 size, AsyncIoRequest request,
                                const bool whole_read, const bool charge_budget,
                                thread_pool *const continuation_pool) {
-  if (!m_pool || !m_native || m_stopping.load(std::memory_order_acquire))
+  if (!m_workers || !m_native || m_stopping.load(std::memory_order_acquire))
     return {};
 
   NativeRequest *pending =
@@ -409,6 +405,60 @@ void AsyncIoService::complete_native(NativeRequest *request,
   pump_native();
 }
 
+void AsyncIoService::enqueue_fallback(const task_priority priority,
+                                      nx::detail::task_fn job) {
+  m_outstanding.add(1);
+  {
+    nx::scoped_lock lock(m_budget_lock);
+    m_fallback_pending[task_priority_index(priority)].push_back(std::move(job));
+  }
+  pump_fallback();
+}
+
+// Strict priority, except that background requests leave one slot free when
+// there is more than one, so speculative streaming cannot hold them all.
+bool AsyncIoService::take_fallback_locked(nx::detail::task_fn &job,
+                                          task_priority &priority) noexcept {
+  for (usize lane = task_priority_index(task_priority::Count); lane-- > 0;) {
+    nx::vector<nx::detail::task_fn> &queue = m_fallback_pending[lane];
+    if (queue.empty())
+      continue;
+    const bool background =
+        lane == task_priority_index(task_priority::Background);
+    const u32 limit = background && m_fallback_limit > 1 ? m_fallback_limit - 1
+                                                         : m_fallback_limit;
+    if (m_fallback_active >= limit)
+      return false;
+    job = std::move(queue.front());
+    queue.erase(queue.begin());
+    priority = static_cast<task_priority>(lane);
+    ++m_fallback_active;
+    return true;
+  }
+  return false;
+}
+
+void AsyncIoService::pump_fallback() noexcept {
+  for (;;) {
+    nx::detail::task_fn job;
+    task_priority priority = task_priority::Normal;
+    {
+      nx::scoped_lock lock(m_budget_lock);
+      if (!take_fallback_locked(job, priority))
+        return;
+    }
+    m_workers->submit(priority, [this, job = std::move(job)]() mutable {
+      job();
+      {
+        nx::scoped_lock lock(m_budget_lock);
+        --m_fallback_active;
+      }
+      pump_fallback();
+      m_outstanding.decrement();
+    });
+  }
+}
+
 void AsyncIoService::update_visible_budget_locked() noexcept {
   m_visible_bytes_in_flight.store(m_bytes_in_flight, std::memory_order_relaxed);
   u64 peak = m_peak_bytes_in_flight.load(std::memory_order_relaxed);
@@ -457,8 +507,8 @@ void AsyncIoService::throw_if_stopping() const {
 
 AsyncIoStatistics AsyncIoService::statistics() const noexcept {
   return {
-      .threads = m_pool ? m_pool->statistics() : thread_pool_statistics{},
       .workload = m_workload.statistics(),
+      .concurrency_limit = m_fallback_limit,
       .byte_limit = m_byte_limit,
       .bytes_in_flight =
           m_visible_bytes_in_flight.load(std::memory_order_relaxed),
@@ -476,7 +526,7 @@ AsyncIoStatistics AsyncIoService::statistics() const noexcept {
 }
 
 void AsyncIoService::shutdown() noexcept {
-  if (!m_pool)
+  if (!m_workers)
     return;
   m_stopping.store(true, std::memory_order_release);
   m_budget_changed.notify_all();
@@ -502,8 +552,9 @@ void AsyncIoService::shutdown() noexcept {
   if (m_native)
     m_native->shutdown();
   m_native.reset();
-  m_pool->wait_idle();
-  m_pool.reset();
+  // Requests still queued run too, but see the service stopping and cancel.
+  fiber::wait(m_outstanding);
+  m_workers = nullptr;
 }
 
 } // namespace nx::vfs

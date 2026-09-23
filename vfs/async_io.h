@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/foundation/fibers/scheduler.h"
 #include "core/foundation/threading/cancellation.h"
 #include "core/foundation/threading/thread_pool.h"
 #include "core/foundation/threading/workload.h"
@@ -38,16 +39,17 @@ to_string(const AsyncIoBackend backend) noexcept {
 }
 
 struct AsyncIoConfig {
-  /// Blocking requests which may execute concurrently. These workers are kept
-  /// separate from CPU jobs so a slow device cannot occupy simulation workers.
+  /// Requests which may block at once. Fallback requests block on the
+  /// workers' blocking-service threads, so this is also kept below their
+  /// number: one always stays free for other blocking calls, such as present.
   u32 max_concurrent_requests = 1;
   /// Aggregate payload reservation for executing requests. Zero disables the
   /// byte limit. A single oversized request is admitted exclusively.
   u64 byte_limit = 64u * 1024u * 1024u;
+  /// Names the native backend's completion thread.
   const char *thread_name = "nx-io";
-  bool collect_statistics = true;
   /// Prefer the platform kernel backend for host-backed files. Archive,
-  /// memory, and custom devices continue through the bounded blocking pool.
+  /// memory, and custom devices run on blocking-service threads instead.
   bool enable_native_backend = true;
 };
 
@@ -60,8 +62,8 @@ struct AsyncIoRequest {
 };
 
 struct AsyncIoStatistics {
-  thread_pool_statistics threads;
   workload_statistics workload;
+  u32 concurrency_limit = 0;
   u64 byte_limit = 0;
   u64 bytes_in_flight = 0;
   u64 peak_bytes_in_flight = 0;
@@ -164,39 +166,40 @@ private:
 
 /// Asynchronous VFS service. Host-backed whole/range reads use the platform
 /// kernel backend; devices which need user-space work (archives, memory,
-/// remote providers) and custom stateful operations use a bounded fallback
-/// pool without consuming the application's CPU workers.
+/// remote providers) and custom stateful operations run as jobs on @p workers
+/// that move to its blocking-service threads, admitted in priority order.
 class AsyncIoService {
 public:
-  explicit AsyncIoService(const AsyncIoConfig &config = {});
+  explicit AsyncIoService(thread_pool &workers,
+                          const AsyncIoConfig &config = {});
   ~AsyncIoService();
 
   AsyncIoService(const AsyncIoService &) = delete;
   AsyncIoService &operator=(const AsyncIoService &) = delete;
 
-  [[nodiscard]] bool valid() const noexcept {
-    return m_pool != nullptr && m_pool->worker_count() != 0;
-  }
+  [[nodiscard]] bool valid() const noexcept { return m_workers != nullptr; }
   [[nodiscard]] u32 concurrency_limit() const noexcept {
-    return m_pool ? m_pool->worker_count() : 0;
+    return m_fallback_limit;
   }
 
   template <typename F, typename R = std::invoke_result_t<std::decay_t<F> &,
                                                           AsyncIoContext &>>
   [[nodiscard]] future<R> async(AsyncIoRequest request, F &&operation) {
-    if (!m_pool || m_stopping.load(std::memory_order_acquire))
+    if (m_workers == nullptr || m_stopping.load(std::memory_order_acquire))
+      return {};
+    completion_source<R> source(m_workers);
+    future<R> result = source.get_future();
+    if (!result.valid())
       return {};
 
     const workload_ticket ticket = m_workload.submit();
-    const cancellation_token cancellation = request.cancellation;
     const task_priority priority = request.priority;
-    const u64 reservation = request.reservation_bytes;
-    future<R> result = m_pool->async(
-        priority,
-        [this, cancellation, priority, reservation, ticket,
-         operation =
-             std::decay_t<F>(std::forward<F>(operation))]() mutable -> R {
-          return measure_workload(m_workload, ticket, cancellation, [&]() -> R {
+    nx::detail::task_fn job{
+        [this, source = std::move(source), ticket, priority,
+         cancellation = std::move(request.cancellation),
+         reservation = request.reservation_bytes,
+         operation = std::decay_t<F>(std::forward<F>(operation))]() mutable {
+          const auto run = [&]() -> R {
             AsyncIoContext context(*this, priority, cancellation);
             if (reservation != 0)
               context.reserve(reservation);
@@ -206,14 +209,34 @@ public:
               context.throw_if_cancelled();
               return;
             } else {
-              R result = std::invoke(operation, context);
+              R value = std::invoke(operation, context);
               context.throw_if_cancelled();
-              return result;
+              return value;
+            }
+          };
+          // Nothing may leave run_blocking by exception, so the outcome is
+          // settled on the blocking-service thread.
+          fiber::run_blocking([&] {
+            try {
+              if constexpr (std::is_void_v<R>) {
+                measure_workload(m_workload, ticket, cancellation, run);
+                source.set_value();
+              } else {
+                source.set_value(
+                    measure_workload(m_workload, ticket, cancellation, run));
+              }
+            } catch (const task_cancelled &) {
+              source.set_cancelled();
+            } catch (...) {
+              source.set_exception(std::current_exception());
             }
           });
-        });
-    if (!result.valid())
+        }};
+    if (!job) {
       m_workload.reject(ticket);
+      return {};
+    }
+    enqueue_fallback(priority, std::move(job));
     return result;
   }
 
@@ -239,6 +262,10 @@ private:
                                   const cancellation_token &cancellation);
   void release_bytes(u64 bytes) noexcept;
   void throw_if_stopping() const;
+  void enqueue_fallback(task_priority priority, nx::detail::task_fn job);
+  void pump_fallback() noexcept;
+  [[nodiscard]] bool take_fallback_locked(nx::detail::task_fn &job,
+                                          task_priority &priority) noexcept;
   [[nodiscard]] future<io_result<nx::blob<u8>>>
   enqueue_native(nx::string path, u64 offset, u64 size, AsyncIoRequest request,
                  bool whole_read, bool charge_budget,
@@ -249,7 +276,7 @@ private:
   [[nodiscard]] NativeRequest *take_ready_native_locked() noexcept;
   void update_visible_budget_locked() noexcept;
 
-  nx::unique_ptr<thread_pool> m_pool;
+  thread_pool *m_workers = nullptr;
   nx::unique_ptr<detail::NativeAsyncIo> m_native;
   workload_tracker m_workload;
   mutable nx::mutex m_budget_lock;
@@ -269,6 +296,12 @@ private:
       m_native_pending[static_cast<usize>(task_priority::Count)];
   u32 m_native_active = 0;
   const u32 m_native_limit = 1;
+  nx::vector<nx::detail::task_fn>
+      m_fallback_pending[static_cast<usize>(task_priority::Count)];
+  u32 m_fallback_active = 0;
+  u32 m_fallback_limit = 1;
+  /// Fallback requests submitted and not yet finished; shutdown waits on it.
+  fiber::Counter m_outstanding;
 };
 
 } // namespace nx::vfs

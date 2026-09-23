@@ -379,6 +379,9 @@ public:
   [[nodiscard]] u32 worker_count() const noexcept {
     return m_scheduler->worker_count();
   }
+  [[nodiscard]] u32 blocking_thread_count() const noexcept {
+    return m_scheduler->stats().blocking_threads;
+  }
 
   [[nodiscard]] bool is_worker_thread() const noexcept;
 
