@@ -12,6 +12,7 @@
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/handle.h"
 #include "core/foundation/core/hash.h"
+#include "core/foundation/reflection/aggregate.h"
 #include "core/foundation/strings/utf8_string_view.h"
 
 #include <cassert>
@@ -102,6 +103,9 @@ struct component_desc {
 struct component_metadata {
   detail::component_id id = 0;
   string_view name = {};
+  /// nx::reflect::type_name of the component, for matching code that names it
+  /// by type against code that names it as registered.
+  string_view type_name = {};
   u32 size = 0;
   u32 alignment = 0;
   component_flags flags = component_flags::none;
@@ -646,6 +650,7 @@ public:
     component_metadata md{};
     md.id = id;
     md.name = desc.name;
+    md.type_name = nx::reflect::type_name<T>();
     md.size = nx::cast<u32>(sizeof(T));
     md.alignment = nx::cast<u32>(alignof(T));
     md.flags = flags;
@@ -671,6 +676,20 @@ public:
       if (m_storages[id] != nullptr && m_metadata[id].name == name)
         return &m_metadata[id];
     return nullptr;
+  }
+
+  [[nodiscard]] const component_metadata *
+  component_metadata_typed(const string_view type_name) const noexcept {
+    if (type_name.empty())
+      return nullptr;
+    for (usize id = 0; id < m_storages.size(); ++id)
+      if (m_storages[id] != nullptr && m_metadata[id].type_name == type_name)
+        return &m_metadata[id];
+    return nullptr;
+  }
+
+  [[nodiscard]] usize registered_component_count() const noexcept {
+    return m_registered_count;
   }
 
   template <typename C>
