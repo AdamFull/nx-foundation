@@ -917,13 +917,18 @@ public:
     return n ? n->child_count : 0;
   }
 
+  [[nodiscard]] Entity next_sibling(Entity e) const noexcept {
+    const hierarchy_node *n = m_hierarchy.try_get(e);
+    return n ? n->next_sibling : Entity{};
+  }
+
   template <typename Fn> void each_child(Entity e, Fn &&fn) const {
     const hierarchy_node *n = m_hierarchy.try_get(e);
     if (!n)
       return;
     Entity c = n->first_child;
     while (c.valid()) {
-      const Entity next = sibling_next(c);
+      const Entity next = next_sibling(c);
       fn(c);
       c = next;
     }
@@ -1147,11 +1152,6 @@ private:
     maybe_erase_node(p);
   }
 
-  [[nodiscard]] Entity sibling_next(Entity e) const noexcept {
-    const hierarchy_node *n = m_hierarchy.try_get(e);
-    return n ? n->next_sibling : Entity{};
-  }
-
   template <usize N, typename A>
   void push_children(Entity e, small_vector<Entity, N, A> &stack) const {
     const hierarchy_node *n = m_hierarchy.try_get(e);
@@ -1160,7 +1160,7 @@ private:
     Entity c = n->first_child;
     while (c.valid()) {
       stack.push_back(c);
-      c = sibling_next(c);
+      c = next_sibling(c);
     }
   }
 
@@ -1173,7 +1173,7 @@ private:
     Entity c = n->first_child;
     while (c.valid()) {
       kids.push_back(c);
-      c = sibling_next(c);
+      c = next_sibling(c);
     }
 
     switch (policy) {
