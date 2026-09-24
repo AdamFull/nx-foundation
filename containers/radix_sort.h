@@ -336,19 +336,36 @@ template <typename T> struct sort_scratch {
 
 namespace detail {
 
+/// Below this, the element passes around the radix are cheaper serial than a
+/// fork and join.
+inline constexpr usize SORT_PARALLEL_PASS_MIN = 8 * 1024;
+
+/// Runs @p body(i) for every index, across @p pool when it pays.
+template <typename Body>
+void for_each_index(thread_pool *const pool, const usize count, Body &&body) {
+  if (pool != nullptr && pool->worker_count() > 0 &&
+      count >= SORT_PARALLEL_PASS_MIN)
+    pool->parallel_for(0, count, body);
+  else
+    for (usize i = 0; i < count; ++i)
+      body(i);
+}
+
 template <typename T, typename KeyFn>
 [[nodiscard]] bool sort_permutation(const std::span<const T> src,
                                     sort_scratch<T> &s, KeyFn key) {
   const usize count = src.size();
   s.keys.resize(count);
   s.indices.resize(count);
+  u32 *const keys_out = s.keys.data();
+  u32 *const indices_out = s.indices.data();
+  for_each_index(s.pool, count, [&](const usize i) {
+    keys_out[i] = key(src[i]);
+    indices_out[i] = nx::cast<u32>(i);
+  });
   bool ordered = true;
-  for (usize i = 0; i < count; ++i) {
-    const u32 k = key(src[i]);
-    ordered = ordered && (i == 0 || s.keys[i - 1] <= k);
-    s.keys[i] = k;
-    s.indices[i] = nx::cast<u32>(i);
-  }
+  for (usize i = 1; i < count && ordered; ++i)
+    ordered = keys_out[i - 1] <= keys_out[i];
   if (ordered)
     return false;
 
@@ -379,8 +396,11 @@ void sort_by_key(nx::vector<T> &items, sort_scratch<T> &scratch, KeyFn key) {
     return;
 
   scratch.gathered.resize(count);
-  for (usize i = 0; i < count; ++i)
-    scratch.gathered[i] = items[scratch.indices[i]];
+  T *const gathered = scratch.gathered.data();
+  const u32 *const indices = scratch.indices.data();
+  detail::for_each_index(scratch.pool, count, [&](const usize i) {
+    gathered[i] = items[indices[i]];
+  });
   items.swap(scratch.gathered);
 }
 
@@ -396,13 +416,15 @@ void sort_by_key_into(const std::span<const T> src, nx::vector<T> &dst,
     return;
   }
 
+  T *const out = dst.data();
   if (!detail::sort_permutation(src, scratch, key)) {
-    for (usize i = 0; i < count; ++i)
-      dst[i] = src[i];
+    detail::for_each_index(scratch.pool, count,
+                           [&](const usize i) { out[i] = src[i]; });
     return;
   }
-  for (usize i = 0; i < count; ++i)
-    dst[i] = src[scratch.indices[i]];
+  const u32 *const indices = scratch.indices.data();
+  detail::for_each_index(scratch.pool, count,
+                         [&](const usize i) { out[i] = src[indices[i]]; });
 }
 
 }
