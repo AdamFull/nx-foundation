@@ -4,6 +4,7 @@
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/callable.h"
 #include "core/foundation/fibers/scheduler.h"
+#include "core/foundation/fibers/sync.h"
 #include "core/foundation/threading/cancellation.h"
 #include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread.h"
@@ -609,12 +610,10 @@ public:
   }
 
   template <typename F> void parallel_region(u32 requested, F &&body) {
-    assert(!is_execution_context() &&
-           "parallel_region must run outside a pool task");
     const u32 workers = worker_count();
     const u32 count =
         requested == 0 ? workers + 1 : nx::min(requested, workers + 1);
-    barrier bar(count);
+    fiber::barrier bar(count);
     if (count <= 1) {
       body(u32{0}, u32{1}, bar);
       return;
@@ -1290,7 +1289,7 @@ void parallel_collect(thread_pool *pool, const usize count,
     bin.clear();
 
   const usize per_chunk = (count + team - 1) / team;
-  pool->parallel_region(team, [&](const u32 c, u32, nx::barrier &) {
+  pool->parallel_region(team, [&](const u32 c, u32, fiber::barrier &) {
     const usize first = min(nx::cast<usize>(c) * per_chunk, count);
     body(first, min(first + per_chunk, count), bins[c]);
   });

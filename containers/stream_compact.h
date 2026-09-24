@@ -60,7 +60,7 @@ public:
     const T *const src = in.data();
     T *const dst = out.data();
 
-    pool.parallel_region(chunks, [&](const u32 c, u32, barrier &bar) {
+    pool.parallel_region(chunks, [&](const u32 c, u32, fiber::barrier &bar) {
       usize begin = nx::cast<usize>(c) * per_chunk;
       if (begin > n)
         begin = n;
@@ -130,7 +130,7 @@ public:
     T *const scr = scratch.data();
     T *const dst = out.data();
 
-    pool.parallel_region(chunks, [&](const u32 c, u32, barrier &bar) {
+    pool.parallel_region(chunks, [&](const u32 c, u32, fiber::barrier &bar) {
       usize begin = nx::cast<usize>(c) * per_chunk;
       if (begin > count)
         begin = count;

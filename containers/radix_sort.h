@@ -223,7 +223,8 @@ public:
       return offs + nx::cast<usize>(chunk) * detail::RADIX_BUCKETS;
     };
 
-    pool.parallel_region(chunks, [&](const u32 c, const u32 n, barrier &bar) {
+    pool.parallel_region(chunks, [&](const u32 c, const u32 n,
+                                     fiber::barrier &bar) {
       usize begin = nx::cast<usize>(c) * per_chunk;
       if (begin > count)
         begin = count;

@@ -185,4 +185,16 @@ bool cond_var::wait_until(mutex &m,
   return result == WaitResult::Woken;
 }
 
+void barrier::arrive_and_wait() noexcept {
+  m_lock.lock();
+  if (++m_arrived < m_threshold) {
+    block(&m_lock, &m_waiters, NO_DEADLINE);
+    return;
+  }
+  m_arrived = 0;
+  while (const Claimed waiter = claim(m_waiters))
+    resume(waiter);
+  m_lock.unlock();
+}
+
 } // namespace nx::fiber

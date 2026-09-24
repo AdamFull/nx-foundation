@@ -3,6 +3,7 @@
 #include "core/foundation/fibers/wait.h"
 
 #include <atomic>
+#include <cassert>
 #include <chrono>
 
 // Synchronization that suspends the waiting fiber instead of its thread. On a
@@ -163,6 +164,25 @@ public:
 private:
   bool wait_until(mutex &m, internal::clock::time_point deadline) noexcept;
 
+  spin_lock m_lock;
+  internal::WaitList m_waiters;
+};
+
+/// Reusable: once @p count parties have arrived, releases them all and starts
+/// over.
+class barrier {
+public:
+  explicit barrier(u32 count) noexcept : m_threshold(count) {
+    assert(count > 0 && "barrier: count must be non-zero");
+  }
+  barrier(const barrier &) = delete;
+  barrier &operator=(const barrier &) = delete;
+
+  void arrive_and_wait() noexcept;
+
+private:
+  const u32 m_threshold;
+  u32 m_arrived = 0;
   spin_lock m_lock;
   internal::WaitList m_waiters;
 };
