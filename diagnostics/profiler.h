@@ -10,6 +10,8 @@
 
 #include <tracy/Tracy.hpp>
 
+#include <cstring>
+
 #if defined(TRACY_FIBERS) && defined(TRACY_ON_DEMAND)
 namespace nx::fiber {
 // Tracy drops fiber switches while no viewer is connected, so a thread tells a
@@ -30,6 +32,13 @@ void announce_to_profiler() noexcept;
 #define NX_PROFILE_FUNCTION()                                                  \
   NX_PROFILE_ANNOUNCE_FIBER();                                                 \
   ZoneScoped
+/// A zone named at run time. Tracy copies the text, and its statistics group
+/// zones by that name.
+#define NX_PROFILE_ZONE_TEXT(text, size)                                       \
+  NX_PROFILE_ANNOUNCE_FIBER();                                                 \
+  ::tracy::ScopedZone nx_profile_text_zone(                                    \
+      TracyLine, TracyFile, sizeof(TracyFile) - 1, TracyFunction,              \
+      std::strlen(TracyFunction), text, size, -1, true)
 #define NX_PROFILE_FRAME_MARK() FrameMark
 #define NX_PROFILE_FRAME_MARK_NAMED(name) FrameMarkNamed(name)
 #define NX_PROFILE_SET_THREAD_NAME(name) ::tracy::SetThreadName(name)
@@ -60,6 +69,7 @@ void announce_to_profiler() noexcept;
 #define NX_PROFILE_ZONE(name) ((void)(name))
 #define NX_PROFILE_ZONE_COLOR(name, color) ((void)(name), (void)(color))
 #define NX_PROFILE_FUNCTION() ((void)0)
+#define NX_PROFILE_ZONE_TEXT(text, size) ((void)(text), (void)(size))
 #define NX_PROFILE_FRAME_MARK() ((void)0)
 #define NX_PROFILE_FRAME_MARK_NAMED(name) ((void)(name))
 #define NX_PROFILE_SET_THREAD_NAME(name) ((void)(name))
