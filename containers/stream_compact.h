@@ -7,6 +7,7 @@
 #include <chrono>
 #include <span>
 #include <type_traits>
+#include <utility>
 
 namespace nx {
 
@@ -60,12 +61,12 @@ public:
     const T *const src = in.data();
     T *const dst = out.data();
 
-    pool.parallel_region(chunks, [&](const u32 c, u32, fiber::barrier &bar) {
-      usize begin = nx::cast<usize>(c) * per_chunk;
-      if (begin > n)
-        begin = n;
-      const usize end = nx::min(begin + per_chunk, n);
-
+    const auto slice = [=](const usize c) {
+      const usize begin = nx::min(c * per_chunk, n);
+      return std::pair{begin, nx::min(begin + per_chunk, n)};
+    };
+    pool.parallel_for(0, chunks, 1, [&](const usize c) {
+      const auto [begin, end] = slice(c);
       u32 kept = 0;
       for (usize i = begin; i < end; ++i) {
         const bool k = keep(src[i]);
@@ -73,20 +74,15 @@ public:
         kept += k ? 1u : 0u;
       }
       counts[c] = kept;
-      bar.arrive_and_wait();
-
-      usize out_pos = 0;
-      for (u32 cc = 0; cc < c; ++cc)
-        out_pos += counts[cc];
-
+    });
+    const usize total = exclusive_scan(counts, chunks);
+    pool.parallel_for(0, chunks, 1, [&](const usize c) {
+      const auto [begin, end] = slice(c);
+      usize out_pos = counts[c];
       for (usize i = begin; i < end; ++i)
         if (flags[i])
           dst[out_pos++] = src[i];
     });
-
-    usize total = 0;
-    for (u32 c = 0; c < chunks; ++c)
-      total += counts[c];
     return total;
   }
 
@@ -130,12 +126,12 @@ public:
     T *const scr = scratch.data();
     T *const dst = out.data();
 
-    pool.parallel_region(chunks, [&](const u32 c, u32, fiber::barrier &bar) {
-      usize begin = nx::cast<usize>(c) * per_chunk;
-      if (begin > count)
-        begin = count;
-      const usize end = nx::min(begin + per_chunk, count);
-
+    const auto slice = [=](const usize c) {
+      const usize begin = nx::min(c * per_chunk, count);
+      return std::pair{begin, nx::min(begin + per_chunk, count)};
+    };
+    pool.parallel_for(0, chunks, 1, [&](const usize c) {
+      const auto [begin, end] = slice(c);
       u32 kept = 0;
       for (usize i = begin; i < end; ++i) {
         const bool k = produce(i, scr[i]);
@@ -143,19 +139,15 @@ public:
         kept += k ? 1u : 0u;
       }
       counts[c] = kept;
-      bar.arrive_and_wait();
-
-      usize out_pos = 0;
-      for (u32 cc = 0; cc < c; ++cc)
-        out_pos += counts[cc];
+    });
+    const usize total = exclusive_scan(counts, chunks);
+    pool.parallel_for(0, chunks, 1, [&](const usize c) {
+      const auto [begin, end] = slice(c);
+      usize out_pos = counts[c];
       for (usize i = begin; i < end; ++i)
         if (flags[i])
           dst[out_pos++] = scr[i];
     });
-
-    usize total = 0;
-    for (u32 c = 0; c < chunks; ++c)
-      total += counts[c];
     return total;
   }
 
@@ -203,6 +195,17 @@ public:
   }
 
 private:
+  /// Turns per-chunk counts into each chunk's first output slot.
+  static usize exclusive_scan(u32 *const counts, const u32 chunks) noexcept {
+    usize total = 0;
+    for (u32 c = 0; c < chunks; ++c) {
+      const u32 kept = counts[c];
+      counts[c] = nx::cast<u32>(total);
+      total += kept;
+    }
+    return total;
+  }
+
   usize m_crossover = DEFAULT_CROSSOVER;
   nx::vector<u8> m_flags;
   nx::vector<u32> m_counts;

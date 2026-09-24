@@ -8,6 +8,7 @@
 #include <concepts>
 #include <cstring>
 #include <span>
+#include <utility>
 
 namespace nx {
 
@@ -108,7 +109,7 @@ void radix_sort_pairs(const std::span<Key> keys, const std::span<Value> values,
   }
 }
 
-/// Not thread-safe: one context per caller, and never from a pool worker.
+/// Not thread-safe: one context per caller.
 class radix_context {
 public:
   static constexpr usize DEFAULT_CROSSOVER = 128 * 1024;
@@ -215,21 +216,24 @@ public:
     m_offsets.resize(nx::cast<usize>(chunks) * detail::RADIX_BUCKETS);
     u32 *const hist = m_histograms.data();
     u32 *const offs = m_offsets.data();
-    const auto hrow = [=](const u32 chunk, const u32 pass) {
-      return hist +
-             ((nx::cast<usize>(chunk) * PASSES + pass) * detail::RADIX_BUCKETS);
+    const auto hrow = [=](const usize chunk, const u32 pass) {
+      return hist + (chunk * PASSES + pass) * detail::RADIX_BUCKETS;
     };
-    const auto orow = [=](const u32 chunk) {
-      return offs + nx::cast<usize>(chunk) * detail::RADIX_BUCKETS;
+    const auto orow = [=](const usize chunk) {
+      return offs + chunk * detail::RADIX_BUCKETS;
+    };
+    const auto slice = [=](const usize chunk) {
+      const usize begin = nx::min(chunk * per_chunk, count);
+      return std::pair{begin, nx::min(begin + per_chunk, count)};
+    };
+    // Each phase is its own fork and join over the chunks, so a phase starts
+    // on whichever workers are free instead of waiting for a whole team.
+    const auto each_chunk = [&](auto &&body) {
+      pool.parallel_for(0, chunks, 1, body);
     };
 
-    pool.parallel_region(chunks, [&](const u32 c, const u32 n,
-                                     fiber::barrier &bar) {
-      usize begin = nx::cast<usize>(c) * per_chunk;
-      if (begin > count)
-        begin = count;
-      const usize end = nx::min(begin + per_chunk, count);
-
+    each_chunk([&](const usize c) {
+      const auto [begin, end] = slice(c);
       for (u32 p = 0; p < PASSES; ++p)
         std::memset(hrow(c, p), 0, detail::RADIX_BUCKETS * sizeof(u32));
       for (usize i = begin; i < end; ++i) {
@@ -238,60 +242,56 @@ public:
           ++hrow(c, p)[nx::cast<u32>((k >> (p * detail::RADIX_DIGIT_BITS)) &
                                      detail::RADIX_DIGIT_MASK)];
       }
-      bar.arrive_and_wait();
+    });
 
-      // Every participant derives the same plan from the shared histograms:
-      // per-digit totals are order-independent, so no shared write and no
-      // barrier.
-      bool active[PASSES] = {};
-      u32 active_count = 0;
-      for (u32 p = 0; p < PASSES; ++p) {
-        const u32 digit =
-            nx::cast<u32>((keys[0] >> (p * detail::RADIX_DIGIT_BITS)) &
-                          detail::RADIX_DIGIT_MASK);
-        u32 total = 0;
-        for (u32 cc = 0; cc < n; ++cc)
-          total += hrow(cc, p)[digit];
-        active[p] = total != nx::cast<u32>(count);
-        active_count += active[p] ? 1u : 0u;
-      }
-      if (active_count == 0)
-        return;
+    bool active[PASSES] = {};
+    u32 active_count = 0;
+    for (u32 p = 0; p < PASSES; ++p) {
+      const u32 digit =
+          nx::cast<u32>((keys[0] >> (p * detail::RADIX_DIGIT_BITS)) &
+                        detail::RADIX_DIGIT_MASK);
+      u32 total = 0;
+      for (usize c = 0; c < chunks; ++c)
+        total += hrow(c, p)[digit];
+      active[p] = total != nx::cast<u32>(count);
+      active_count += active[p] ? 1u : 0u;
+    }
+    if (active_count == 0)
+      return;
 
-      // Copying last, each chunk over its own output slice, avoids the barrier a copy-first scheme
-      // needs to stop one chunk clobbering input another still reads.
-      Key *ks = keys.data();
-      Value *vs = values.data();
-      Key *kd = key_scratch.data();
-      Value *vd = value_scratch.data();
+    Key *ks = keys.data();
+    Value *vs = values.data();
+    Key *kd = key_scratch.data();
+    Value *vd = value_scratch.data();
 
-      bool first = true;
-      for (u32 p = 0; p < PASSES; ++p) {
-        if (!active[p])
-          continue;
-        const u32 shift = p * detail::RADIX_DIGIT_BITS;
+    bool first = true;
+    for (u32 p = 0; p < PASSES; ++p) {
+      if (!active[p])
+        continue;
+      const u32 shift = p * detail::RADIX_DIGIT_BITS;
 
-        if (!first) {
-          std::memset(hrow(c, p), 0, detail::RADIX_BUCKETS * sizeof(u32));
+      // The first histograms counted the input; later passes count the
+      // previous pass's output, which each chunk slices differently.
+      if (!first)
+        each_chunk([&](const usize c) {
+          const auto [begin, end] = slice(c);
+          u32 *const h = hrow(c, p);
+          std::memset(h, 0, detail::RADIX_BUCKETS * sizeof(u32));
           for (usize i = begin; i < end; ++i)
-            ++hrow(
-                c,
-                p)[nx::cast<u32>((ks[i] >> shift) & detail::RADIX_DIGIT_MASK)];
-          bar.arrive_and_wait();
-        }
-        first = false;
+            ++h[nx::cast<u32>((ks[i] >> shift) & detail::RADIX_DIGIT_MASK)];
+        });
+      first = false;
 
-        u32 *off = orow(c);
-        u32 running = 0;
-        for (u32 b = 0; b < detail::RADIX_BUCKETS; ++b) {
-          for (u32 cc = 0; cc < n; ++cc) {
-            const u32 cnt = hrow(cc, p)[b];
-            if (cc == c)
-              off[b] = running;
-            running += cnt;
-          }
+      u32 running = 0;
+      for (u32 b = 0; b < detail::RADIX_BUCKETS; ++b)
+        for (usize c = 0; c < chunks; ++c) {
+          orow(c)[b] = running;
+          running += hrow(c, p)[b];
         }
 
+      each_chunk([&](const usize c) {
+        const auto [begin, end] = slice(c);
+        u32 *const off = orow(c);
         for (usize i = begin; i < end; ++i) {
           const u32 digit =
               nx::cast<u32>((ks[i] >> shift) & detail::RADIX_DIGIT_MASK);
@@ -299,22 +299,24 @@ public:
           kd[slot] = ks[i];
           vd[slot] = vs[i];
         }
-        bar.arrive_and_wait();
+      });
 
-        Key *tk = ks;
-        ks = kd;
-        kd = tk;
-        Value *tv = vs;
-        vs = vd;
-        vd = tv;
-      }
+      Key *tk = ks;
+      ks = kd;
+      kd = tk;
+      Value *tv = vs;
+      vs = vd;
+      vd = tv;
+    }
 
-      if (ks != keys.data())
+    if (ks != keys.data())
+      each_chunk([&](const usize c) {
+        const auto [begin, end] = slice(c);
         for (usize i = begin; i < end; ++i) {
           keys[i] = ks[i];
           values[i] = vs[i];
         }
-    });
+      });
   }
 
 private:
