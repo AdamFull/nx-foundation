@@ -431,12 +431,15 @@ bool SchedulerState::pop_any_work(Worker *worker, Work &work) noexcept {
   return false;
 }
 
+// Only what can be popped: a slot whose push was preempted between claiming
+// and filling it counts in size_approx, and idle workers that stayed awake for
+// it spun on every core while the preempted push waited for one.
 bool SchedulerState::has_general_work() const noexcept {
   for (usize priority = 0; priority < PRIORITY_COUNT; ++priority) {
-    if (!ready[priority].empty_approx() || !global[priority].empty_approx())
+    if (ready[priority].can_pop_approx() || global[priority].can_pop_approx())
       return true;
     for (const Worker *worker : workers)
-      if (!worker->local[priority].empty_approx())
+      if (worker->local[priority].can_pop_approx())
         return true;
   }
   return false;
@@ -777,7 +780,7 @@ void SchedulerState::wake_main() noexcept {
 void SchedulerState::park_main(Worker *worker) noexcept {
   main_sleeping.store(1, std::memory_order_seq_cst);
   std::atomic_thread_fence(std::memory_order_seq_cst);
-  if (main_ready.empty_approx() && main_work.empty_approx())
+  if (!main_ready.can_pop_approx() && !main_work.can_pop_approx())
     main_parker.park_until(worker->main_deadline);
   main_sleeping.store(0, std::memory_order_relaxed);
 }
@@ -794,7 +797,7 @@ void SchedulerState::park_blocking() noexcept {
   const u32 epoch = blocking_epoch.load(std::memory_order_seq_cst);
   blocking_sleepers.fetch_add(1, std::memory_order_seq_cst);
   std::atomic_thread_fence(std::memory_order_seq_cst);
-  if (blocking_ready.empty_approx() &&
+  if (!blocking_ready.can_pop_approx() &&
       !stopping.load(std::memory_order_seq_cst))
     futex::wait(&blocking_epoch, epoch, detail::WAIT_FOREVER);
   blocking_sleepers.fetch_sub(1, std::memory_order_seq_cst);

@@ -140,6 +140,13 @@ public:
   [[nodiscard]] bool full_approx() const noexcept {
     return size_approx() >= nx::cast<isize>(CAPACITY);
   }
+  /// Whether try_pop would find an element. Unlike empty_approx, it is false
+  /// while the oldest element's push has claimed its slot but not filled it.
+  [[nodiscard]] bool can_pop_approx() const noexcept {
+    const usize pos = m_dequeue_pos.load(std::memory_order_relaxed);
+    return m_slots[pos & MASK].sequence.load(std::memory_order_acquire) ==
+           pos + 1;
+  }
 
 private:
   struct alignas(64) Slot {
