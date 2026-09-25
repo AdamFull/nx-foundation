@@ -332,6 +332,12 @@ template <typename T> struct sort_scratch {
 
   nx::vector<u32> keys, indices, key_scratch, index_scratch;
   nx::vector<T> gathered;
+  /// How many elements `indices` put in order last, for
+  /// coherent_sort_by_key_into to start from; zero when nothing is reusable.
+  usize ordered = 0;
+  /// Whether the last coherent sort finished from that order, without the
+  /// radix.
+  bool reused = false;
 };
 
 namespace detail {
@@ -339,6 +345,17 @@ namespace detail {
 /// Below this, the element passes around the radix are cheaper serial than a
 /// fork and join.
 inline constexpr usize SORT_PARALLEL_PASS_MIN = 8 * 1024;
+
+/// Fewer elements out of place than this are insertion-sorted, not radix
+/// sorted.
+inline constexpr usize COHERENT_SMALL_SIDE = 64;
+/// With more than one element in this many out of place, the radix over all of
+/// them is the cheaper sort: about 17 ns an element, against a few for the
+/// split and merge plus two radix passes over those set aside.
+inline constexpr usize COHERENT_MAX_SIDE_SHARE = 4;
+/// How far back in the run an element that does not fit may land, setting
+/// aside the ones above it, before it is set aside itself.
+inline constexpr usize COHERENT_LOOK_BACK = 4;
 
 /// Runs @p body(i) for every index, across @p pool when it pays.
 template <typename Body>
@@ -382,6 +399,121 @@ template <typename T, typename KeyFn>
   return true;
 }
 
+[[nodiscard]] inline bool pair_less(const u32 key_a, const u32 index_a,
+                                    const u32 key_b,
+                                    const u32 index_b) noexcept {
+  return key_a < key_b || (key_a == key_b && index_a < index_b);
+}
+
+/// Insertion-sorts (key, index) pairs by key, ties by index: the order the
+/// stable radix gives.
+inline void insertion_sort_pairs(u32 *const keys, u32 *const indices,
+                                 const usize count) noexcept {
+  for (usize i = 1; i < count; ++i) {
+    const u32 key = keys[i];
+    const u32 index = indices[i];
+    usize j = i;
+    for (; j > 0 && pair_less(key, index, keys[j - 1], indices[j - 1]); --j) {
+      keys[j] = keys[j - 1];
+      indices[j] = indices[j - 1];
+    }
+    keys[j] = key;
+    indices[j] = index;
+  }
+}
+
+/// Orders @p src starting from the permutation that ordered the previous
+/// call's elements. Sprites drawn frame after frame barely change order: one
+/// pass keeps the run still in order and sets aside the elements that moved,
+/// however far; those are sorted alone and merged back. Too many set aside and
+/// it gives up for the radix.
+template <typename T, typename KeyFn>
+[[nodiscard]] bool coherent_permutation(const std::span<const T> src,
+                                        sort_scratch<T> &s, KeyFn key) {
+  const usize count = src.size();
+  if (s.ordered != count || s.keys.size() < count)
+    return false;
+  s.key_scratch.resize(count);
+  s.index_scratch.resize(count);
+  u32 *const keys = s.keys.data();
+  u32 *const indices = s.indices.data();
+  u32 *const side_keys = s.key_scratch.data();
+  u32 *const side_indices = s.index_scratch.data();
+  for_each_index(s.pool, count,
+                 [&](const usize i) { keys[i] = key(src[indices[i]]); });
+
+  // kept <= i, so the run compacts in place ahead of what is still unread.
+  const usize max_side = count / COHERENT_MAX_SIDE_SHARE;
+  usize kept = 0;
+  usize side = 0;
+  const auto set_aside = [&](const u32 k, const u32 v) {
+    side_keys[side] = k;
+    side_indices[side] = v;
+    ++side;
+  };
+  for (usize i = 0; i < count; ++i) {
+    const u32 k = keys[i];
+    const u32 v = indices[i];
+    if (kept == 0 || !pair_less(k, v, keys[kept - 1], indices[kept - 1])) {
+      keys[kept] = k;
+      indices[kept] = v;
+      ++kept;
+      continue;
+    }
+    // Where it fits a little way back, the few above it are the ones that
+    // moved ahead; keeping them would set aside everything after.
+    const usize lowest =
+        kept > COHERENT_LOOK_BACK ? kept - COHERENT_LOOK_BACK : 0;
+    usize at = kept - 1;
+    while (at > lowest && pair_less(k, v, keys[at - 1], indices[at - 1]))
+      --at;
+    const bool fits =
+        at == 0 || !pair_less(k, v, keys[at - 1], indices[at - 1]);
+    if (side + (fits ? kept - at : 1u) > max_side)
+      return false;
+    if (!fits) {
+      set_aside(k, v);
+      continue;
+    }
+    for (usize j = at; j < kept; ++j)
+      set_aside(keys[j], indices[j]);
+    keys[at] = k;
+    indices[at] = v;
+    kept = at + 1;
+  }
+
+  if (side < COHERENT_SMALL_SIDE) {
+    insertion_sort_pairs(side_keys, side_indices, side);
+  } else {
+    // The run's leftover tail is exactly the scratch a radix needs. By index,
+    // then stably by key: ties end in index order.
+    const std::span<u32> by_key(side_keys, side);
+    const std::span<u32> by_index(side_indices, side);
+    const std::span<u32> key_room(keys + kept, side);
+    const std::span<u32> index_room(indices + kept, side);
+    radix_sort_pairs(by_index, by_key, index_room, key_room);
+    radix_sort_pairs(by_key, by_index, key_room, index_room);
+  }
+
+  // Merge from the back, so the run is never overwritten before it is read.
+  usize a = kept;
+  usize b = side;
+  usize out = count;
+  while (b > 0) {
+    --out;
+    if (a > 0 && pair_less(side_keys[b - 1], side_indices[b - 1], keys[a - 1],
+                           indices[a - 1])) {
+      --a;
+      keys[out] = keys[a];
+      indices[out] = indices[a];
+    } else {
+      --b;
+      keys[out] = side_keys[b];
+      indices[out] = side_indices[b];
+    }
+  }
+  return true;
+}
 }
 
 /// The radix runs on (key, index) pairs and one gather applies the permutation, so an element is
@@ -389,6 +521,7 @@ template <typename T, typename KeyFn>
 template <typename T, typename KeyFn>
 void sort_by_key(nx::vector<T> &items, sort_scratch<T> &scratch, KeyFn key) {
   const usize count = items.size();
+  scratch.ordered = 0;
   if (count < 2)
     return;
   if (!detail::sort_permutation(std::span<const T>(items.data(), count),
@@ -410,6 +543,7 @@ void sort_by_key_into(const std::span<const T> src, nx::vector<T> &dst,
   const usize count = src.size();
   if (dst.size() < count)
     dst.resize(count);
+  scratch.ordered = 0;
   if (count < 2) {
     if (count == 1)
       dst[0] = src[0];
@@ -420,11 +554,37 @@ void sort_by_key_into(const std::span<const T> src, nx::vector<T> &dst,
   if (!detail::sort_permutation(src, scratch, key)) {
     detail::for_each_index(scratch.pool, count,
                            [&](const usize i) { out[i] = src[i]; });
+    scratch.ordered = count;
     return;
   }
   const u32 *const indices = scratch.indices.data();
   detail::for_each_index(scratch.pool, count,
                          [&](const usize i) { out[i] = src[indices[i]]; });
+  scratch.ordered = count;
 }
 
+/// sort_by_key_into for data sorted again and again with little change, such
+/// as a frame's sprites: it starts from the order the previous call on this
+/// scratch produced whenever the element count is unchanged, and falls back
+/// to the radix when that order is too far off. Element i should be the same
+/// thing from call to call for the start to help; the result is the same
+/// either way.
+template <typename T, typename KeyFn>
+void coherent_sort_by_key_into(const std::span<const T> src, nx::vector<T> &dst,
+                               sort_scratch<T> &scratch, KeyFn key) {
+  scratch.reused =
+      src.size() >= 2 && detail::coherent_permutation(src, scratch, key);
+  if (!scratch.reused) {
+    sort_by_key_into(src, dst, scratch, key);
+    return;
+  }
+
+  const usize count = src.size();
+  if (dst.size() < count)
+    dst.resize(count);
+  T *const out = dst.data();
+  const u32 *const indices = scratch.indices.data();
+  detail::for_each_index(scratch.pool, count,
+                         [&](const usize i) { out[i] = src[indices[i]]; });
+}
 }

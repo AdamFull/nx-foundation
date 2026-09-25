@@ -45,6 +45,8 @@ Most of it is header-only; the platform backends (`threading`, `platform`,
 | `nx::sparse_set` | `containers/sparse_set.h` | A sparse set mapping handles (entity ids) to dense payloads with O(1) insert/erase/contains. The component store for an ECS; `T = void` makes a plain set. |
 | `nx::mpmc::Queue` | `containers/concurrent_queue.h` | A bounded lock-free queue for many producers and many consumers. |
 | `nx::mpsc::Queue` | `containers/concurrent_queue.h` | A bounded lock-free queue for many producers and a single consumer, with `consume_all`/`consume_batch` helpers. |
+| `nx::sort_by_key` / `nx::sort_by_key_into` | `containers/radix_sort.h` | A stable radix sort on a 32-bit key: it sorts (key, index) pairs, then gathers each element once. `coherent_sort_by_key_into` is for data re-sorted every frame with little change - it starts from the previous call's order and falls back to the radix when too much moved, with the same result either way. |
+| `nx::sort_by_key` / `nx::sort_by_key_into` | `containers/radix_sort.h` | A stable radix sort on a 32-bit key: it sorts (key, index) pairs, then gathers each element once. `coherent_sort_by_key_into` is for data re-sorted every frame with little change - it starts from the previous call's order and falls back to the radix when too much moved, with the same result either way. |
 
 ## Strings
 
