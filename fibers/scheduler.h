@@ -58,6 +58,9 @@ void wait(Counter &counter, u32 target = 0) noexcept;
 [[nodiscard]] void *fiber_local() noexcept;
 void set_fiber_local(void *value) noexcept;
 
+/// Whether the caller runs on a pooled fiber's stack rather than its thread's.
+[[nodiscard]] bool in_fiber() noexcept;
+
 /// Runs fn, which may block in the OS or a driver, on one of the scheduler's
 /// blocking-service threads; the calling fiber moves there and back, so its
 /// worker runs other jobs meanwhile. Outside a fiber, on one of those threads
@@ -88,7 +91,8 @@ struct SchedulerState;
 
 /// Runs jobs on pooled fibers across worker threads. By default the
 /// constructing thread becomes the main thread: it runs no general jobs, only
-/// main-affine work, and only inside pump_main() or while it waits. Without a
+/// main-affine work, and only inside pump_main() or while it waits. It never
+/// runs a fiber: that work runs on the thread's own stack. Without a
 /// main thread, main-affine work is unavailable and the scheduler can be
 /// created and destroyed on any thread.
 class Scheduler {
@@ -133,8 +137,6 @@ public:
   void wait(Counter &counter, u32 target = 0) { fiber::wait(counter, target); }
 
   void yield();
-  void switch_to_main();
-  void switch_to_workers();
 
   /// Runs main-affine work until none is left and `budget` has passed.
   void pump_main(std::chrono::nanoseconds budget);

@@ -300,35 +300,25 @@ void thread_pool::run_on_main(const function_ref<void()> fn) {
     fn();
     return;
   }
+  // Queued rather than carrying the caller's fiber over, so fn runs on the
+  // main thread's own stack.
   std::exception_ptr error;
-  // A worker's fiber moves; anything else, a blocking-service thread
-  // included, must not lose its own affinity, so it queues the call.
-  if (m_scheduler->on_worker_thread() && m_scheduler->in_fiber()) {
-    m_scheduler->switch_to_main();
-    try {
-      fn();
-    } catch (...) {
-      error = std::current_exception();
-    }
-    m_scheduler->switch_to_workers();
-  } else {
-    struct Call {
-      function_ref<void()> fn;
-      std::exception_ptr *error;
-    } call{fn, &error};
-    const fiber::Job job{[](void *arg) noexcept {
-                           auto &c = *static_cast<Call *>(arg);
-                           try {
-                             c.fn();
-                           } catch (...) {
-                             *c.error = std::current_exception();
-                           }
-                         },
-                         &call};
-    fiber::Counter done;
-    m_scheduler->run_on_main({&job, 1}, &done);
-    fiber::wait(done);
-  }
+  struct Call {
+    function_ref<void()> fn;
+    std::exception_ptr *error;
+  } call{fn, &error};
+  const fiber::Job job{[](void *arg) noexcept {
+                         auto &c = *static_cast<Call *>(arg);
+                         try {
+                           c.fn();
+                         } catch (...) {
+                           *c.error = std::current_exception();
+                         }
+                       },
+                       &call};
+  fiber::Counter done;
+  m_scheduler->run_on_main({&job, 1}, &done);
+  fiber::wait(done);
   if (error)
     std::rethrow_exception(error);
 }

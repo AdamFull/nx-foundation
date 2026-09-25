@@ -359,7 +359,7 @@ public:
     u32 blocking_threads = 2;
     /// The constructing thread becomes the pool's main thread. It runs no
     /// tasks, only run_on_main() work, inside pump_main() or while it waits,
-    /// and it must destroy the pool.
+    /// always on its own stack, and it must destroy the pool.
     bool adopt_main_thread = false;
     /// Relaxed counters are enabled by default in debug and opt-in in release.
 #if defined(NX_DEBUG)
@@ -394,10 +394,10 @@ public:
     return m_has_main_thread;
   }
 
-  /// Runs @p fn on the main thread and returns once it has. A task moves
-  /// there and back; the main thread, or a pool without one, runs it in
-  /// place; any other thread queues it and waits. An exception from @p fn
-  /// is rethrown here.
+  /// Runs @p fn on the main thread's own stack and returns once it has. The
+  /// main thread, or a pool without one, runs it in place; anything else
+  /// queues it and waits, a task by suspending. An exception from @p fn is
+  /// rethrown here.
   void run_on_main(function_ref<void()> fn);
   /// On the main thread outside any task: runs main-thread work until none
   /// is left and @p budget has passed.

@@ -87,7 +87,6 @@ struct Worker {
   Role role = Role::General;
   Fiber thread_fiber;
   Fiber *current = nullptr;
-  clock::time_point main_deadline{};
   u32 dispatches = 0;
   char name[32] = {};
 #if NX_PROFILE_ENABLED && defined(TRACY_FIBERS) && defined(TRACY_ON_DEMAND)
@@ -142,6 +141,12 @@ struct SchedulerState {
   void complete(Handoff handoff) noexcept;
   void suspend(After after) noexcept;
   void suspend_until(Worker *worker, Counter &counter, u32 target) noexcept;
+  bool serve_main(function_ref<bool()> done,
+                  clock::time_point deadline) noexcept;
+  void wait_on_main(Counter &counter, u32 target) noexcept;
+  internal::WaitResult block_on_main(Worker *main, spin_lock *lock,
+                                     internal::WaitList *list,
+                                     clock::time_point deadline) noexcept;
   void help_until(Counter &counter, u32 target) noexcept;
   [[noreturn]] void loop(Fiber *self) noexcept;
   Fiber *next_work(Worker *worker, Work &work) noexcept;
@@ -162,7 +167,8 @@ struct SchedulerState {
   void wake_keeper() noexcept;
   void park_worker() noexcept;
   void wake_main() noexcept;
-  void park_main(Worker *worker) noexcept;
+  void park_main(function_ref<bool()> done,
+                 clock::time_point deadline) noexcept;
   void wake_blocking() noexcept;
   void park_blocking() noexcept;
   void worker_main(Worker *worker) noexcept;
@@ -176,7 +182,6 @@ struct SchedulerState {
   mpmc::Queue<Fiber *, FIBER_QUEUE> free_fibers;
   mpmc::Queue<Fiber *, FIBER_QUEUE> ready[PRIORITY_COUNT];
   mpmc::Queue<Work, GLOBAL_QUEUE> global[PRIORITY_COUNT];
-  mpmc::Queue<Fiber *, FIBER_QUEUE> main_ready;
   mpmc::Queue<Work, MAIN_QUEUE> main_work;
   mpmc::Queue<Fiber *, FIBER_QUEUE> blocking_ready;
 
@@ -390,8 +395,6 @@ Fiber *SchedulerState::acquire_fiber() noexcept {
 }
 
 bool SchedulerState::pop_ready(Worker *worker, Fiber *&fiber) noexcept {
-  if (worker->role == Role::Main)
-    return main_ready.try_pop(fiber);
   if (worker->role == Role::Blocking)
     return blocking_ready.try_pop(fiber);
   for (auto &queue : ready)
@@ -496,12 +499,8 @@ void SchedulerState::push_fiber_work(Fiber *fiber) noexcept {
     make_ready(fiber);
     return;
   }
-  if (fiber->affinity == Affinity::Main) {
-    while (!main_work.try_push(work))
-      detail::cpu_relax();
-    wake_main();
-    return;
-  }
+  NX_ASSERT(fiber->affinity != Affinity::Main,
+            "the main thread runs no fibers");
   // Behind everything already queued, or a yield loop would starve the work
   // it is waiting for.
   while (!global[nx::cast<usize>(fiber->priority)].try_push(work))
@@ -516,9 +515,9 @@ void SchedulerState::make_ready(Fiber *fiber) noexcept {
     wake_blocking();
     return;
   }
+  // The main thread's own fiber, or a wait token on its stack: its wait
+  // re-checks what it waits for once it wakes.
   if (fiber->affinity == Affinity::Main) {
-    while (!main_ready.try_push(fiber))
-      detail::cpu_relax();
     wake_main();
     return;
   }
@@ -620,10 +619,12 @@ void SchedulerState::suspend(const After after) noexcept {
 void SchedulerState::suspend_until(Worker *worker, Counter &counter,
                                    const u32 target) noexcept {
   assert_may_suspend();
+  if (worker->role == Role::Main) {
+    wait_on_main(counter, target);
+    return;
+  }
   Fiber *self = worker->current;
   self->target = target;
-  if (self == &worker->thread_fiber)
-    worker->main_deadline = clock::time_point::max();
   Fiber *next = next_to_resume(worker);
   if (!next) {
     help_until(counter, target);
@@ -676,16 +677,6 @@ void SchedulerState::loop(Fiber *self) noexcept {
 Fiber *SchedulerState::next_work(Worker *worker, Work &work) noexcept {
   for (u32 idle = 0;; ++idle) {
     Fiber *fiber = nullptr;
-    if (worker->role == Role::Main) {
-      if (main_ready.try_pop(fiber))
-        return fiber;
-      if (main_work.try_pop(work))
-        return work.fiber;
-      if (clock::now() >= worker->main_deadline)
-        return &worker->thread_fiber;
-      park_main(worker);
-      continue;
-    }
     if (worker->role == Role::Blocking) {
       if (blocking_ready.try_pop(fiber))
         return fiber;
@@ -777,12 +768,82 @@ void SchedulerState::wake_main() noexcept {
     main_parker.unpark();
 }
 
-void SchedulerState::park_main(Worker *worker) noexcept {
+void SchedulerState::park_main(const function_ref<bool()> done,
+                               const clock::time_point deadline) noexcept {
   main_sleeping.store(1, std::memory_order_seq_cst);
   std::atomic_thread_fence(std::memory_order_seq_cst);
-  if (!main_ready.can_pop_approx() && !main_work.can_pop_approx())
-    main_parker.park_until(worker->main_deadline);
+  if (!main_work.can_pop_approx() && !done())
+    main_parker.park_until(deadline);
   main_sleeping.store(0, std::memory_order_relaxed);
+}
+
+// The main thread never leaves its own stack: code it calls may check which
+// stack it runs on, and Android's runtime fails every Java call made from a
+// fiber stack. It waits here instead, running main-affine jobs in place.
+// Returns whether `done` held before the deadline.
+bool SchedulerState::serve_main(const function_ref<bool()> done,
+                                const clock::time_point deadline) noexcept {
+  for (;;) {
+    if (done())
+      return true;
+    Work work;
+    if (main_work.try_pop(work)) {
+      execute(work);
+      continue;
+    }
+    if (clock::now() >= deadline)
+      return done();
+    park_main(done, deadline);
+  }
+}
+
+// A token on this stack rather than the thread's own fiber, so a job that
+// waits inside another wait parks separately. Counter::decrement releases it
+// before settle() lets this frame end.
+void SchedulerState::wait_on_main(Counter &counter, const u32 target) noexcept {
+  Fiber token;
+  token.owner = this;
+  token.affinity = Affinity::Main;
+  token.target = target;
+  park(&token, counter);
+  (void)serve_main([&] { return counter.value() <= target; },
+                   internal::NO_DEADLINE);
+  settle(counter);
+}
+
+// The waiter names the thread's own fiber, which outlives it, since a waker
+// may still be resuming it after this returns.
+internal::WaitResult
+SchedulerState::block_on_main(Worker *main, spin_lock *lock,
+                              internal::WaitList *list,
+                              const clock::time_point deadline) noexcept {
+  internal::Waiter waiter;
+  waiter.fiber = &main->thread_fiber;
+  waiter.list = list;
+  waiter.lock = lock;
+  waiter.deadline = deadline;
+  waiter.state.store(internal::Waiter::WAITING, std::memory_order_relaxed);
+  if (list)
+    list->push(&waiter);
+  if (lock)
+    lock->unlock();
+  const auto woken = [&] {
+    return waiter.state.load(std::memory_order_acquire) !=
+           internal::Waiter::WAITING;
+  };
+  if (serve_main(woken, deadline))
+    return internal::WaitResult::Woken;
+  if (lock)
+    lock->lock();
+  u32 waiting = internal::Waiter::WAITING;
+  const bool timed_out = waiter.state.compare_exchange_strong(
+      waiting, internal::Waiter::TIMED_OUT, std::memory_order_acq_rel);
+  if (timed_out && list)
+    list->remove(&waiter);
+  if (lock)
+    lock->unlock();
+  return timed_out ? internal::WaitResult::TimedOut
+                   : internal::WaitResult::Woken;
 }
 
 void SchedulerState::wake_blocking() noexcept {
@@ -836,6 +897,8 @@ internal::WaitResult
 SchedulerState::block(Worker *worker, spin_lock *lock, internal::WaitList *list,
                       const clock::time_point deadline) noexcept {
   assert_may_suspend();
+  if (worker->role == Role::Main)
+    return block_on_main(worker, lock, list, deadline);
   Fiber *self = worker->current;
   internal::Waiter &waiter = self->waiter;
   Fiber *next = next_to_resume(worker);
@@ -853,8 +916,6 @@ SchedulerState::block(Worker *worker, spin_lock *lock, internal::WaitList *list,
   waiter.lock = lock;
   waiter.deadline = deadline;
   waiter.state.store(internal::Waiter::WAITING, std::memory_order_relaxed);
-  if (self == &worker->thread_fiber)
-    worker->main_deadline = clock::time_point::max();
 
   Handoff out{After::Enqueue, self, next};
   out.lock = lock;
@@ -1183,42 +1244,13 @@ void Scheduler::yield() {
     this_thread::yield();
 }
 
-void Scheduler::switch_to_main() {
-  Worker *worker = m_state->this_worker();
-  NX_ASSERT(worker, "switch_to_main outside a job");
-  NX_ASSERT(m_state->config.adopt_main_thread,
-            "switch_to_main needs a scheduler with a main thread");
-  if (worker->role == Role::Main)
-    return;
-  worker->current->affinity = Affinity::Main;
-  m_state->suspend(After::Ready);
-}
-
-void Scheduler::switch_to_workers() {
-  Worker *worker = m_state->this_worker();
-  NX_ASSERT(in_fiber(), "switch_to_workers outside a job");
-  if (!worker || worker->role != Role::Main)
-    return;
-  worker->current->affinity = Affinity::Any;
-  m_state->suspend(After::Ready);
-}
-
 void Scheduler::pump_main(const std::chrono::nanoseconds budget) {
   SchedulerState &state = *m_state;
   Worker *main = state.this_worker();
   NX_ASSERT(main && main->role == Role::Main &&
                 main->current == &main->thread_fiber,
             "pump_main belongs to the main thread outside any job");
-  main->main_deadline = clock::now() + budget;
-  if (Fiber *next = state.next_to_resume(main)) {
-    state.switch_fiber(&main->thread_fiber, next, After::Nothing);
-    return;
-  }
-  Work work;
-  while (state.main_work.try_pop(work) && !work.fiber)
-    state.execute(work);
-  if (work.fiber)
-    state.push_fiber_work(work.fiber);
+  (void)state.serve_main([] { return false; }, clock::now() + budget);
 }
 
 namespace {
@@ -1233,6 +1265,11 @@ NX_NO_INLINE void **local_slot() noexcept {
 void *fiber_local() noexcept { return *local_slot(); }
 
 void set_fiber_local(void *value) noexcept { *local_slot() = value; }
+
+bool in_fiber() noexcept {
+  const Worker *const worker = current_worker();
+  return worker && worker->current != &worker->thread_fiber;
+}
 
 bool Scheduler::on_worker_thread() const noexcept {
   const Worker *worker = m_state->this_worker();

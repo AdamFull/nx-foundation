@@ -1,9 +1,15 @@
 #pragma once
 
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/diagnostics/diagnostic.h"
+#include "core/foundation/fibers/scheduler.h"
 #include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/threading/thread_pool.h"
 
 #include <jni.h>
+
+#include <optional>
+#include <type_traits>
 
 namespace nx::android {
 
@@ -13,6 +19,8 @@ namespace nx::android {
 class JniScope {
 public:
   explicit JniScope(JavaVM *const vm) noexcept : m_vm(vm) {
+    NX_ASSERT(!nx::fiber::in_fiber(),
+              "Java fails on a fiber stack; call it through run_on_main");
     if (m_vm == nullptr)
       return;
     if (m_vm->GetEnv(reinterpret_cast<void **>(&m_env), JNI_VERSION_1_6) ==
@@ -41,6 +49,32 @@ private:
   JNIEnv *m_env = nullptr;
   bool m_attached = false;
 };
+
+/// Runs fn(env) where Java works: on a thread's own stack, never a fiber's.
+/// From one of @p pool's fibers it runs on the pool's main thread and returns
+/// once it has; anywhere else it runs in place. Returns what fn returns.
+template <typename F>
+auto run_java(nx::thread_pool *const pool, JavaVM *const vm, F &&fn)
+    -> std::invoke_result_t<F &, const JniScope &> {
+  using R = std::invoke_result_t<F &, const JniScope &>;
+  if (pool == nullptr || !nx::fiber::in_fiber()) {
+    const JniScope env(vm);
+    return fn(env);
+  }
+  if constexpr (std::is_void_v<R>) {
+    pool->run_on_main([&] {
+      const JniScope env(vm);
+      fn(env);
+    });
+  } else {
+    std::optional<R> result;
+    pool->run_on_main([&] {
+      const JniScope env(vm);
+      result.emplace(fn(env));
+    });
+    return std::move(*result);
+  }
+}
 
 /// Looks up a class by its JNI-style slash-separated name (e.g.
 /// "com/nx2d/runtime/NxHaptics"). Clears any pending exception and returns
