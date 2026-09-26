@@ -162,6 +162,22 @@ u64 id() noexcept {
   return cached;
 }
 
+u64 os_id() noexcept {
+  static thread_local u64 cached = 0;
+  if (NX_UNLIKELY(cached == 0)) {
+#if NX_HAS_WINDOWS_API
+    cached = nx::cast<u64>(GetCurrentThreadId());
+#elif NX_PLATFORM_APPLE
+    u64 tid = 0;
+    pthread_threadid_np(nullptr, &tid);
+    cached = tid;
+#elif NX_PLATFORM_POSIX
+    cached = nx::cast<u64>(syscall(SYS_gettid));
+#endif
+  }
+  return cached;
+}
+
 void yield() noexcept {
 #if NX_HAS_WINDOWS_API
   SwitchToThread();

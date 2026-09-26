@@ -95,6 +95,7 @@ struct Worker {
 #endif
   mpmc::Queue<Work, LOCAL_QUEUE> local[PRIORITY_COUNT];
   thread os_thread;
+  std::atomic<u64> os_id{0};
 };
 
 namespace {
@@ -865,6 +866,7 @@ void SchedulerState::park_blocking() noexcept {
 }
 
 void SchedulerState::worker_main(Worker *worker) noexcept {
+  worker->os_id.store(this_thread::os_id(), std::memory_order_release);
   set_current_worker(worker);
   NX_PROFILE_SET_THREAD_NAME(worker->name);
   Fiber *first = acquire_fiber();
@@ -1278,6 +1280,18 @@ bool Scheduler::on_worker_thread() const noexcept {
 
 u32 Scheduler::worker_count() const noexcept {
   return m_state->config.worker_count;
+}
+
+usize Scheduler::worker_os_ids(const std::span<u64> out) const noexcept {
+  usize written = 0;
+  for (const Worker *worker : m_state->workers) {
+    if (worker->role != Role::General || written == out.size())
+      continue;
+    const u64 id = worker->os_id.load(std::memory_order_acquire);
+    if (id != 0)
+      out[written++] = id;
+  }
+  return written;
 }
 
 bool Scheduler::on_main_thread() const noexcept {

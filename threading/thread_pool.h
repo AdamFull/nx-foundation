@@ -385,6 +385,12 @@ public:
   [[nodiscard]] u32 worker_count() const noexcept {
     return m_scheduler->worker_count();
   }
+
+  /// Kernel ids of the threads that run tasks; see
+  /// fiber::Scheduler::worker_os_ids.
+  [[nodiscard]] usize worker_os_ids(std::span<u64> out) const noexcept {
+    return m_scheduler->worker_os_ids(out);
+  }
   [[nodiscard]] u32 blocking_thread_count() const noexcept {
     return m_scheduler->stats().blocking_threads;
   }

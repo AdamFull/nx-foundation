@@ -145,6 +145,10 @@ public:
   [[nodiscard]] bool on_worker_thread() const noexcept;
   [[nodiscard]] bool in_fiber() const noexcept;
   [[nodiscard]] u32 worker_count() const noexcept;
+  /// Writes the kernel thread ids (this_thread::os_id) of the workers that run
+  /// jobs - not the main thread or blocking-service threads - and returns how
+  /// many it wrote. A worker whose thread has not started yet is left out.
+  [[nodiscard]] usize worker_os_ids(std::span<u64> out) const noexcept;
   [[nodiscard]] Stats stats() const noexcept;
 
 private:

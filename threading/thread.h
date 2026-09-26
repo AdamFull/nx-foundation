@@ -89,6 +89,11 @@ namespace this_thread {
 
 u64 id() noexcept;
 
+/// The kernel's id for this thread, as OS services that take thread ids
+/// expect: gettid() on Linux and Android, GetCurrentThreadId() on Windows,
+/// the Mach thread id on Apple. id() is a pthread_t on POSIX, which is not.
+[[nodiscard]] u64 os_id() noexcept;
+
 void yield() noexcept;
 
 /// Sleeps for at least @p d (granularity is ~1ms on Windows).
