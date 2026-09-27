@@ -62,6 +62,7 @@ set(NX_FOUNDATION_HEADERS
   threading/cancellation.h
   threading/sync.h
   threading/thread.h
+  threading/serial_queue.h
   threading/thread_pool.h
   threading/workload.h
 
@@ -96,6 +97,7 @@ set(NX_FOUNDATION_SOURCES
   threading/cancellation.cpp
   threading/sync.cpp
   threading/thread.cpp
+  threading/serial_queue.cpp
   threading/thread_pool.cpp
   platform/filesystem.cpp
   platform/os.cpp
