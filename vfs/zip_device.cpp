@@ -164,27 +164,106 @@ void destroy_reader(ZipReader *reader) {
   nx::release(reader);
 }
 
-// Read-only device over a .zip (or an APK).
-class ZipDevice final : public Device {
+// What a zip device reads from: the archive's file, bytes or stream factory,
+// and a pool of open readers. The device and each open entry stream share
+// it, so a stream still open when its device is unmounted keeps reading.
+class ZipArchive {
 public:
-  class EntryStream;
+  explicit ZipArchive(nx::string zip_path) : m_zip_path(std::move(zip_path)) {}
+  explicit ZipArchive(nx::blob<u8> zip_data)
+      : m_zip_data(std::move(zip_data)) {}
+  explicit ZipArchive(ZipStreamFactory stream_factory)
+      : m_stream_factory(std::move(stream_factory)) {}
 
-  ZipDevice(nx::string zip_path, nx::string subdir)
-      : m_zip_path(std::move(zip_path)), m_subdir(std::move(subdir)) {}
-  ZipDevice(nx::blob<u8> zip_data, nx::string subdir)
-      : m_zip_data(std::move(zip_data)), m_subdir(std::move(subdir)) {}
-  ZipDevice(ZipStreamFactory stream_factory, nx::string subdir)
-      : m_stream_factory(std::move(stream_factory)),
-        m_subdir(std::move(subdir)) {}
+  ZipArchive(const ZipArchive &) = delete;
+  ZipArchive &operator=(const ZipArchive &) = delete;
 
-  ~ZipDevice() override {
+  ~ZipArchive() {
     ZipReader *reader = nullptr;
     while (m_readers.try_pop(reader))
       destroy_reader(reader);
   }
 
+  static constexpr usize READER_POOL = 8;
+
+  [[nodiscard]] ZipReader *acquire() {
+    ZipReader *reader = nullptr;
+    if (m_readers.try_pop(reader))
+      return reader;
+
+    reader = nx::allocate<ZipReader>();
+    if (!reader)
+      return nullptr;
+    reader->handle = mz_zip_reader_create();
+    if (!reader->handle) {
+      destroy_reader(reader);
+      return nullptr;
+    }
+
+    i32 opened = MZ_OPEN_ERROR;
+    if (m_stream_factory) {
+      auto source = m_stream_factory();
+      if (!source) {
+        destroy_reader(reader);
+        return nullptr;
+      }
+      reader->source = nx::allocate<FoundationZipStream>();
+      if (!reader->source) {
+        destroy_reader(reader);
+        return nullptr;
+      }
+      reader->source->base.vtbl = &foundation_stream_vtbl;
+      reader->source->source = std::move(source).value();
+
+      reader->buffered = mz_stream_buffered_create();
+      if (!reader->buffered) {
+        destroy_reader(reader);
+        return nullptr;
+      }
+      mz_stream_set_base(reader->buffered, reader->source);
+      opened =
+          mz_stream_buffered_open(reader->buffered, nullptr, MZ_OPEN_MODE_READ);
+      if (opened == MZ_OK)
+        opened = mz_zip_reader_open(reader->handle, reader->buffered);
+    } else if (m_zip_data.empty()) {
+      opened = mz_zip_reader_open_file(reader->handle, m_zip_path.c_str());
+    } else {
+      opened = mz_zip_reader_open_buffer(reader->handle, m_zip_data.data(),
+                                         nx::cast<i32>(m_zip_data.size()), 0);
+    }
+    if (opened != MZ_OK) {
+      destroy_reader(reader);
+      return nullptr;
+    }
+    return reader;
+  }
+
+  void release_reader(ZipReader *reader) {
+    if (!reader)
+      return;
+    if (!m_readers.try_push(reader))
+      destroy_reader(reader);
+  }
+
+private:
+  nx::string m_zip_path;
+  nx::blob<u8> m_zip_data;
+  ZipStreamFactory m_stream_factory;
+  nx::mpmc::Queue<ZipReader *, READER_POOL> m_readers;
+};
+
+// Read-only device over a .zip (or an APK).
+class ZipDevice final : public Device {
+public:
+  class EntryStream;
+
+  template <typename Source>
+  ZipDevice(Source source, nx::string subdir)
+      : m_archive(nx::make_shared<ZipArchive>(std::move(source))),
+        m_subdir(std::move(subdir)) {}
+
   bool build_index() {
-    ZipReader *reader = acquire();
+    ZipReader *reader = m_archive->acquire();
     void *r = reader ? reader->handle : nullptr;
     if (!r)
       return false;
@@ -207,7 +286,7 @@ public:
       }
       e = mz_zip_reader_goto_next_entry(r);
     }
-    release_reader(reader);
+    m_archive->release_reader(reader);
     return true;
   }
 
@@ -222,11 +301,11 @@ public:
       return err(file_error{io_error::FileTooLarge, 0});
 
     const nx::string full = archive_name(key.view());
-    ZipReader *reader = acquire();
+    ZipReader *reader = m_archive->acquire();
     void *r = reader ? reader->handle : nullptr;
     if (!r)
       return err(file_error{io_error::OpenFailed, 0});
-    defer { release_reader(reader); };
+    defer { m_archive->release_reader(reader); };
 
     if (mz_zip_reader_locate_entry(r, full.c_str(), 0) != MZ_OK ||
         mz_zip_reader_entry_open(r) != MZ_OK)
@@ -318,67 +397,6 @@ public:
   [[nodiscard]] const char *name() const noexcept override { return "zip"; }
 
 private:
-  static constexpr usize READER_POOL = 8;
-
-  [[nodiscard]] ZipReader *acquire() {
-    ZipReader *reader = nullptr;
-    if (m_readers.try_pop(reader))
-      return reader;
-
-    reader = nx::allocate<ZipReader>();
-    if (!reader)
-      return nullptr;
-    reader->handle = mz_zip_reader_create();
-    if (!reader->handle) {
-      destroy_reader(reader);
-      return nullptr;
-    }
-
-    i32 opened = MZ_OPEN_ERROR;
-    if (m_stream_factory) {
-      auto source = m_stream_factory();
-      if (!source) {
-        destroy_reader(reader);
-        return nullptr;
-      }
-      reader->source = nx::allocate<FoundationZipStream>();
-      if (!reader->source) {
-        destroy_reader(reader);
-        return nullptr;
-      }
-      reader->source->base.vtbl = &foundation_stream_vtbl;
-      reader->source->source = std::move(source).value();
-
-      reader->buffered = mz_stream_buffered_create();
-      if (!reader->buffered) {
-        destroy_reader(reader);
-        return nullptr;
-      }
-      mz_stream_set_base(reader->buffered, reader->source);
-      opened =
-          mz_stream_buffered_open(reader->buffered, nullptr, MZ_OPEN_MODE_READ);
-      if (opened == MZ_OK)
-        opened = mz_zip_reader_open(reader->handle, reader->buffered);
-    } else if (m_zip_data.empty()) {
-      opened = mz_zip_reader_open_file(reader->handle, m_zip_path.c_str());
-    } else {
-      opened = mz_zip_reader_open_buffer(reader->handle, m_zip_data.data(),
-                                         nx::cast<i32>(m_zip_data.size()), 0);
-    }
-    if (opened != MZ_OK) {
-      destroy_reader(reader);
-      return nullptr;
-    }
-    return reader;
-  }
-
-  void release_reader(ZipReader *reader) {
-    if (!reader)
-      return;
-    if (!m_readers.try_push(reader))
-      destroy_reader(reader);
-  }
-
   [[nodiscard]] bool strip_subdir(const nx::string_view full,
                                   nx::string_view &out) const {
     if (m_subdir.empty()) {
@@ -403,12 +421,9 @@ private:
     return s;
   }
 
-  nx::string m_zip_path;
-  nx::blob<u8> m_zip_data;
-  ZipStreamFactory m_stream_factory;
+  nx::shared_ptr<ZipArchive> m_archive;
   nx::string m_subdir;
   nx::hash_map<nx::string, ZipEntry> m_index;
-  nx::mpmc::Queue<ZipReader *, READER_POOL> m_readers;
 };
 
 /// A live minizip entry rather than an eagerly materialised BlobStream. This
@@ -416,14 +431,14 @@ private:
 /// the coarse mip tail initially, and continue through finer mips on demand.
 class ZipDevice::EntryStream final : public nx::fs::stream {
 public:
-  EntryStream(ZipDevice &owner, ZipReader *reader, nx::string entry,
-              const u64 size) noexcept
-      : m_owner(owner), m_reader(reader), m_entry(std::move(entry)),
-        m_size(size) {}
+  EntryStream(nx::shared_ptr<ZipArchive> archive, ZipReader *reader,
+              nx::string entry, const u64 size) noexcept
+      : m_archive(std::move(archive)), m_reader(reader),
+        m_entry(std::move(entry)), m_size(size) {}
 
   ~EntryStream() override {
     close_entry();
-    m_owner.release_reader(m_reader);
+    m_archive->release_reader(m_reader);
   }
 
   usize read(void *destination, const usize bytes) override {
@@ -527,7 +542,7 @@ private:
     return true;
   }
 
-  ZipDevice &m_owner;
+  nx::shared_ptr<ZipArchive> m_archive;
   ZipReader *m_reader = nullptr;
   nx::string m_entry;
   u64 m_size = 0;
@@ -545,20 +560,20 @@ io_result<stream_ptr> ZipDevice::open(const path_view rel) {
     return err(file_error{io_error::FileTooLarge, 0});
 
   const nx::string full = archive_name(key.view());
-  ZipReader *reader = acquire();
+  ZipReader *reader = m_archive->acquire();
   if (!reader)
     return err(file_error{io_error::OpenFailed, 0});
   if (mz_zip_reader_locate_entry(reader->handle, full.c_str(), 0) != MZ_OK ||
       mz_zip_reader_entry_open(reader->handle) != MZ_OK) {
-    release_reader(reader);
+    m_archive->release_reader(reader);
     return err(file_error{io_error::NotFound, 0});
   }
 
   auto *entry =
-      nx::allocate<EntryStream>(*this, reader, full, found->second.size);
+      nx::allocate<EntryStream>(m_archive, reader, full, found->second.size);
   if (!entry) {
     (void)mz_zip_reader_entry_close(reader->handle);
-    release_reader(reader);
+    m_archive->release_reader(reader);
     return err(file_error{io_error::OpenFailed, 0});
   }
   return stream_ptr(entry);
