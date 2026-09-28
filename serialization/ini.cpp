@@ -138,6 +138,29 @@ parse_value(const nx::string_view source, const usize line,
                             value_column + leading + value.size()});
 }
 
+/// Where a comment at the end of an assignment starts in @p after, the text
+/// after its '=', or npos when it has none. The text parses.
+[[nodiscard]] usize comment_start(const nx::string_view after) noexcept {
+  const nx::string_view value = trim(after);
+  const usize leading = nx::cast<usize>(value.data() - after.data());
+  usize from = 0;
+  if (!value.empty() && value.front() == '"') {
+    for (usize i = 1; i < value.size(); ++i) {
+      if (value[i] == '\\') {
+        ++i;
+      } else if (value[i] == '"') {
+        from = i + 1;
+        break;
+      }
+    }
+  }
+  for (usize i = from; i < value.size(); ++i)
+    if ((value[i] == ';' || value[i] == '#') &&
+        (i == 0 || ascii_space(value[i - 1])))
+      return leading + i;
+  return nx::string_view::npos;
+}
+
 } // namespace
 
 nx::string_view ParseError::message() const noexcept {
@@ -297,6 +320,106 @@ nx::result<Document, ParseError> parse(nx::string_view text) {
     ++line_number;
   }
   return document;
+}
+
+nx::result<nx::string, ParseError> assign(const nx::string_view text,
+                                          const nx::string_view section,
+                                          const nx::string_view key,
+                                          const nx::string_view value) {
+  if (!valid_section(section) || trim(section) != section)
+    return nx::err(ParseError{ParseErrorKind::InvalidSection, 0, 0});
+  if (!valid_key(key))
+    return nx::err(ParseError{ParseErrorKind::InvalidKey, 0, 0});
+  if (auto parsed = parse(text); !parsed)
+    return nx::err(parsed.error());
+
+  const usize first_end = text.find('\n');
+  const nx::string_view newline = first_end != nx::string_view::npos &&
+                                          first_end > 0 &&
+                                          text[first_end - 1] == '\r'
+                                      ? "\r\n"
+                                      : "\n";
+
+  nx::string out;
+  nx::string current;
+  bool assigned = false;
+  // Where a missing key goes: after the section's last assignment, or its
+  // header when it has none.
+  usize insert_at = nx::string_view::npos;
+  usize offset = 0;
+  while (offset < text.size()) {
+    const usize end = text.find('\n', offset);
+    const usize next = end == nx::string_view::npos ? text.size() : end + 1;
+    const nx::string_view line = text.substr(offset, next - offset);
+    nx::string_view body = line;
+    if (!body.empty() && body.back() == '\n')
+      body.remove_suffix(1);
+    if (!body.empty() && body.back() == '\r')
+      body.remove_suffix(1);
+    const nx::string_view content = trim(body);
+    offset = next;
+
+    if (content.empty() || content.front() == ';' || content.front() == '#') {
+      out.append(line);
+      continue;
+    }
+    if (content.front() == '[') {
+      current = nx::string(trim(content.substr(1, content.find(']') - 1)));
+      out.append(line);
+      if (current == section && insert_at == nx::string_view::npos)
+        insert_at = out.size();
+      continue;
+    }
+    const usize equals = content.find('=');
+    if (current != section || trim(content.substr(0, equals)) != key) {
+      out.append(line);
+      if (current == section)
+        insert_at = out.size();
+      continue;
+    }
+    // The key's own line: its indent as written, the new value, and any
+    // comment it ended with.
+    const nx::string_view after = content.substr(equals + 1);
+    const usize comment = comment_start(after);
+    out.append(body.substr(0, nx::cast<usize>(content.data() - body.data())));
+    out.append(key);
+    out.append(" = ");
+    append_value(out, value);
+    if (comment != nx::string_view::npos) {
+      out.push_back(u8' ');
+      out.append(after.substr(comment));
+    }
+    out.append(line.substr(body.size()));
+    assigned = true;
+    insert_at = out.size();
+  }
+  if (assigned)
+    return out;
+
+  nx::string added;
+  added.append(key);
+  added.append(" = ");
+  append_value(added, value);
+  added.append(newline);
+  // Keys outside any section come before the first header.
+  if (section.empty() && insert_at == nx::string_view::npos)
+    insert_at = 0;
+  if (insert_at != nx::string_view::npos) {
+    if (insert_at > 0 && out[insert_at - 1] != '\n')
+      added.insert(0, newline);
+    out.insert(insert_at, added.view());
+    return out;
+  }
+  if (!out.empty() && out.back() != '\n')
+    out.append(newline);
+  if (!out.empty())
+    out.append(newline);
+  out.push_back(u8'[');
+  out.append(section);
+  out.push_back(u8']');
+  out.append(newline);
+  out.append(added.view());
+  return out;
 }
 
 } // namespace nx::ini

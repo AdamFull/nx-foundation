@@ -117,6 +117,16 @@ if (result.status == nx::cli::ParseStatus::Help)
   std::puts(arguments.help(result.command).c_str());
 ```
 
+## INI files
+
+`serialization/ini.h` parses INI text into an `nx::ini::Document` and writes
+one back deterministically, without comments. To change a value in a file a
+person edits, `nx::ini::assign(text, section, key, value)` returns the text
+with that key set and every other line, comments included, as it was: the
+key's lines are rewritten in place, a missing key goes after its section's
+last assignment, a missing section at the end, in the text's own line
+endings. Text that does not parse is refused rather than rewritten.
+
 ## Threading
 
 | Type | Header | Use it for |

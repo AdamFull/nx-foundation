@@ -72,4 +72,16 @@ private:
 /// part of the value.
 [[nodiscard]] nx::result<Document, ParseError> parse(nx::string_view text);
 
+/// @p text with @p key in @p section set to @p value, every other line kept as
+/// it was, comments included. Each assignment of the key is rewritten in
+/// place, keeping a comment at its end; a missing key goes after the
+/// section's last assignment, and a missing section at the end. New lines
+/// follow the text's line endings. Text that does not parse is refused, and
+/// so is a section or key the grammar cannot hold (a ParseError of
+/// InvalidSection or InvalidKey at line 0).
+[[nodiscard]] nx::result<nx::string, ParseError> assign(nx::string_view text,
+                                                        nx::string_view section,
+                                                        nx::string_view key,
+                                                        nx::string_view value);
+
 } // namespace nx::ini
