@@ -2,6 +2,7 @@
 
 #include "core/foundation/containers/blob.h"
 #include "core/foundation/containers/small_vector.h"
+#include "core/foundation/core/callable.h"
 #include "core/foundation/core/result.h"
 #include "core/foundation/strings/utf8_string.h"
 
@@ -436,6 +437,13 @@ private:
 };
 
 [[nodiscard]] io_result<stream_ptr> open_file(path_view path);
+
+using stream_factory = nx::function<io_result<stream_ptr>()>;
+/// Opens @p path once and makes streams over it, each with a cursor of its
+/// own, usable from any thread at once. The file may be deleted, renamed or
+/// replaced on disk meanwhile, on every platform: the streams keep reading
+/// what was opened, and it closes with the factory and its last stream.
+[[nodiscard]] io_result<stream_factory> open_file_views(path_view path);
 /// Wraps an existing read-only buffer (not copied; must outlive the stream).
 [[nodiscard]] io_result<stream_ptr> open_memory(const void *data, usize size);
 

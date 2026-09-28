@@ -164,12 +164,11 @@ void destroy_reader(ZipReader *reader) {
   nx::release(reader);
 }
 
-// What a zip device reads from: the archive's file, bytes or stream factory,
-// and a pool of open readers. The device and each open entry stream share
+// What a zip device reads from: the archive's bytes or stream factory, and
+// a pool of open readers. The device and each open entry stream share
 // it, so a stream still open when its device is unmounted keeps reading.
 class ZipArchive {
 public:
-  explicit ZipArchive(nx::string zip_path) : m_zip_path(std::move(zip_path)) {}
   explicit ZipArchive(nx::blob<u8> zip_data)
       : m_zip_data(std::move(zip_data)) {}
   explicit ZipArchive(ZipStreamFactory stream_factory)
@@ -225,8 +224,6 @@ public:
           mz_stream_buffered_open(reader->buffered, nullptr, MZ_OPEN_MODE_READ);
       if (opened == MZ_OK)
         opened = mz_zip_reader_open(reader->handle, reader->buffered);
-    } else if (m_zip_data.empty()) {
-      opened = mz_zip_reader_open_file(reader->handle, m_zip_path.c_str());
     } else {
       opened = mz_zip_reader_open_buffer(reader->handle, m_zip_data.data(),
                                          nx::cast<i32>(m_zip_data.size()), 0);
@@ -246,7 +243,6 @@ public:
   }
 
 private:
-  nx::string m_zip_path;
   nx::blob<u8> m_zip_data;
   ZipStreamFactory m_stream_factory;
   nx::mpmc::Queue<ZipReader *, READER_POOL> m_readers;
@@ -583,9 +579,15 @@ io_result<stream_ptr> ZipDevice::open(const path_view rel) {
 
 io_result<Device *> make_zip_device(path_view zip_path,
                                     const path_view archive_subdir) {
+  // One open file for every reader, so the archive stays what was mounted
+  // even when the file is replaced on disk.
+  auto views = nx::fs::open_file_views(zip_path);
+  if (!views) {
+    nx::logw(log_vfs, "vfs: cannot open zip '{}'", zip_path);
+    return err(views.error());
+  }
   nx::string subdir = canon_rel(archive_subdir);
-  auto *dev =
-      nx::allocate<ZipDevice>(nx::string(zip_path.native()), std::move(subdir));
+  auto *dev = nx::allocate<ZipDevice>(std::move(*views), std::move(subdir));
   if (!dev)
     return err(file_error{io_error::OpenFailed, 0});
   if (!dev->build_index()) {

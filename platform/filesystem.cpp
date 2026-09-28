@@ -1,4 +1,5 @@
 #include "core/foundation/platform/filesystem.h"
+#include "core/foundation/core/foundation.h"
 #include "core/foundation/core/scope_guard.h"
 #include "core/foundation/platform/os.h"
 #include "core/foundation/strings/format.h"
@@ -1341,6 +1342,38 @@ private:
   bool m_at_eof = false;
 };
 
+class shared_file {
+public:
+  shared_file(const HANDLE h, const u64 size) noexcept : m_h(h), m_size(size) {}
+  ~shared_file() { ::CloseHandle(m_h); }
+  shared_file(const shared_file &) = delete;
+  shared_file &operator=(const shared_file &) = delete;
+
+  [[nodiscard]] u64 size() const noexcept { return m_size; }
+
+  // An offset in each call, so views on any thread never share a cursor.
+  usize read_at(const u64 offset, void *dst, const usize bytes) const {
+    usize total = 0;
+    auto *p = static_cast<u8 *>(dst);
+    while (total < bytes) {
+      const u64 at = offset + total;
+      OVERLAPPED where{};
+      where.Offset = nx::cast<DWORD>(at & 0xffffffffu);
+      where.OffsetHigh = nx::cast<DWORD>(at >> 32);
+      const DWORD want = nx::cast<DWORD>(min<usize>(bytes - total, 1u << 30));
+      DWORD got = 0;
+      if (!::ReadFile(m_h, p + total, want, &got, &where) || got == 0)
+        break;
+      total += got;
+    }
+    return total;
+  }
+
+private:
+  HANDLE m_h = INVALID_HANDLE_VALUE;
+  u64 m_size = 0;
+};
+
 #elif defined(NX_PLATFORM_POSIX)
 
 class file_stream final : public stream {
@@ -1404,7 +1437,83 @@ private:
   bool m_at_eof = false;
 };
 
+class shared_file {
+public:
+  shared_file(const int fd, const u64 size) noexcept : m_fd(fd), m_size(size) {}
+  ~shared_file() { ::close(m_fd); }
+  shared_file(const shared_file &) = delete;
+  shared_file &operator=(const shared_file &) = delete;
+
+  [[nodiscard]] u64 size() const noexcept { return m_size; }
+
+  usize read_at(const u64 offset, void *dst, const usize bytes) const {
+    usize total = 0;
+    auto *p = static_cast<u8 *>(dst);
+    while (total < bytes) {
+      const ssize_t got = ::pread(m_fd, p + total, bytes - total,
+                                  nx::cast<off_t>(offset + total));
+      if (got < 0 && errno == EINTR)
+        continue;
+      if (got <= 0)
+        break;
+      total += nx::cast<usize>(got);
+    }
+    return total;
+  }
+
+private:
+  int m_fd = -1;
+  u64 m_size = 0;
+};
+
 #endif
+
+class file_view final : public stream {
+public:
+  explicit file_view(nx::shared_ptr<shared_file> file) noexcept
+      : m_file(std::move(file)) {}
+
+  usize read(void *dst, const usize bytes) override {
+    if (!dst || m_cursor >= m_file->size())
+      return 0;
+    const usize want =
+        nx::cast<usize>(min<u64>(bytes, m_file->size() - m_cursor));
+    const usize got = m_file->read_at(m_cursor, dst, want);
+    m_cursor += got;
+    return got;
+  }
+
+  bool seek(const i64 offset, const seek_origin origin) override {
+    const i64 size = nx::cast<i64>(m_file->size());
+    const i64 base = origin == seek_origin::begin     ? 0
+                     : origin == seek_origin::current ? nx::cast<i64>(m_cursor)
+                                                      : size;
+    const i64 pos = base + offset;
+    if (pos < 0 || pos > size)
+      return false;
+    m_cursor = nx::cast<u64>(pos);
+    return true;
+  }
+
+  [[nodiscard]] i64 tell() const override { return nx::cast<i64>(m_cursor); }
+  [[nodiscard]] i64 size() const override {
+    return nx::cast<i64>(m_file->size());
+  }
+  [[nodiscard]] bool eof() const override { return m_cursor >= m_file->size(); }
+
+private:
+  nx::shared_ptr<shared_file> m_file;
+  u64 m_cursor = 0;
+};
+
+[[nodiscard]] stream_factory views_of(nx::shared_ptr<shared_file> file) {
+  return stream_factory([file = std::move(file)]() -> io_result<stream_ptr> {
+    auto *s = allocate<file_view>(file);
+    if (!s)
+      return err(file_error{io_error::OpenFailed, 0});
+    return stream_ptr(s);
+  });
+}
 
 } // namespace
 
@@ -1435,6 +1544,28 @@ io_result<stream_ptr> open_file(const path_view path) {
     return err(file_error{io_error::OpenFailed, 0});
   }
   return stream_ptr(s);
+}
+
+io_result<stream_factory> open_file_views(const path_view path) {
+  const wide_path wp(path);
+  if (!wp.ok)
+    return err(file_error{io_error::InvalidArgument, 0});
+
+  // Delete sharing lets the file go from disk while it is open, as it can on
+  // POSIX: an installer replacing a mounted package must not fail.
+  const HANDLE h =
+      ::CreateFileW(wp.ptr, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE)
+    return err(map_last_error(io_error::OpenFailed));
+  LARGE_INTEGER size;
+  if (!::GetFileSizeEx(h, &size)) {
+    const file_error error = map_last_error(io_error::OpenFailed);
+    ::CloseHandle(h);
+    return err(error);
+  }
+  return views_of(
+      nx::make_shared<shared_file>(h, nx::cast<u64>(size.QuadPart)));
 }
 
 io_result<string> executable_dir() {
@@ -1489,6 +1620,20 @@ io_result<stream_ptr> open_file(const path_view path) {
     return err(file_error{io_error::OpenFailed, 0});
   }
   return stream_ptr(s);
+}
+
+io_result<stream_factory> open_file_views(const path_view path) {
+  cpath cp(path);
+  const int fd = open_retry(cp.ptr, O_RDONLY | O_CLOEXEC, 0);
+  if (fd < 0)
+    return err(map_errno(io_error::OpenFailed));
+  struct stat st;
+  if (::fstat(fd, &st) != 0) {
+    const file_error error = map_errno(io_error::OpenFailed);
+    ::close(fd);
+    return err(error);
+  }
+  return views_of(nx::make_shared<shared_file>(fd, nx::cast<u64>(st.st_size)));
 }
 
 io_result<string> executable_dir() {
