@@ -55,6 +55,7 @@ Most of it is header-only; the platform backends (`threading`, `platform`,
 | `nx::string` | `strings/utf8_string.h` | An owning UTF-8 string with small-string optimization. Transcodes from char/char8_t/char16_t/char32_t/wchar_t and converts to `nx::string_view`. |
 | `nx::string_view` | `strings/utf8_string_view.h` | A non-owning UTF-8 view (`std::string_view` alias). |
 | `nx::id_string` | `strings/id_string.h` | An 8-byte interned string identified by a 64-bit FNV-1a hash: integer compare/order/hash, computable at compile time, with the original bytes recoverable via a process-wide intern pool. A baked asset key and constant-expression switch label (Unreal `FName` / bitsquid `idstring` in spirit). |
+| `nx::base64_encode` | `strings/base64.h` | Standard RFC 4648 base64 with padding. |
 | `nx::format` / `nx::format_to` | `strings/format.h` | `std::format` returning `nx::string`, plus a bounded `format_to(char[N], ...)` for stack buffers. A `std::formatter` for `nx::string` is provided. |
 
 ## ECS registry
@@ -168,6 +169,7 @@ non-inlined calls.
 | `nx::fs::path_view` | `platform/filesystem.h` | A non-owning view over a UTF-8 path with lexical queries (filename, stem, extension, parent, join). Also: whole-file read/write, atomic replacement through `staged_file`/`file_write_atomic`, directory helpers, `executable_dir()`, platform-standard per-user `application_data_dir()`, and a seekable `stream` abstraction (`open_file`/`open_memory` returning an RAII `stream_ptr`; `open_file_views` opens a file once for streams with cursors of their own, readable from any thread, while the file may be deleted or replaced on disk). |
 | `nx::vmem` | `platform/os.h` | Virtual-memory reservation/commit/protect and page-size/granularity queries. |
 | `nx::os` | `platform/os.h` | Process/system queries: resident and peak memory (`mem_get_stats`), a monotonic clock (`ticks_ns`/`ticks_ms`), and total physical RAM (`system_ram_mb`). |
+| `nx::process` | `platform/process.h` | Runs a child process on Windows, Linux and macOS with no input, standard output and error captured together up to a limit (the rest is read and dropped), the environment given or the parent's, and a timeout. A timeout kills the child and what it started, through a job object on Windows and the child's own process group elsewhere. It blocks: call it from `nx::fiber::run_blocking`. `quote_argument` spells an argument for a Windows command line. |
 
 ## Diagnostics
 

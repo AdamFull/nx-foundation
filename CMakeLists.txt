@@ -34,6 +34,7 @@ set(NX_FOUNDATION_HEADERS
   containers/sync_slot_map.h
 
   strings/format.h
+  strings/base64.h
   strings/id_string.h
   strings/utf8_string.h
   strings/utf8_string_view.h
@@ -69,6 +70,7 @@ set(NX_FOUNDATION_HEADERS
   platform/filesystem.h
   platform/native_window.h
   platform/os.h
+  platform/process.h
   platform/shared_library.h
   platform/android_jni.h
   platform/socket.h
@@ -101,6 +103,7 @@ set(NX_FOUNDATION_SOURCES
   threading/thread_pool.cpp
   platform/filesystem.cpp
   platform/os.cpp
+  platform/process.cpp
   platform/shared_library.cpp
   platform/socket.cpp
   vfs/vfs.cpp
