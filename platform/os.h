@@ -2,6 +2,8 @@
 
 #include "core/foundation/core/enum.h"
 
+#include <span>
+
 namespace nx::vmem {
 enum class MemProtFlag : u32 {
   None = 1 << 0,
@@ -44,4 +46,8 @@ usize cpu_brand(char *out, usize capacity) noexcept;
 
 u32 process_id() noexcept;
 usize executable_path(char *out, usize capacity) noexcept;
+
+// Fills @p out from the operating system's cryptographically secure generator,
+// for keys, nonces and the like; false where it has none or it failed.
+[[nodiscard]] bool random_bytes(std::span<u8> out) noexcept;
 }

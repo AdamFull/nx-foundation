@@ -21,7 +21,7 @@ Most of it is header-only; the platform backends (`threading`, `platform`,
 
 | Folder | Scope |
 | --- | --- |
-| `core/` | Platform/compiler detection, allocators, and the primitives everything else builds on (`foundation.h`, `handle.h`, `hash.h`, `result.h`, `scope_guard.h`, `callable.h`, `enum.h`, `random.h`). |
+| `core/` | Platform/compiler detection, allocators, and the primitives everything else builds on (`foundation.h`, `handle.h`, `hash.h`, `result.h`, `scope_guard.h`, `callable.h`, `enum.h`, `random.h`, `sha256.h`). |
 | `containers/` | Custom container types. |
 | `strings/` | UTF-8 string, string view, `std::format` integration, interned ids. |
 | `fibers/` | Stackful context switching and fiber stacks, the base of the fiber job system. |
@@ -55,7 +55,7 @@ Most of it is header-only; the platform backends (`threading`, `platform`,
 | `nx::string` | `strings/utf8_string.h` | An owning UTF-8 string with small-string optimization. Transcodes from char/char8_t/char16_t/char32_t/wchar_t and converts to `nx::string_view`. |
 | `nx::string_view` | `strings/utf8_string_view.h` | A non-owning UTF-8 view (`std::string_view` alias). |
 | `nx::id_string` | `strings/id_string.h` | An 8-byte interned string identified by a 64-bit FNV-1a hash: integer compare/order/hash, computable at compile time, with the original bytes recoverable via a process-wide intern pool. A baked asset key and constant-expression switch label (Unreal `FName` / bitsquid `idstring` in spirit). |
-| `nx::base64_encode` | `strings/base64.h` | Standard RFC 4648 base64 with padding. |
+| `nx::base64_encode` | `strings/base64.h` | Standard RFC 4648 base64 with padding; `base64url_encode` is the URL-safe alphabet without padding, as URLs and PKCE want it. |
 | `nx::format` / `nx::format_to` | `strings/format.h` | `std::format` returning `nx::string`, plus a bounded `format_to(char[N], ...)` for stack buffers. A `std::formatter` for `nx::string` is provided. |
 
 ## ECS registry
@@ -168,7 +168,7 @@ non-inlined calls.
 | --- | --- | --- |
 | `nx::fs::path_view` | `platform/filesystem.h` | A non-owning view over a UTF-8 path with lexical queries (filename, stem, extension, parent, join). Also: whole-file read/write, atomic replacement through `staged_file`/`file_write_atomic`, directory helpers, `executable_dir()`, platform-standard per-user `application_data_dir()`, and a seekable `stream` abstraction (`open_file`/`open_memory` returning an RAII `stream_ptr`; `open_file_views` opens a file once for streams with cursors of their own, readable from any thread, while the file may be deleted or replaced on disk). |
 | `nx::vmem` | `platform/os.h` | Virtual-memory reservation/commit/protect and page-size/granularity queries. |
-| `nx::os` | `platform/os.h` | Process/system queries: resident and peak memory (`mem_get_stats`), a monotonic clock (`ticks_ns`/`ticks_ms`), and total physical RAM (`system_ram_mb`). |
+| `nx::os` | `platform/os.h` | Process/system queries: resident and peak memory (`mem_get_stats`), a monotonic clock (`ticks_ns`/`ticks_ms`), total physical RAM (`system_ram_mb`), and bytes from the operating system's cryptographically secure generator (`random_bytes`: BCrypt on Windows, `arc4random_buf` on Apple, `/dev/urandom` elsewhere). |
 | `nx::process` | `platform/process.h` | Runs a child process on Windows, Linux and macOS with no input, standard output and error captured together up to a limit (the rest is read and dropped), the environment given or the parent's, and a timeout. A timeout kills the child and what it started, through a job object on Windows and the child's own process group elsewhere. It blocks: call it from `nx::fiber::run_blocking`. `quote_argument` spells an argument for a Windows command line. |
 
 ## Diagnostics
@@ -192,7 +192,8 @@ non-inlined calls.
 | `nx::scope_guard` | `core/scope_guard.h` | Run an action on scope exit unless dismissed. Also `scoped_exit()` and the Go-style `defer { ... };` macro. |
 | `nx::scoped_value` | `core/scope_guard.h` | Temporarily replace a value and restore it on scope exit, including correctly nested scopes. |
 | `nx::Guid` | `core/random.h` | A 128-bit unique identifier (UUID): parse, format, compare, hash. Generate via `nx::Rng::guid()`. |
-| `nx::Rng` | `core/random.h` | A seedable pseudo-random generator. |
+| `nx::Rng` | `core/random.h` | A seedable pseudo-random generator; not for secrets, which come from `nx::os::random_bytes`. |
+| `nx::sha256` | `core/sha256.h` | The SHA-256 digest (FIPS 180-4) of a byte span, for identities and checks such as PKCE; not a password hash. |
 
 ## Core
 

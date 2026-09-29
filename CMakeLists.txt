@@ -8,6 +8,7 @@ set(NX_FOUNDATION_HEADERS
   core/random.h
   core/result.h
   core/scope_guard.h
+  core/sha256.h
   core/time.h
   core/type_index.h
 
@@ -92,6 +93,7 @@ set(NX_FOUNDATION_HEADERS
 set(NX_FOUNDATION_SOURCES
   core/foundation.cpp
   core/random.cpp
+  core/sha256.cpp
   fibers/context.cpp
   fibers/scheduler.cpp
   fibers/stack.cpp
@@ -177,7 +179,7 @@ target_link_libraries(nx_foundation
 
 if(WIN32)
   target_link_libraries(nx_foundation PRIVATE
-    Synchronization Psapi ws2_32 Dbghelp Shell32 Ole32)
+    Synchronization Psapi ws2_32 Dbghelp Shell32 Ole32 Bcrypt)
 elseif(ANDROID)
   target_link_libraries(nx_foundation PRIVATE log)
 elseif(UNIX)

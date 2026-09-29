@@ -4,6 +4,8 @@
 #include "core/foundation/core/time.h"
 #include "core/foundation/strings/format.h"
 
+#include <algorithm>
+#include <cerrno>
 #include <chrono>
 
 #if NX_USE_MIMALLOC
@@ -13,8 +15,11 @@
 #if NX_HAS_WINDOWS_API
 #include <windows.h>
 // Do not reorder!
+#include <bcrypt.h>
 #include <psapi.h>
 #elif NX_PLATFORM_POSIX
+#include <fcntl.h>
+#include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
@@ -388,6 +393,45 @@ u32 process_id() noexcept {
   return nx::cast<u32>(::getpid());
 #else
   return 0;
+#endif
+}
+
+bool random_bytes(const std::span<u8> out) noexcept {
+#if NX_HAS_WINDOWS_API
+  u8 *at = out.data();
+  usize left = out.size();
+  while (left > 0) {
+    const ULONG chunk = nx::cast<ULONG>(std::min<usize>(left, 1u << 30));
+    if (!BCRYPT_SUCCESS(::BCryptGenRandom(nullptr, at, chunk,
+                                          BCRYPT_USE_SYSTEM_PREFERRED_RNG)))
+      return false;
+    at += chunk;
+    left -= chunk;
+  }
+  return true;
+#elif NX_PLATFORM_APPLE
+  ::arc4random_buf(out.data(), out.size());
+  return true;
+#elif NX_PLATFORM_POSIX
+  // Not getrandom(): bionic has it only from API 28.
+  const int file = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+  if (file < 0)
+    return false;
+  usize done = 0;
+  while (done < out.size()) {
+    const ssize_t got = ::read(file, out.data() + done, out.size() - done);
+    if (got <= 0) {
+      if (got < 0 && errno == EINTR)
+        continue;
+      break;
+    }
+    done += nx::cast<usize>(got);
+  }
+  ::close(file);
+  return done == out.size();
+#else
+  (void)out;
+  return false;
 #endif
 }
 
