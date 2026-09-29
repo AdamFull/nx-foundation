@@ -180,6 +180,8 @@ target_link_libraries(nx_foundation
 if(WIN32)
   target_link_libraries(nx_foundation PRIVATE
     Synchronization Psapi ws2_32 Dbghelp Shell32 Ole32 Bcrypt)
+elseif(APPLE)
+  target_link_libraries(nx_foundation PRIVATE "-framework CoreFoundation")
 elseif(ANDROID)
   target_link_libraries(nx_foundation PRIVATE log)
 elseif(UNIX)

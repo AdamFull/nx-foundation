@@ -39,6 +39,7 @@
 #endif
 
 #if NX_PLATFORM_APPLE
+#include <CoreFoundation/CoreFoundation.h>
 #include <mach-o/dyld.h>
 #include <sys/sysctl.h>
 #endif
@@ -339,6 +340,82 @@ usize device_model(char *const out, const usize capacity) noexcept {
                      &size) != ERROR_SUCCESS)
     return say(out, capacity, "");
   return say(out, capacity, model);
+#else
+  return say(out, capacity, "");
+#endif
+}
+
+usize region_of_locale(const char *const locale, char *const out,
+                       const usize capacity) noexcept {
+  if (locale == nullptr)
+    return say(out, capacity, "");
+  // Subtags after the language, up to an encoding or modifier.
+  usize at = 0;
+  while (locale[at] != '\0' && locale[at] != '_' && locale[at] != '-' &&
+         locale[at] != '.' && locale[at] != '@')
+    ++at;
+  char found[3] = {};
+  while (locale[at] == '_' || locale[at] == '-') {
+    const usize start = ++at;
+    while (locale[at] != '\0' && locale[at] != '_' && locale[at] != '-' &&
+           locale[at] != '.' && locale[at] != '@')
+      ++at;
+    const auto letter = [](const char c) {
+      return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+    };
+    if (at - start == 2 && letter(locale[start]) && letter(locale[start + 1]))
+      for (usize i = 0; i < 2; ++i) {
+        const char c = locale[start + i];
+        found[i] = c >= 'a' && c <= 'z' ? nx::cast<char>(c - 'a' + 'A') : c;
+      }
+  }
+  return say(out, capacity, found);
+}
+
+usize region(char *const out, const usize capacity) noexcept {
+#if NX_HAS_WINDOWS_API
+  wchar_t iso[8] = {};
+  const GEOID nation = ::GetUserGeoID(GEOCLASS_NATION);
+  if (nation != GEOID_NOT_AVAILABLE &&
+      ::GetGeoInfoW(nation, GEO_ISO2, iso, 8, 0) == 3) {
+    const char text[] = {'x', '-', nx::cast<char>(iso[0]),
+                         nx::cast<char>(iso[1]), '\0'};
+    return region_of_locale(text, out, capacity);
+  }
+  wchar_t name[LOCALE_NAME_MAX_LENGTH] = {};
+  if (::GetUserDefaultLocaleName(name, LOCALE_NAME_MAX_LENGTH) == 0)
+    return say(out, capacity, "");
+  char narrow[LOCALE_NAME_MAX_LENGTH] = {};
+  for (usize i = 0; i + 1 < LOCALE_NAME_MAX_LENGTH && name[i] != 0; ++i)
+    narrow[i] = name[i] < 128 ? nx::cast<char>(name[i]) : '?';
+  return region_of_locale(narrow, out, capacity);
+#elif NX_PLATFORM_ANDROID
+  // Set when the user picks a language; the build's own locale otherwise.
+  char locale[96] = {};
+  if (android_property("persist.sys.locale", locale, sizeof(locale)) == 0)
+    android_property("ro.product.locale", locale, sizeof(locale));
+  return region_of_locale(locale, out, capacity);
+#elif NX_PLATFORM_APPLE
+  const CFLocaleRef locale = ::CFLocaleCopyCurrent();
+  if (locale == nullptr)
+    return say(out, capacity, "");
+  char code[8] = {};
+  const auto country = static_cast<CFStringRef>(
+      ::CFLocaleGetValue(locale, kCFLocaleCountryCode));
+  const bool read =
+      country != nullptr &&
+      ::CFStringGetCString(country, code, sizeof(code), kCFStringEncodingUTF8);
+  ::CFRelease(locale);
+  char name[16] = {};
+  nx::format_to(name, "x-{}", nx::string_view(read ? code : ""));
+  return region_of_locale(name, out, capacity);
+#elif NX_PLATFORM_POSIX
+  for (const char *const variable : {"LC_ALL", "LC_MESSAGES", "LANG"}) {
+    const char *const value = ::getenv(variable);
+    if (value != nullptr && value[0] != '\0')
+      return region_of_locale(value, out, capacity);
+  }
+  return say(out, capacity, "");
 #else
   return say(out, capacity, "");
 #endif

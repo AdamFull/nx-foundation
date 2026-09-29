@@ -42,6 +42,12 @@ u32 system_ram_mb() noexcept;
 
 usize os_version(char *out, usize capacity) noexcept;
 usize device_model(char *out, usize capacity) noexcept;
+// The country or region the user's settings name, as two upper-case ISO 3166
+// letters ("GB"); empty where it cannot be told.
+usize region(char *out, usize capacity) noexcept;
+// The region a locale name holds: "en_US.UTF-8", "en-GB" and "zh-Hans-CN"
+// give "US", "GB" and "CN"; "C" and "es-419" give nothing.
+usize region_of_locale(const char *locale, char *out, usize capacity) noexcept;
 usize cpu_brand(char *out, usize capacity) noexcept;
 
 u32 process_id() noexcept;
