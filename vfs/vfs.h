@@ -9,6 +9,7 @@
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/threading/sync.h"
 
+#include <optional>
 #include <span>
 
 namespace nx::vfs {
@@ -184,6 +185,14 @@ void unmount_all();
 [[nodiscard]] io_result<stream_ptr> open(path_view vpath);
 [[nodiscard]] FileInfo stat(path_view vpath);
 [[nodiscard]] bool exists(path_view vpath);
+
+/// @p reference, a path that the file at @p file names, as a path to read:
+/// an absolute one as written, a relative one in @p file's folder. Nothing
+/// for a relative one with an empty, "." or ".." part, which could name
+/// something outside that folder. With @p file empty, a relative one is only
+/// checked and stays relative. An empty reference stays empty.
+[[nodiscard]] std::optional<nx::string>
+resolve_beside(nx::string_view file, nx::string_view reference);
 [[nodiscard]] io_result<nx::vector<DirEntry>> list(path_view vdir);
 
 /// Stable hot-reload generation from a virtual path and its observable file

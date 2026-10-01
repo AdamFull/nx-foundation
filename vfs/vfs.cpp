@@ -267,6 +267,27 @@ FileInfo stat(const path_view vpath) {
 
 bool exists(const path_view vpath) { return stat(vpath).exists; }
 
+std::optional<nx::string> resolve_beside(const nx::string_view file,
+                                         const nx::string_view reference) {
+  if (reference.empty() || reference.front() == '/')
+    return nx::string(reference);
+  for (nx::string_view rest = reference;;) {
+    const usize slash = rest.find('/');
+    const nx::string_view part = rest.substr(0, slash);
+    if (part.empty() || part == "." || part == "..")
+      return std::nullopt;
+    if (slash == nx::string_view::npos)
+      break;
+    rest.remove_prefix(slash + 1);
+  }
+  const usize slash = file.rfind('/');
+  if (slash == nx::string_view::npos)
+    return nx::string(reference);
+  nx::string out(file.substr(0, slash + 1));
+  out += reference;
+  return out;
+}
+
 bool detail::resolve_native_read(const path_view vpath, NativeReadFile &out) {
   const nx::string v = canon_vpath(vpath);
   if (v.empty())
