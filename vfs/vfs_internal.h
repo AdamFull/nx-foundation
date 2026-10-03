@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/foundation/containers/hash_map.h"
+#include "core/foundation/containers/string_set.h"
 #include "core/foundation/vfs/vfs.h"
 
 #include <cstring>
@@ -74,11 +74,11 @@ private:
 class ChildSet {
 public:
   [[nodiscard]] bool insert(const nx::string_view name) {
-    return m_seen.try_emplace(nx::string(name), u8{0}).second;
+    return m_seen.insert(nx::string(name)).second;
   }
 
 private:
-  nx::hash_map<nx::string, u8> m_seen;
+  nx::string_set m_seen;
 };
 
 } // namespace nx::vfs::detail
