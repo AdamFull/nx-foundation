@@ -23,14 +23,17 @@ set(NX_FOUNDATION_HEADERS
   containers/fixed_vector.h
   containers/flat_map.h
   containers/hash_map.h
+  containers/hash_set.h
   containers/owned_blob_slice.h
   containers/ring_buffer.h
   containers/slot_map.h
   containers/radix_sort.h
+  containers/raw_hash_table.h
   containers/small_vector.h
   containers/sparse_set.h
   containers/stream_compact.h
   containers/string_map.h
+  containers/string_set.h
   containers/stable_pool.h
   containers/sync_slot_map.h
 
