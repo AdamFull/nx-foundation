@@ -47,6 +47,19 @@ template <class V>
 }
 
 template <class V>
+[[nodiscard]] V read_vec3(const value &v, const V &fallback) noexcept {
+  return V{cast<f32>(at_or(v, 0, cast<f64>(fallback.x))),
+           cast<f32>(at_or(v, 1, cast<f64>(fallback.y))),
+           cast<f32>(at_or(v, 2, cast<f64>(fallback.z)))};
+}
+
+template <class V>
+[[nodiscard]] V read_vec3(const value &owner, const string_view key,
+                          const V &fallback) noexcept {
+  return read_vec3(owner[key], fallback);
+}
+
+template <class V>
 [[nodiscard]] V read_vec4(const value &v, const V &fallback) noexcept {
   return V{cast<f32>(at_or(v, 0, cast<f64>(fallback.x))),
            cast<f32>(at_or(v, 1, cast<f64>(fallback.y))),
@@ -64,6 +77,14 @@ template <class V> [[nodiscard]] value write_vec2(const V &v) {
   value a = value::make_array();
   a.push_back(value(cast<f64>(v.x)));
   a.push_back(value(cast<f64>(v.y)));
+  return a;
+}
+
+template <class V> [[nodiscard]] value write_vec3(const V &v) {
+  value a = value::make_array();
+  a.push_back(value(cast<f64>(v.x)));
+  a.push_back(value(cast<f64>(v.y)));
+  a.push_back(value(cast<f64>(v.z)));
   return a;
 }
 
