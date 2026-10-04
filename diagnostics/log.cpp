@@ -255,6 +255,9 @@ struct Logger {
   std::atomic<u64> enqueued{0};
   std::atomic<u64> processed{0};
   std::atomic<bool> running{false};
+  /// Set by init() until shutdown(). Before then stderr is the output, and a
+  /// sink added meanwhile observes records beside it rather than replacing it.
+  std::atomic<bool> configured{false};
 
   /// Guards attaching and detaching the pool.
   mutex pool_mutex;
@@ -278,11 +281,10 @@ Logger &logger() noexcept {
 
 void write_record(Logger &l, const Record &r) noexcept {
   scoped_lock lock(l.sink_mutex);
-  if (l.sinks.empty()) {
+  if (l.sinks.empty() || !l.configured.load(std::memory_order_acquire)) {
     char buf[LINE_CAPACITY];
     const usize n = format_record(buf, sizeof(buf), r, stderr_is_tty(), false);
     fwrite(buf, 1, n, stderr);
-    return;
   }
   for (Sink *s : l.sinks)
     s->write(r);
@@ -444,6 +446,7 @@ void init(const Config &config) {
                             config.file_max_files));
 
   l.queue = allocate<mpmc::Queue<Record, LOG_QUEUE_CAPACITY>>();
+  l.configured.store(true, std::memory_order_release);
   l.running.store(true, std::memory_order_release);
 }
 
@@ -485,6 +488,7 @@ void shutdown_impl(Logger &l) noexcept {
     release(s);
   }
   l.sinks.clear();
+  l.configured.store(false, std::memory_order_release);
 }
 
 Logger::~Logger() { shutdown_impl(*this); }

@@ -116,6 +116,8 @@ void attach_drain_pool(thread_pool &pool);
 /// written. Does nothing unless @p pool is the attached one.
 void detach_drain_pool(thread_pool &pool);
 
+/// Until init(), records go to stderr whatever sinks are added: a sink such as
+/// an engine's in-game console then observes the log without silencing it.
 /// Adds a sink; the logger takes ownership and destroys it (via nx::release)
 /// on remove_sink()/shutdown(). The sink must therefore be created with
 /// nx::allocate — the make_*_sink() factories below do this for you.
