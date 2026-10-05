@@ -240,6 +240,11 @@ public:
   [[nodiscard]] u32 format() const noexcept { return m_format; }
   [[nodiscard]] u16 version() const noexcept { return m_version; }
   [[nodiscard]] u16 flags() const noexcept { return m_flags; }
+  [[nodiscard]] u32 chunk_count() const noexcept { return m_count; }
+  /// The id of the @p i th chunk in the table; @p i < chunk_count().
+  [[nodiscard]] u32 chunk_id(const u32 i) const {
+    return u32_at(m_bytes, 16 + usize(i) * 12);
+  }
 
   [[nodiscard]] std::span<const u8> chunk(const u32 id) const {
     for (u32 i = 0; i < m_count; ++i) {
