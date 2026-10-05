@@ -156,6 +156,7 @@ inline constexpr Format json_document_formats[] = {
     {".nxloc", ".nxloc.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxstyle", ".nxstyle.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxicons", ".nxicons.nxb", nva::fourcc('N', 'X', 'J', 'D')},
+    {".nxdata", ".nxdata.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxmat", ".nxmat.nxb", nva::fourcc('N', 'X', 'J', 'D'), true},
 };
 inline constexpr Format luau_formats[] = {
