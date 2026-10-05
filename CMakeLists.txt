@@ -72,6 +72,7 @@ set(NX_FOUNDATION_HEADERS
   threading/workload.h
 
   platform/filesystem.h
+  platform/windows_path.h
   platform/native_window.h
   platform/os.h
   platform/process.h

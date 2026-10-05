@@ -2,9 +2,13 @@
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/scope_guard.h"
 #include "core/foundation/platform/os.h"
+#include "core/foundation/platform/windows_path.h"
 #include "core/foundation/strings/format.h"
 
 #include <atomic>
+#include <cwchar>
+#include <iterator>
+#include <limits>
 #include <optional>
 
 #if defined(NX_PLATFORM_WINDOWS)
@@ -138,11 +142,13 @@ struct handle_guard {
   }
 };
 
-// Converts a UTF-8 path to a null-terminated UTF-16 path. Uses the stack for
-// the common case and heaps only for very long paths.
+// Converts a UTF-8 path to a null-terminated UTF-16 path, extended-length
+// when it is too long for the plain form. Uses the stack for the common case
+// and heaps only for very long paths.
 struct wide_path {
   wchar_t stack[512];
   vector<wchar_t> heap;
+  vector<wchar_t> extended;
   wchar_t *ptr = nullptr;
   bool ok = false;
 
@@ -172,10 +178,34 @@ struct wide_path {
     if (wrote != need)
       return;
     dst[need] = L'\0';
-    ptr = dst;
+    ptr = detail::extend_win32_path(dst, extended) ? extended.data() : dst;
     ok = true;
   }
 };
+
+/// The length of an extended-length path's prefix and root, `\\?\C:\` or
+/// `\\?\UNC\server\share\`, none of which is a directory to make; 0 for any
+/// other path.
+[[nodiscard]] usize extended_root_length(const wchar_t *const path) noexcept {
+  constexpr wchar_t PREFIX[] = L"\\\\?\\";
+  constexpr wchar_t UNC[] = L"UNC\\";
+  constexpr usize prefix = std::size(PREFIX) - 1;
+  if (std::wcsncmp(path, PREFIX, prefix) != 0)
+    return 0;
+  const wchar_t *s = path + prefix;
+  if (std::wcsncmp(s, UNC, std::size(UNC) - 1) == 0) {
+    s += std::size(UNC) - 1;
+    for (u32 segment = 0; segment < 2; ++segment) {
+      while (*s != L'\0' && *s != L'\\')
+        ++s;
+      if (*s == L'\\')
+        ++s;
+    }
+  } else if (s[0] != L'\0' && s[1] == L':') {
+    s += s[2] == L'\\' ? 3 : 2;
+  }
+  return nx::cast<usize>(s - path);
+}
 
 #elif defined(NX_PLATFORM_POSIX)
 
@@ -265,6 +295,62 @@ i32 open_retry(const char *path, i32 flags, mode_t mode) noexcept {
 
 #if defined(NX_PLATFORM_WINDOWS)
 
+namespace detail {
+
+bool extend_win32_path(const wchar_t *const path, vector<wchar_t> &out) {
+  if (path == nullptr || path[0] == L'\0' ||
+      (path[0] == L'\\' && path[1] == L'\\' &&
+       (path[2] == L'?' || path[2] == L'.') && path[3] == L'\\'))
+    return false;
+  // The plain form resolves relative paths, separators, "." and ".."; the
+  // extended form takes the path as it is, so it gets the resolved one.
+  const DWORD need = ::GetFullPathNameW(path, 0, nullptr, nullptr);
+  if (need == 0 || need - 1 < WIN32_LONG_PATH)
+    return false;
+  vector<wchar_t> full(need);
+  const DWORD length = ::GetFullPathNameW(path, need, full.data(), nullptr);
+  if (length == 0 || length >= need)
+    return false;
+  // "\\server\share" becomes "\\?\UNC\server\share", "C:\" "\\?\C:\".
+  const bool unc = full[0] == L'\\' && full[1] == L'\\';
+  constexpr wchar_t UNC_PREFIX[] = L"\\\\?\\UNC";
+  constexpr wchar_t DRIVE_PREFIX[] = L"\\\\?\\";
+  const wchar_t *const prefix = unc ? UNC_PREFIX : DRIVE_PREFIX;
+  const usize prefix_length =
+      unc ? std::size(UNC_PREFIX) - 1 : std::size(DRIVE_PREFIX) - 1;
+  const usize skip = unc ? 1 : 0;
+  out.clear();
+  out.reserve(prefix_length + length - skip + 1);
+  out.insert(out.end(), prefix, prefix + prefix_length);
+  out.insert(out.end(), full.data() + skip, full.data() + length);
+  out.push_back(L'\0');
+  return true;
+}
+
+vector<wchar_t> win32_path(const string_view path) {
+  vector<wchar_t> out;
+  if (path.empty() ||
+      path.size() > nx::cast<usize>(std::numeric_limits<i32>::max()))
+    return out;
+  const i32 need =
+      ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(),
+                            nx::cast<i32>(path.size()), nullptr, 0);
+  if (need <= 0)
+    return out;
+  out.resize(nx::cast<usize>(need) + 1);
+  if (::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(),
+                            nx::cast<i32>(path.size()), out.data(),
+                            need) != need) {
+    out.clear();
+    return out;
+  }
+  out[nx::cast<usize>(need)] = L'\0';
+  vector<wchar_t> extended;
+  return extend_win32_path(out.data(), extended) ? extended : out;
+}
+
+} // namespace detail
+
 io_result<blob<u8>> file_read(const path_view path) {
   const wide_path wp(path);
   if (!wp.ok)
@@ -342,7 +428,7 @@ io_result<void> create_directories(const path_view path) {
     return err(map_last_error(io_error::OpenFailed));
   };
 
-  for (wchar_t *s = wp.ptr; *s; ++s) {
+  for (wchar_t *s = wp.ptr + extended_root_length(wp.ptr); *s; ++s) {
     if (*s == L'/' || *s == L'\\') {
       const wchar_t saved = *s;
       *s = L'\0';

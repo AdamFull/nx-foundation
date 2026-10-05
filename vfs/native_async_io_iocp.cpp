@@ -2,6 +2,8 @@
 
 #if defined(NX_PLATFORM_WINDOWS)
 
+#include "core/foundation/platform/windows_path.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -47,21 +49,7 @@ constexpr ULONG_PTR WAKE_KEY = 1;
 }
 
 [[nodiscard]] nx::vector<wchar_t> widen(const nx::string_view path) {
-  if (path.empty() ||
-      path.size() > nx::cast<usize>(std::numeric_limits<int>::max()))
-    return {};
-  const int required =
-      ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(),
-                            nx::cast<int>(path.size()), nullptr, 0);
-  if (required <= 0)
-    return {};
-  nx::vector<wchar_t> result(nx::cast<usize>(required) + 1u);
-  if (::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(),
-                            nx::cast<int>(path.size()), result.data(),
-                            required) != required)
-    return {};
-  result[nx::cast<usize>(required)] = L'\0';
-  return result;
+  return nx::fs::detail::win32_path(path);
 }
 
 class IocpAsyncIo final : public NativeAsyncIo {
