@@ -36,6 +36,16 @@ reserved_source_suffix(const string_view suffix) noexcept {
 
 } // namespace
 
+string cooked_path(const string_view path, const string_view kind_suffix) {
+  const usize slash = path.find_last_of("/\\");
+  const usize name = slash == string_view::npos ? 0 : slash + 1;
+  const usize dot = path.find_last_of('.');
+  const usize stem = dot != string_view::npos && dot > name ? dot : path.size();
+  string out(path.substr(0, stem));
+  out += kind_suffix;
+  return out;
+}
+
 string_view to_string(const RegistryError error) noexcept {
   switch (error) {
   case RegistryError::None:
@@ -59,7 +69,8 @@ string_view to_string(const RegistryError error) noexcept {
   case RegistryError::DuplicateSourceSuffix:
     return "a source suffix is already registered";
   case RegistryError::DuplicatePublishedSuffix:
-    return "a published suffix is already registered";
+    return "a published suffix is already registered for another "
+           "container";
   }
   return "unknown registry error";
 }
@@ -95,7 +106,8 @@ Registry::add(const string_view name, const std::span<const Format> formats,
     for (const RegisteredFormat &registered : m_formats) {
       if (registered.format.source_suffix == format.source_suffix)
         return RegistryError::DuplicateSourceSuffix;
-      if (registered.format.published_suffix == format.published_suffix)
+      if (registered.format.published_suffix == format.published_suffix &&
+          registered.format.nva_format != format.nva_format)
         return RegistryError::DuplicatePublishedSuffix;
     }
     for (const string_view registered : m_embedded_sources)
@@ -104,7 +116,8 @@ Registry::add(const string_view name, const std::span<const Format> formats,
     for (usize previous = 0; previous < i; ++previous) {
       if (formats[previous].source_suffix == format.source_suffix)
         return RegistryError::DuplicateSourceSuffix;
-      if (formats[previous].published_suffix == format.published_suffix)
+      if (formats[previous].published_suffix == format.published_suffix &&
+          formats[previous].nva_format != format.nva_format)
         return RegistryError::DuplicatePublishedSuffix;
     }
   }

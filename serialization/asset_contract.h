@@ -2,6 +2,7 @@
 
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/serialization/nva.h"
+#include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/strings/utf8_string_view.h"
 
 #include <optional>
@@ -19,8 +20,33 @@ enum class SourceKind : u8 {
   Unsupported,
 };
 
-/// One source suffix and the exact versioned container it may publish. The
-/// descriptor and its strings must outlive the Registry they are added to.
+/// What a cooked file is named by when its source is media or a scene: what
+/// it is, not the format it came from. `hero.png` and `hero.webp` both cook to
+/// `hero.tex.nxb`, so one folder may hold only one of them.
+inline constexpr string_view TEXTURE_SUFFIX = ".tex.nxb";
+inline constexpr string_view AUDIO_SUFFIX = ".audio.nxb";
+inline constexpr string_view FONT_SUFFIX = ".font.nxb";
+/// A 3D scene source's sub-asset index; its sub-assets cook into a folder
+/// beside it named for it, `hero.scene3d.d`.
+inline constexpr string_view SCENE3D_SUFFIX = ".scene3d.nxb";
+inline constexpr string_view MESH_SUFFIX = ".mesh.nxb";
+inline constexpr string_view GEOMETRY_SUFFIX = ".geom.nxb";
+inline constexpr string_view MATERIAL3D_SUFFIX = ".mat3d.nxb";
+inline constexpr string_view SKELETON_SUFFIX = ".skel.nxb";
+inline constexpr string_view SKIN_SUFFIX = ".skin.nxb";
+inline constexpr string_view CLIP_SUFFIX = ".clip.nxb";
+inline constexpr string_view PREFAB_SUFFIX = ".prefab.nxb";
+
+/// The cooked file of the authored @p path, a source cooked by its kind: the
+/// suffix its file name ends in, from its last dot, gives way to
+/// @p kind_suffix (`/ui/hero.png` and TEXTURE_SUFFIX make
+/// `/ui/hero.tex.nxb`). A name without a dot has @p kind_suffix appended.
+[[nodiscard]] string cooked_path(string_view path, string_view kind_suffix);
+
+/// One source suffix and the exact versioned container it may publish. Formats
+/// may publish one suffix only when they publish one container, so a cooked
+/// name tells its container though not which of them made it. The descriptor
+/// and its strings must outlive the Registry they are added to.
 struct Format {
   string_view source_suffix;
   string_view published_suffix;
@@ -163,24 +189,24 @@ inline constexpr Format luau_formats[] = {
     {".luau", ".luau.nxb", nva::fourcc('N', 'X', 'L', 'U')},
 };
 inline constexpr Format audio_formats[] = {
-    {".wav", ".wav.nxb", nva::fourcc('N', 'X', 'A', 'U'), true},
-    {".ogg", ".ogg.nxb", nva::fourcc('N', 'X', 'A', 'U'), true},
-    {".flac", ".flac.nxb", nva::fourcc('N', 'X', 'A', 'U'), true},
-    {".opus", ".opus.nxb", nva::fourcc('N', 'X', 'A', 'U'), true},
+    {".wav", AUDIO_SUFFIX, nva::fourcc('N', 'X', 'A', 'U'), true},
+    {".ogg", AUDIO_SUFFIX, nva::fourcc('N', 'X', 'A', 'U'), true},
+    {".flac", AUDIO_SUFFIX, nva::fourcc('N', 'X', 'A', 'U'), true},
+    {".opus", AUDIO_SUFFIX, nva::fourcc('N', 'X', 'A', 'U'), true},
 };
 inline constexpr Format font_formats[] = {
-    {".ttf", ".ttf.nxb", nva::fourcc('N', 'X', 'F', 'T'), true},
-    {".otf", ".otf.nxb", nva::fourcc('N', 'X', 'F', 'T'), true},
-    {".ttc", ".ttc.nxb", nva::fourcc('N', 'X', 'F', 'T'), true},
-    {".otc", ".otc.nxb", nva::fourcc('N', 'X', 'F', 'T'), true},
+    {".ttf", FONT_SUFFIX, nva::fourcc('N', 'X', 'F', 'T'), true},
+    {".otf", FONT_SUFFIX, nva::fourcc('N', 'X', 'F', 'T'), true},
+    {".ttc", FONT_SUFFIX, nva::fourcc('N', 'X', 'F', 'T'), true},
+    {".otc", FONT_SUFFIX, nva::fourcc('N', 'X', 'F', 'T'), true},
 };
 inline constexpr Format texture_formats[] = {
-    {".png", ".png.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
-    {".jpg", ".jpg.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
-    {".jpeg", ".jpeg.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
-    {".webp", ".webp.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
-    {".hdr", ".hdr.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
-    {".ktx2", ".ktx2.nxb", nva::fourcc('T', 'E', 'X', ' '), true},
+    {".png", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
+    {".jpg", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
+    {".jpeg", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
+    {".webp", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
+    {".hdr", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
+    {".ktx2", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
 };
 
 inline constexpr Family core_families[] = {
