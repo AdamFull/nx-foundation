@@ -473,6 +473,48 @@ u32 process_id() noexcept {
 #endif
 }
 
+std::optional<string> environment_variable(const string_view name) {
+  if (name.empty())
+    return std::nullopt;
+#if NX_HAS_WINDOWS_API
+  const int name_length = ::MultiByteToWideChar(
+      CP_UTF8, 0, name.data(), nx::cast<int>(name.size()), nullptr, 0);
+  if (name_length <= 0)
+    return std::nullopt;
+  vector<wchar_t> wide_name(nx::cast<usize>(name_length) + 1, L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, name.data(), nx::cast<int>(name.size()),
+                        wide_name.data(), name_length);
+  vector<wchar_t> value;
+  DWORD length = 0;
+  // Another thread may lengthen the value between the two calls.
+  for (DWORD room = 256;;) {
+    value.resize(room);
+    ::SetLastError(ERROR_SUCCESS);
+    length = ::GetEnvironmentVariableW(wide_name.data(), value.data(), room);
+    if (length < room)
+      break;
+    room = length;
+  }
+  // 0 is both an empty value and none at all.
+  if (length == 0)
+    return ::GetLastError() == ERROR_ENVVAR_NOT_FOUND
+               ? std::nullopt
+               : std::optional<string>(string());
+  const int bytes =
+      ::WideCharToMultiByte(CP_UTF8, 0, value.data(), nx::cast<int>(length),
+                            nullptr, 0, nullptr, nullptr);
+  string out;
+  out.resize(nx::cast<usize>(bytes));
+  ::WideCharToMultiByte(CP_UTF8, 0, value.data(), nx::cast<int>(length),
+                        out.data(), bytes, nullptr, nullptr);
+  return out;
+#else
+  const string key(name);
+  const char *const value = ::getenv(key.c_str());
+  return value != nullptr ? std::optional<string>(string(value)) : std::nullopt;
+#endif
+}
+
 bool random_bytes(const std::span<u8> out) noexcept {
 #if NX_HAS_WINDOWS_API
   u8 *at = out.data();

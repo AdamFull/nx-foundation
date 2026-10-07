@@ -1,7 +1,9 @@
 #pragma once
 
 #include "core/foundation/core/enum.h"
+#include "core/foundation/strings/utf8_string.h"
 
+#include <optional>
 #include <span>
 
 namespace nx::vmem {
@@ -52,6 +54,11 @@ usize cpu_brand(char *out, usize capacity) noexcept;
 
 u32 process_id() noexcept;
 usize executable_path(char *out, usize capacity) noexcept;
+
+// The value of the environment variable @p name, in UTF-8 whatever the
+// platform keeps it in (Windows' narrow environment is the ANSI code page);
+// nothing when it is not set.
+[[nodiscard]] std::optional<string> environment_variable(string_view name);
 
 // Fills @p out from the operating system's cryptographically secure generator,
 // for keys, nonces and the like; false where it has none or it failed.
