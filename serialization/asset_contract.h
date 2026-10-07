@@ -200,6 +200,10 @@ inline constexpr Format font_formats[] = {
     {".ttc", FONT_SUFFIX, nva::fourcc('N', 'X', 'F', 'T'), true},
     {".otc", FONT_SUFFIX, nva::fourcc('N', 'X', 'F', 'T'), true},
 };
+/// A texture made of channels of others (assetc's composite_texture_cook.h).
+inline constexpr Format composite_texture_formats[] = {
+    {".nxcomposite", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
+};
 inline constexpr Format texture_formats[] = {
     {".png", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
     {".jpg", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
@@ -227,6 +231,7 @@ inline constexpr Family core_families[] = {
     {"audio", audio_formats},
     {"font", font_formats},
     {"texture", texture_formats},
+    {"composite-texture", composite_texture_formats},
 };
 
 } // namespace nx::asset_contract
