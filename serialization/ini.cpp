@@ -1,5 +1,9 @@
 #include "core/foundation/serialization/ini.h"
 
+#include "core/foundation/serialization/asset_policy.h"
+#include "core/foundation/serialization/nva.h"
+#include "core/foundation/vfs/vfs.h"
+
 namespace nx::ini {
 namespace {
 
@@ -420,6 +424,91 @@ nx::result<nx::string, ParseError> assign(const nx::string_view text,
   out.append(newline);
   out.append(added.view());
   return out;
+}
+
+namespace {
+
+constexpr u32 COOKED_FORMAT = nx::nva::fourcc('N', 'X', 'I', 'N');
+constexpr u32 COOKED_ENTRIES = nx::nva::fourcc('E', 'N', 'T', 'S');
+constexpr u16 COOKED_VERSION = 1;
+
+} // namespace
+
+nx::vector<u8> encode(const Document &document) {
+  nx::nva::Writer entries;
+  entries.u32v(nx::cast<u32>(document.entries().size()));
+  for (const Entry &entry : document.entries()) {
+    entries.str(entry.section.view());
+    entries.str(entry.key.view());
+    entries.str(entry.value.view());
+  }
+  nx::nva::ChunkWriter container(COOKED_FORMAT, COOKED_VERSION);
+  container.add(COOKED_ENTRIES, entries.span());
+  return container.finish();
+}
+
+std::optional<Document> decode(const std::span<const u8> bytes) {
+  const auto view = nx::nva::View::open(bytes, COOKED_FORMAT);
+  if (!view || view->version() != COOKED_VERSION)
+    return std::nullopt;
+  nx::nva::Reader reader(view->chunk(COOKED_ENTRIES));
+  const u32 count = reader.u32v();
+  // Three empty strings are twelve bytes of lengths at least.
+  if (!reader.require_items(count, 12))
+    return std::nullopt;
+  Document out;
+  for (u32 i = 0; i < count; ++i) {
+    const nx::string_view section = reader.str();
+    const nx::string_view key = reader.str();
+    const nx::string_view value = reader.str();
+    if (!reader.ok() || !out.set(section, key, value))
+      return std::nullopt;
+  }
+  if (!reader.ok() || reader.remaining() != 0)
+    return std::nullopt;
+  return out;
+}
+
+nx::string_view LoadError::message() const noexcept {
+  switch (kind) {
+  case LoadErrorKind::NotFound:
+    return "not found";
+  case LoadErrorKind::Unreadable:
+    return "could not be read";
+  case LoadErrorKind::Malformed:
+    return "its cooked file is not a document of this version";
+  case LoadErrorKind::Invalid:
+    return parse.message();
+  }
+  return "unknown error";
+}
+
+nx::result<Document, LoadError> load(const nx::string_view source) {
+  nx::string cooked_path(source);
+  cooked_path += ".nxb";
+  const nx::vfs::FileInfo cooked_info = nx::vfs::stat(cooked_path.view());
+  if (cooked_info.exists) {
+    const auto cooked = nx::vfs::read(cooked_path.view());
+    if (!cooked)
+      return nx::err(LoadError{.kind = LoadErrorKind::Unreadable});
+    std::optional<Document> decoded = decode({cooked->data(), cooked->size()});
+    if (!decoded)
+      return nx::err(LoadError{.kind = LoadErrorKind::Malformed});
+    return std::move(*decoded);
+  }
+  if (!nx::asset_policy::can_fallback_to_authored_source(cooked_info.exists))
+    return nx::err(LoadError{.kind = LoadErrorKind::NotFound});
+  const auto text = nx::vfs::read_text(source);
+  if (!text)
+    return nx::err(
+        LoadError{.kind = text.error().kind == nx::fs::io_error::NotFound
+                              ? LoadErrorKind::NotFound
+                              : LoadErrorKind::Unreadable});
+  auto parsed = parse(text->view());
+  if (!parsed)
+    return nx::err(
+        LoadError{.kind = LoadErrorKind::Invalid, .parse = parsed.error()});
+  return std::move(parsed.value());
 }
 
 } // namespace nx::ini

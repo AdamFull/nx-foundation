@@ -188,6 +188,10 @@ inline constexpr Format json_document_formats[] = {
 inline constexpr Format luau_formats[] = {
     {".luau", ".luau.nxb", nva::fourcc('N', 'X', 'L', 'U')},
 };
+/// INI settings, as modules read their project configuration (nx::ini::load).
+inline constexpr Format ini_formats[] = {
+    {".ini", ".ini.nxb", nva::fourcc('N', 'X', 'I', 'N')},
+};
 inline constexpr Format audio_formats[] = {
     {".wav", AUDIO_SUFFIX, nva::fourcc('N', 'X', 'A', 'U'), true},
     {".ogg", AUDIO_SUFFIX, nva::fourcc('N', 'X', 'A', 'U'), true},
@@ -228,6 +232,7 @@ inline constexpr Family core_families[] = {
     {"paper-doll", paper_doll_formats},
     {"json-document", json_document_formats},
     {"luau", luau_formats},
+    {"ini", ini_formats},
     {"audio", audio_formats},
     {"font", font_formats},
     {"texture", texture_formats},

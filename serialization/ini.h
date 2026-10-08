@@ -3,6 +3,7 @@
 #include "core/foundation/core/result.h"
 #include "core/foundation/strings/utf8_string.h"
 
+#include <optional>
 #include <span>
 
 namespace nx::ini {
@@ -83,5 +84,35 @@ private:
                                                         nx::string_view section,
                                                         nx::string_view key,
                                                         nx::string_view value);
+
+/// @p document cooked: a versioned NVA container ('NXIN') of its entries in
+/// order, which is what a Shipping build reads in place of the text.
+[[nodiscard]] nx::vector<u8> encode(const Document &document);
+/// The document encode() made @p bytes from; nullopt when they are not one,
+/// of another version, or truncated.
+[[nodiscard]] std::optional<Document> decode(std::span<const u8> bytes);
+
+enum class LoadErrorKind : u8 {
+  /// Neither the cooked file nor, where allowed, the source is there.
+  NotFound,
+  Unreadable,
+  /// The cooked file is there but is not a document of this version.
+  Malformed,
+  /// The source text does not parse (LoadError::parse says where).
+  Invalid,
+};
+
+struct LoadError {
+  LoadErrorKind kind = LoadErrorKind::NotFound;
+  ParseError parse;
+
+  [[nodiscard]] nx::string_view message() const noexcept;
+};
+
+/// The INI asset at VFS path @p source (as `/config/modio.ini`): its cooked
+/// sibling `<source>.nxb` when there is one, else, outside Shipping
+/// (asset_policy), the source text parsed. A cooked file that does not decode
+/// is not hidden by its source.
+[[nodiscard]] nx::result<Document, LoadError> load(nx::string_view source);
 
 } // namespace nx::ini
