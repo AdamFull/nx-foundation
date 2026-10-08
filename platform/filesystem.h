@@ -6,7 +6,9 @@
 #include "core/foundation/core/result.h"
 #include "core/foundation/strings/utf8_string.h"
 
+#include <cstdint>
 #include <span>
+#include <utility>
 
 namespace nx::fs {
 namespace path {
@@ -100,8 +102,7 @@ constexpr bool has_extension(const string_view p) noexcept {
 /// Returns true when a normalized path is the normalized root itself or a
 /// descendant separated by a complete path component. This deliberately does
 /// not treat `root-other` as a child of `root`.
-constexpr bool is_within(const string_view p,
-                         const string_view root) noexcept {
+constexpr bool is_within(const string_view p, const string_view root) noexcept {
   return !root.empty() && p.size() >= root.size() &&
          p.substr(0, root.size()) == root &&
          (p.size() == root.size() || is_separator(p[root.size()]));
@@ -238,6 +239,8 @@ enum class io_error : u32 {
   OpenFailed,
   ReadFailed,
   WriteFailed,
+  /// Held by another: a file_lock someone else has.
+  Busy,
   Count,
 };
 
@@ -272,6 +275,8 @@ struct file_error {
     return "read failed";
   case io_error::WriteFailed:
     return "write failed";
+  case io_error::Busy:
+    return "held by another";
   default:
     return "unknown error";
   }
@@ -281,6 +286,40 @@ template <typename T> using io_result = result<T, file_error>;
 
 [[nodiscard]] io_result<blob<u8>> file_read(path_view path);
 [[nodiscard]] io_result<string> file_read_text(path_view path);
+
+/// An exclusive lock on a file, between processes and within one, held
+/// until it is released or destroyed. It is advisory: it keeps out only
+/// those who take it too. The file is made when missing and never removed,
+/// since removing one another process is about to lock would let two hold
+/// it at once.
+class [[nodiscard]] file_lock {
+public:
+  file_lock() noexcept = default;
+  ~file_lock() { release(); }
+  file_lock(const file_lock &) = delete;
+  file_lock &operator=(const file_lock &) = delete;
+  file_lock(file_lock &&other) noexcept
+      : m_native(std::exchange(other.m_native, NONE)) {}
+  file_lock &operator=(file_lock &&other) noexcept {
+    if (this != &other) {
+      release();
+      m_native = std::exchange(other.m_native, NONE);
+    }
+    return *this;
+  }
+
+  /// Takes the lock on @p path without waiting: io_error::Busy while
+  /// another has it.
+  [[nodiscard]] static io_result<file_lock> try_acquire(path_view path);
+
+  [[nodiscard]] bool held() const noexcept { return m_native != NONE; }
+  void release() noexcept;
+
+private:
+  static constexpr std::intptr_t NONE = -1;
+  /// A HANDLE on Windows, a descriptor elsewhere.
+  std::intptr_t m_native = NONE;
+};
 
 /// Stages a file beside its destination and publishes it with one rename.
 ///

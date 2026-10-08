@@ -21,6 +21,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #if defined(NX_PLATFORM_APPLE)
@@ -1260,6 +1261,75 @@ io_result<vector<directory_entry>> recursive_directory_entries(path_view root) {
   if (auto e = list_dir_posix(dir, out, true, 0))
     return err(*e);
   return out;
+}
+
+#endif
+
+#if defined(NX_PLATFORM_WINDOWS)
+
+io_result<file_lock> file_lock::try_acquire(const path_view path) {
+  const wide_path wp(path);
+  if (!wp.ok)
+    return err(file_error{io_error::InvalidArgument, 0});
+  // Shared, so others can open it to try for the lock themselves.
+  handle_guard g{
+      ::CreateFileW(wp.ptr, GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr)};
+  if (g.get() == INVALID_HANDLE_VALUE)
+    return err(map_last_error(io_error::OpenFailed));
+  OVERLAPPED at{};
+  if (!::LockFileEx(g.get(),
+                    LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1,
+                    0, &at)) {
+    const DWORD e = ::GetLastError();
+    return err(file_error{e == ERROR_LOCK_VIOLATION ? io_error::Busy
+                                                    : io_error::OpenFailed,
+                          nx::cast<i32>(e)});
+  }
+  file_lock out;
+  out.m_native = reinterpret_cast<std::intptr_t>(g.release());
+  return out;
+}
+
+void file_lock::release() noexcept {
+  if (m_native == NONE)
+    return;
+  const HANDLE handle = reinterpret_cast<HANDLE>(m_native);
+  OVERLAPPED at{};
+  (void)::UnlockFileEx(handle, 0, 1, 0, &at);
+  ::CloseHandle(handle);
+  m_native = NONE;
+}
+
+#elif defined(NX_PLATFORM_POSIX)
+
+io_result<file_lock> file_lock::try_acquire(const path_view path) {
+  cpath cp(path);
+  // Each open is its own description, so a second lock within this process
+  // is refused as another process's would be.
+  fd_guard g{open_retry(cp.ptr, O_RDWR | O_CREAT | O_CLOEXEC, 0644)};
+  if (g.get() < 0)
+    return err(map_errno(io_error::OpenFailed));
+  while (::flock(g.get(), LOCK_EX | LOCK_NB) != 0) {
+    if (errno == EINTR)
+      continue;
+    if (errno == EWOULDBLOCK)
+      return err(file_error{io_error::Busy, EWOULDBLOCK});
+    return err(map_errno(io_error::OpenFailed));
+  }
+  file_lock out;
+  out.m_native = g.release();
+  return out;
+}
+
+void file_lock::release() noexcept {
+  if (m_native == NONE)
+    return;
+  const i32 fd = nx::cast<i32>(m_native);
+  (void)::flock(fd, LOCK_UN);
+  ::close(fd);
+  m_native = NONE;
 }
 
 #endif
