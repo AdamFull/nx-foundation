@@ -36,6 +36,11 @@ inline constexpr string_view SKELETON_SUFFIX = ".skel.nxb";
 inline constexpr string_view SKIN_SUFFIX = ".skin.nxb";
 inline constexpr string_view CLIP_SUFFIX = ".clip.nxb";
 inline constexpr string_view PREFAB_SUFFIX = ".prefab.nxb";
+/// A 3D world source's sub-asset index, its index and cells beside it in
+/// `forest.world3d.d`.
+inline constexpr string_view WORLD3D_SUFFIX = ".world3d.nxb";
+inline constexpr string_view WORLD_SUFFIX = ".world.nxb";
+inline constexpr string_view CELL_SUFFIX = ".cell.nxb";
 
 /// The cooked file of the authored @p path, a source cooked by its kind: the
 /// suffix its file name ends in, from its last dot, gives way to
