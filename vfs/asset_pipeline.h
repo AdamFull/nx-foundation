@@ -432,6 +432,10 @@ public:
     return true;
   }
 
+  /// The service the pipeline reads through, for an owner's own I/O beside
+  /// its loads; null until bound.
+  [[nodiscard]] AsyncIoService *io() const noexcept { return m_io; }
+
   [[nodiscard]] AssetPipelineStatistics statistics() const noexcept {
     AssetPipelineStatistics out{
         .assets = m_entries.size(),
