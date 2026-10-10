@@ -36,6 +36,7 @@ inline constexpr string_view SKELETON_SUFFIX = ".skel.nxb";
 inline constexpr string_view SKIN_SUFFIX = ".skin.nxb";
 inline constexpr string_view CLIP_SUFFIX = ".clip.nxb";
 inline constexpr string_view PREFAB_SUFFIX = ".prefab.nxb";
+inline constexpr string_view SHAPE3D_SUFFIX = ".shape3d.nxb";
 /// A 3D world source's sub-asset index, its index and cells beside it in
 /// `forest.world3d.d`.
 inline constexpr string_view WORLD3D_SUFFIX = ".world3d.nxb";
