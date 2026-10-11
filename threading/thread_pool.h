@@ -194,8 +194,10 @@ public:
 
   [[nodiscard]] bool valid() const noexcept { return m_state != nullptr; }
 
+  /// True once wait() and get() cannot suspend: a finishing task stores its
+  /// status before it releases the counter they wait on.
   [[nodiscard]] bool ready() const noexcept {
-    return m_state && m_state->ready.load(std::memory_order_acquire) != 0;
+    return m_state && m_state->done.value() == 0;
   }
 
   [[nodiscard]] bool failed() const noexcept {
