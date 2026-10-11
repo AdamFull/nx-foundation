@@ -220,6 +220,8 @@ inline constexpr Format texture_formats[] = {
     {".jpeg", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
     {".webp", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
     {".hdr", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
+    {".bmp", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
+    {".tga", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
     {".ktx2", TEXTURE_SUFFIX, nva::fourcc('T', 'E', 'X', ' '), true},
 };
 
