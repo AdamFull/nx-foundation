@@ -1,7 +1,9 @@
 #pragma once
 
 #include "core/foundation/core/scope_guard.h"
+#include "core/foundation/diagnostics/profiler.h"
 #include "core/foundation/platform/os.h"
+#include "core/foundation/strings/utf8_string_view.h"
 #include "core/foundation/threading/cancellation.h"
 
 #include <atomic>
@@ -42,6 +44,13 @@ struct workload_ticket {
 /// a future.
 class workload_tracker {
 public:
+  workload_tracker() = default;
+  /// @p name labels this work's zones in a profiler.
+  explicit constexpr workload_tracker(const string_view name) noexcept
+      : m_name(name) {}
+
+  [[nodiscard]] string_view name() const noexcept { return m_name; }
+
   [[nodiscard]] workload_ticket submit() noexcept {
     m_submitted.fetch_add(1, std::memory_order_relaxed);
     const u32 queued = m_queued.fetch_add(1, std::memory_order_relaxed) + 1u;
@@ -108,6 +117,7 @@ private:
     }
   }
 
+  string_view m_name = "workload";
   std::atomic<u64> m_submitted{0};
   std::atomic<u64> m_started{0};
   std::atomic<u64> m_completed{0};
@@ -130,6 +140,7 @@ template <typename F>
 auto measure_workload(workload_tracker &tracker, const workload_ticket ticket,
                       const cancellation_token &cancellation, F &&callable)
     -> std::invoke_result_t<F &> {
+  NX_PROFILE_ZONE_TEXT(tracker.name().data(), tracker.name().size());
   const u64 started = tracker.start(ticket);
   const int exceptions_at_entry = std::uncaught_exceptions();
   const auto finish = scoped_exit([&] {

@@ -902,8 +902,8 @@ private:
   fiber::event *m_progress = nullptr;
   nx::slot_map<Entry, AssetLoadHandle> m_entries;
   nx::string_map<AssetLoadHandle> m_current;
-  nx::workload_tracker m_acquire_workload;
-  nx::workload_tracker m_prepare_workload;
+  nx::workload_tracker m_acquire_workload{"asset::acquire"};
+  nx::workload_tracker m_prepare_workload{"asset::prepare"};
   usize m_acquiring = 0;
   usize m_preparing = 0;
   usize m_acquire_limit = ~usize{0};

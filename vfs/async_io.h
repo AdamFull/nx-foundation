@@ -285,7 +285,7 @@ private:
 
   thread_pool *m_workers = nullptr;
   nx::unique_ptr<detail::NativeAsyncIo> m_native;
-  workload_tracker m_workload;
+  workload_tracker m_workload{"io::request"};
   mutable nx::mutex m_budget_lock;
   /// Requests waiting for bytes; woken whenever bytes are released.
   nx::vector<BudgetWaiter *> m_budget_waiters;
