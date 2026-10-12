@@ -184,12 +184,15 @@ inline constexpr Format json_document_formats[] = {
     {".nxdoc", ".nxdoc.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxframe", ".nxframe.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxschedule", ".nxschedule.nxb", nva::fourcc('N', 'X', 'J', 'D')},
-    {".nxactions", ".nxactions.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxloc", ".nxloc.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxstyle", ".nxstyle.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxicons", ".nxicons.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxdata", ".nxdata.nxb", nva::fourcc('N', 'X', 'J', 'D')},
     {".nxmat", ".nxmat.nxb", nva::fourcc('N', 'X', 'J', 'D'), true},
+};
+/// Input actions: a JSON document, checked as the runtime reads it.
+inline constexpr Format input_actions_formats[] = {
+    {".nxactions", ".nxactions.nxb", nva::fourcc('N', 'X', 'J', 'D')},
 };
 inline constexpr Format luau_formats[] = {
     {".luau", ".luau.nxb", nva::fourcc('N', 'X', 'L', 'U')},
@@ -239,6 +242,7 @@ inline constexpr Family core_families[] = {
     {"scene", scene_formats},
     {"paper-doll", paper_doll_formats},
     {"json-document", json_document_formats},
+    {"input-actions", input_actions_formats},
     {"luau", luau_formats},
     {"ini", ini_formats},
     {"audio", audio_formats},
