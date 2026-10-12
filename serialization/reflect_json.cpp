@@ -219,4 +219,113 @@ void read_fields(const type_info &type, const value &in, void *object) {
   }
 }
 
+namespace {
+
+[[nodiscard]] string_view kind_name(const type_kind k) {
+  switch (k) {
+  case type_kind::opaque:
+    return "opaque";
+  case type_kind::boolean:
+    return "boolean";
+  case type_kind::integer:
+    return "integer";
+  case type_kind::unsigned_integer:
+    return "unsigned";
+  case type_kind::floating:
+    return "float";
+  case type_kind::string:
+    return "string";
+  case type_kind::id:
+    return "id";
+  case type_kind::floats:
+    return "floats";
+  case type_kind::enumeration:
+    return "enum";
+  case type_kind::aggregate:
+    return "aggregate";
+  case type_kind::sequence:
+    return "sequence";
+  }
+  return "opaque";
+}
+
+/// Nested aggregates and sequences are described this deep, no deeper.
+constexpr u32 MAX_SCHEMA_DEPTH = 8;
+
+[[nodiscard]] value fields_schema(const type_info &type,
+                                  const std::byte *defaults, u32 depth);
+
+/// What @p t is, with what it holds: an aggregate's fields, a sequence's
+/// element, an enum's spellings.
+void describe_type(value &out, const type_info &t, const std::byte *defaults,
+                   const u32 depth) {
+  out.insert("kind", value(kind_name(t.kind)));
+  if (t.kind == type_kind::floats)
+    out.insert("count", value(nx::cast<i64>(t.components())));
+  if (t.kind == type_kind::enumeration && t.enumeration != nullptr) {
+    value values = value::make_array();
+    for (const reflect::enum_spelling &e : t.enumeration->entries)
+      values.push_back(value(e.name));
+    out.insert("values", std::move(values));
+  }
+  if (depth >= MAX_SCHEMA_DEPTH)
+    return;
+  if (t.kind == type_kind::aggregate)
+    out.insert("fields", fields_schema(t, defaults, depth + 1));
+  if (t.kind == type_kind::sequence && t.sequence != nullptr &&
+      t.sequence->element != nullptr) {
+    const type_info &element = *t.sequence->element;
+    value of = value::make_object();
+    of.insert("name", value(element.name));
+    describe_type(of, element, static_cast<const std::byte *>(element.defaults),
+                  depth + 1);
+    out.insert("element", std::move(of));
+    if (t.sequence->fixed)
+      out.insert("fixed", value(true));
+  }
+}
+
+[[nodiscard]] value field_schema(const field_info &f, const std::byte *defaults,
+                                 const u32 depth) {
+  const type_info &t = *f.type;
+  const std::byte *held = defaults != nullptr ? defaults + f.offset : nullptr;
+  value out = value::make_object();
+  out.insert("name", value(f.name));
+  out.insert("key", value(f.key()));
+  describe_type(out, t, held, depth);
+  if (held != nullptr && t.kind != type_kind::opaque)
+    out.insert("default", write_value(t, held));
+  if (f.has(reflect::field_flag::transient))
+    out.insert("transient", value(true));
+  if (f.has(reflect::field_flag::read_only))
+    out.insert("readOnly", value(true));
+  if (f.has(reflect::field_flag::hidden))
+    out.insert("hidden", value(true));
+  if (f.attributes.min != 0.0 || f.attributes.max != 0.0) {
+    out.insert("min", value(f.attributes.min));
+    out.insert("max", value(f.attributes.max));
+  }
+#if NX_REFLECT_EDITOR
+  if (!f.attributes.label.empty())
+    out.insert("label", value(f.attributes.label));
+#endif
+  return out;
+}
+
+value fields_schema(const type_info &type, const std::byte *defaults,
+                    const u32 depth) {
+  value fields = value::make_array();
+  for (const field_info &f : type.fields)
+    fields.push_back(field_schema(f, defaults, depth));
+  return fields;
+}
+}
+
+value schema_of(const type_info &type) {
+  value out = value::make_object();
+  out.insert("name", value(type.name));
+  describe_type(out, type, static_cast<const std::byte *>(type.defaults), 0);
+  return out;
+}
+
 }

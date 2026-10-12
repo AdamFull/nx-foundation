@@ -23,6 +23,11 @@ void read_fields(const reflect::type_info &type, const value &in, void *object);
                                 write_mode mode = write_mode::every_field);
 void read_value(const reflect::type_info &type, const value &in, void *object);
 
+/// What a reflected type holds, for a tool to build a form from: its kind,
+/// an aggregate's fields with their keys, defaults and flags, a sequence's
+/// element, an enum's spellings.
+[[nodiscard]] value schema_of(const reflect::type_info &type);
+
 template <class T>
 [[nodiscard]] value
 write_fields(const T &object,
