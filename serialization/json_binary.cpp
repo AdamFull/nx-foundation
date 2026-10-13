@@ -1,5 +1,7 @@
 #include "core/foundation/serialization/json_binary.h"
 
+#include "core/foundation/serialization/json_member_index.h"
+
 #include <cstring>
 
 namespace nx::json {
@@ -100,12 +102,19 @@ value read_binary_impl(nx::nva::Reader &r, const u32 depth) {
     if (!r.require_items(n, 5))
       return value();
     value o = value::make_object();
+    object &members = o.as_object();
+    detail::member_index index;
     for (u32 i = 0; i < n && r.ok(); ++i) {
       const nx::string_view key = r.str();
       value member_value = read_binary_impl(r, depth + 1);
       if (!r.ok())
         break;
-      (void)o.insert(key, std::move(member_value));
+      if (value *existing = index.find(members, key)) {
+        *existing = std::move(member_value);
+        continue;
+      }
+      members.push_back(member{nx::string(key), std::move(member_value)});
+      index.added(members);
     }
     return o;
   }

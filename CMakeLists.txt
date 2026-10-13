@@ -51,6 +51,7 @@ set(NX_FOUNDATION_HEADERS
   serialization/asset_contract.h
   serialization/asset_policy.h
   serialization/json_binary.h
+  serialization/json_member_index.h
   serialization/json_document.h
   serialization/resource_bundle.h
   serialization/json_util.h

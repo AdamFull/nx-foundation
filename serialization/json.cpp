@@ -1,7 +1,6 @@
 #include "core/foundation/serialization/json.h"
 
-#include "core/foundation/containers/hash_map.h"
-#include "core/foundation/core/hash.h"
+#include "core/foundation/serialization/json_member_index.h"
 #include "core/foundation/serialization/number_parse.h"
 
 #include <charconv>
@@ -213,51 +212,6 @@ private:
     }
   }
 
-  static constexpr usize kIndexThreshold = 32;
-  using key_index = hash_map<u64, u32>;
-
-  /// Existing member with this key, or null. Uses @p index once @p indexed is
-  /// set, otherwise a linear scan.
-  static value *find_member(object &members, string_view key, key_index &index,
-                            bool indexed) {
-    if (!indexed) {
-      for (member &m : members)
-        if (m.key.view() == key)
-          return &m.val;
-      return nullptr;
-    }
-    const auto it = index.find(hash_fnv1a64(key.data(), key.size()));
-    if (it == index.end())
-      return nullptr;
-    member &m = members[it->second];
-    if (m.key.view() == key)
-      return &m.val;
-    // Two distinct keys hashed the same. Astronomically rare for a 64-bit
-    // hash, but it must not silently report "absent" and duplicate the member,
-    // so fall back to an exact scan.
-    for (member &candidate : members)
-      if (candidate.key.view() == key)
-        return &candidate.val;
-    return nullptr;
-  }
-
-  static void note_member(object &members, key_index &index, bool &indexed) {
-    if (indexed) {
-      const member &m = members.back();
-      index.insert_or_assign(hash_fnv1a64(m.key.data(), m.key.size()),
-                             nx::cast<u32>(members.size() - 1));
-      return;
-    }
-    if (members.size() < kIndexThreshold)
-      return;
-    index.reserve(members.size() * 2);
-    for (usize i = 0; i < members.size(); ++i)
-      index.insert_or_assign(
-          hash_fnv1a64(members[i].key.data(), members[i].key.size()),
-          nx::cast<u32>(i));
-    indexed = true;
-  }
-
   error_code parse_object(value &out, u32 depth) {
     if (depth >= m_opts.max_depth)
       return set(error_code::depth_exceeded, m_cur);
@@ -272,8 +226,7 @@ private:
       return error_code::none;
     }
 
-    key_index index;
-    bool indexed = false;
+    detail::member_index index;
 
     for (;;) {
       skip_space();
@@ -301,14 +254,14 @@ private:
         return e;
 
       object &members = out.as_object();
-      value *existing = find_member(members, key.view(), index, indexed);
+      value *existing = index.find(members, key.view());
       if (existing != nullptr) {
         if (m_opts.reject_duplicate_keys)
           return set(error_code::duplicate_key, key_at);
         *existing = std::move(element);
       } else {
         members.push_back(member{std::move(key), std::move(element)});
-        note_member(members, index, indexed);
+        index.added(members);
       }
 
       skip_space();
@@ -750,7 +703,7 @@ private:
   }
 };
 
-}
+} // namespace
 
 string_view to_string(error_code e) noexcept {
   switch (e) {
@@ -856,7 +809,8 @@ void value::destroy() noexcept {
   m_type = type::null;
 }
 
-// Assigning or copying bytes into an inactive union member is undefined behavior.
+// Assigning or copying bytes into an inactive union member is undefined
+// behavior.
 void value::construct_from(const value &o) {
   m_type = o.m_type;
   switch (o.m_type) {
@@ -1261,4 +1215,4 @@ nx::string write(const value &v, const write_options &options) {
   return out;
 }
 
-}
+} // namespace nx::json
