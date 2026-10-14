@@ -8,18 +8,63 @@ header.
 
 Foundation builds as a static library (`nx_foundation`, alias `nx::foundation`).
 Most of it is header-only; the platform backends (`threading`, `platform`,
-`diagnostics`) are real translation units. Include paths are rooted at
-`engine/`, so headers are pulled in by scope:
+`diagnostics`) are real translation units. The library lives under
+`include/core/foundation/`, and `include/` is its include root, so headers are
+pulled in by scope:
 
 ```cpp
 #include "core/foundation/core/foundation.h"
-#include "foundation/containers/small_vector.h"
-#include "foundation/strings/utf8_string.h"
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/strings/utf8_string.h"
+```
+
+## Using it in a project
+
+Foundation is the nx2d engine's standard library and builds on
+its own. Its dependencies are submodules under `third_party/`, so check it out
+recursively, then add it to a CMake project and link `nx::foundation`:
+
+```text
+git submodule add https://github.com/AdamFull/nx-foundation external/nx-foundation
+git submodule update --init --recursive
+```
+
+```cmake
+add_subdirectory(external/nx-foundation)
+target_link_libraries(my_game PRIVATE nx::foundation)
+```
+
+It needs C++20 and CMake 3.21. Linking `nx::foundation` brings what its headers
+need (the include root, the definitions below, and on MSVC `/utf-8`,
+`/Zc:preprocessor` and `/GT`). `nx::foundation_options` is the warning and
+toolchain policy foundation itself is built with, for code that wants the same.
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `NX_FOUNDATION_MIMALLOC` | `ON` | Allocate through mimalloc; off, the system allocator (`NX_USE_MIMALLOC=0`). |
+| `NX_FOUNDATION_TRACY` | `ON` | Build Tracy's client, the profiler backend. |
+| `NX_ENABLE_PROFILER` | `OFF` | Compile the `NX_PROFILE_*` instrumentation (`NX_PROFILE_ENABLED=1`); needs Tracy. |
+| `NX_SHIPPING` | `OFF` | A sealed release build (`NX_BUILD_SHIPPING=1`): quieter logs, cooked assets only. |
+| `NX_WARNINGS_AS_ERRORS` | `OFF` | `/WX` or `-Werror` in `nx::foundation_options`. |
+| `NX_FOUNDATION_TESTS` | on when top level | The tests under `tests/` and nxtest (`nx::test`, `nxtest_discover_tests`). |
+
+| Dependency | Used for |
+| --- | --- |
+| mimalloc | The allocator (optional). |
+| Tracy | Profiler instrumentation (optional). |
+| minizip-ng, zlib-ng, Zstandard | ZIP archives in the VFS (`ZipDevice`). Their targets (`nx::minizip`, `nx::zstd`, `zlib-ng::zlibstatic`) are there for the parent project too. |
+
+Built as the top-level project, the tests run with CTest:
+
+```text
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build -C Debug
 ```
 
 ## Layout
 
-| Folder | Scope |
+| Folder (under `include/core/foundation/`) | Scope |
 | --- | --- |
 | `core/` | Platform/compiler detection, allocators, and the primitives everything else builds on (`foundation.h`, `handle.h`, `hash.h`, `result.h`, `scope_guard.h`, `callable.h`, `enum.h`, `random.h`, `sha256.h`). |
 | `containers/` | Custom container types. |
@@ -71,7 +116,7 @@ registered before use; see the header for the full API, invalidation rules,
 destroy policies, and thread-safety model.
 
 ```cpp
-#include "foundation/ecs/registry.h"
+#include "core/foundation/ecs/registry.h"
 
 struct Transform { float x, y, z; };
 struct Velocity  { float dx, dy; };

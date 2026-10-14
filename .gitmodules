@@ -1,0 +1,15 @@
+[submodule "third_party/mimalloc"]
+	path = third_party/mimalloc
+	url = https://github.com/microsoft/mimalloc
+[submodule "third_party/tracy"]
+	path = third_party/tracy
+	url = https://github.com/wolfpld/tracy
+[submodule "third_party/minizip-ng"]
+	path = third_party/minizip-ng
+	url = https://github.com/zlib-ng/minizip-ng
+[submodule "third_party/zlib-ng"]
+	path = third_party/zlib-ng
+	url = https://github.com/zlib-ng/zlib-ng
+[submodule "third_party/zstd"]
+	path = third_party/zstd
+	url = https://github.com/facebook/zstd.git
