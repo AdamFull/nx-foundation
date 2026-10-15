@@ -93,6 +93,13 @@ set(NX_FOUNDATION_TEST_SOURCES
   serialization/test_content_length.cpp
   serialization/test_reflect_binary.cpp
 
+  simd/test_simd_arith.cpp
+  simd/test_simd_bit.cpp
+  simd/test_simd_complex.cpp
+  simd/test_simd_math.cpp
+  simd/test_simd_memory.cpp
+  simd/test_simd_ops.cpp
+
   fibers/test_context.cpp
   fibers/test_scheduler.cpp
   fibers/test_stack.cpp
@@ -135,6 +142,61 @@ set_target_properties(nx_foundation_tests PROPERTIES FOLDER "tests")
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${NX_FOUNDATION_TEST_SOURCES})
 
 nxtest_discover_tests(nx_foundation_tests LABELS foundation TIMEOUT 120)
+
+# The simd tests again on the other backends: plain arrays on every target,
+# and AVX2 registers on x86-64 when this machine can run them.
+set(NX_SIMD_TEST_SOURCES
+  simd/test_simd_arith.cpp
+  simd/test_simd_bit.cpp
+  simd/test_simd_complex.cpp
+  simd/test_simd_math.cpp
+  simd/test_simd_memory.cpp
+  simd/test_simd_ops.cpp)
+
+function(nx_add_simd_tests target prefix)
+  add_executable(${target} ${NX_SIMD_TEST_SOURCES})
+  target_link_libraries(${target}
+    PRIVATE nx::test nx::foundation nx::foundation_options)
+  target_compile_options(${target} PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/wd4127;/wd4018;/wd4389;/bigobj>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-sign-compare> ${ARGN})
+  set_target_properties(${target} PROPERTIES FOLDER "tests")
+  nxtest_discover_tests(${target} PREFIX "${prefix}" LABELS foundation TIMEOUT 120)
+endfunction()
+
+nx_add_simd_tests(nx_simd_fixed_tests "fixed: " -DNX_SIMD_FORCE_FIXED=1)
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64|amd64)$" AND NOT CMAKE_CROSSCOMPILING)
+  if(MSVC)
+    set(_nx_avx2_flags /arch:AVX2)
+  else()
+    set(_nx_avx2_flags -mavx2 -mfma)
+  endif()
+  include(CheckCXXSourceRuns)
+  set(CMAKE_REQUIRED_QUIET ON)
+  check_cxx_source_runs([[
+    #if defined(_MSC_VER)
+    #include <intrin.h>
+    static bool avx2() {
+      int r[4];
+      __cpuid(r, 1);
+      const bool fma = (r[2] >> 12) & 1, avx = (r[2] >> 28) & 1;
+      __cpuidex(r, 7, 0);
+      return fma && avx && ((r[1] >> 5) & 1);
+    }
+    #else
+    static bool avx2() {
+      return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+    }
+    #endif
+    int main() { return avx2() ? 0 : 1; }
+  ]] NX_FOUNDATION_HOST_RUNS_AVX2)
+  unset(CMAKE_REQUIRED_QUIET)
+  if(NX_FOUNDATION_HOST_RUNS_AVX2)
+    nx_add_simd_tests(nx_simd_avx2_tests "avx2: " ${_nx_avx2_flags})
+  endif()
+  unset(_nx_avx2_flags)
+endif()
 
 # Compile the production locale fallback even on hosts whose standard library
 # provides floating-point from_chars. This catches platform-only regressions

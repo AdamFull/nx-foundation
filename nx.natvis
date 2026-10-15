@@ -215,4 +215,86 @@
         <DisplayString>{{ [{limit}, {base}) size={(char*)base - (char*)limit} }}</DisplayString>
     </Type>
 
+    <!-- Every backend keeps the lanes contiguous: one register, an array of registers, or a plain array. -->
+    <Type Name="nx::simd::basic_vec&lt;*,*&gt;">
+        <Intrinsic Name="size" Expression="(int)(sizeof(m_data) / sizeof($T1))"/>
+        <Intrinsic Name="at" Expression="(($T1*)&amp;m_data)[i]">
+            <Parameter Name="i" Type="int"/>
+        </Intrinsic>
+        <DisplayString Condition="size() == 1">{{ {at(0)} }}</DisplayString>
+        <DisplayString Condition="size() == 2">{{ {at(0)}, {at(1)} }}</DisplayString>
+        <DisplayString Condition="size() == 3">{{ {at(0)}, {at(1)}, {at(2)} }}</DisplayString>
+        <DisplayString Condition="size() == 4">{{ {at(0)}, {at(1)}, {at(2)}, {at(3)} }}</DisplayString>
+        <DisplayString>{{ size={size()} }}</DisplayString>
+        <Expand>
+            <ArrayItems>
+                <Size>size()</Size>
+                <ValuePointer>($T1*)&amp;m_data</ValuePointer>
+            </ArrayItems>
+        </Expand>
+    </Type>
+
+    <!-- Complex lanes are stored as a vector of real parts and a vector of imaginary parts. -->
+    <Type Name="nx::simd::basic_vec&lt;std::complex&lt;*&gt;,*&gt;" Priority="High">
+        <Intrinsic Name="size" Expression="(int)(sizeof(m_data.re) / sizeof($T1))"/>
+        <Intrinsic Name="re" Expression="(($T1*)&amp;m_data.re)[i]">
+            <Parameter Name="i" Type="int"/>
+        </Intrinsic>
+        <Intrinsic Name="im" Expression="(($T1*)&amp;m_data.im)[i]">
+            <Parameter Name="i" Type="int"/>
+        </Intrinsic>
+        <DisplayString Condition="size() == 1">{{ ({re(0)}, {im(0)}) }}</DisplayString>
+        <DisplayString Condition="size() == 2">{{ ({re(0)}, {im(0)}), ({re(1)}, {im(1)}) }}</DisplayString>
+        <DisplayString>{{ size={size()} }}</DisplayString>
+        <Expand>
+            <Synthetic Name="[real]">
+                <DisplayString>{{ size={(int)(sizeof(m_data.re) / sizeof($T1))} }}</DisplayString>
+                <Expand>
+                    <ArrayItems>
+                        <Size>(int)(sizeof(m_data.re) / sizeof($T1))</Size>
+                        <ValuePointer>($T1*)&amp;m_data.re</ValuePointer>
+                    </ArrayItems>
+                </Expand>
+            </Synthetic>
+            <Synthetic Name="[imag]">
+                <DisplayString>{{ size={(int)(sizeof(m_data.im) / sizeof($T1))} }}</DisplayString>
+                <Expand>
+                    <ArrayItems>
+                        <Size>(int)(sizeof(m_data.im) / sizeof($T1))</Size>
+                        <ValuePointer>($T1*)&amp;m_data.im</ValuePointer>
+                    </ArrayItems>
+                </Expand>
+            </Synthetic>
+        </Expand>
+    </Type>
+
+    <!-- A mask lane is $T1 bytes, all set or all clear. -->
+    <Type Name="nx::simd::basic_mask&lt;*,*&gt;">
+        <Intrinsic Name="size" Expression="(int)(sizeof(m_data) / $T1)"/>
+        <Intrinsic Name="at" Expression="(int)(((signed char*)&amp;m_data)[i * $T1] != 0)">
+            <Parameter Name="i" Type="int"/>
+        </Intrinsic>
+        <DisplayString Condition="size() == 1">{{ {at(0)} }}</DisplayString>
+        <DisplayString Condition="size() == 2">{{ {at(0)}{at(1)} }}</DisplayString>
+        <DisplayString Condition="size() == 3">{{ {at(0)}{at(1)}{at(2)} }}</DisplayString>
+        <DisplayString Condition="size() == 4">{{ {at(0)}{at(1)}{at(2)}{at(3)} }}</DisplayString>
+        <DisplayString Condition="size() == 8">{{ {at(0)}{at(1)}{at(2)}{at(3)}{at(4)}{at(5)}{at(6)}{at(7)} }}</DisplayString>
+        <DisplayString>{{ size={size()} }}</DisplayString>
+        <Expand>
+            <IndexListItems>
+                <Size>size()</Size>
+                <ValueNode>((signed char*)&amp;m_data)[$i * $T1] != 0</ValueNode>
+            </IndexListItems>
+        </Expand>
+    </Type>
+
+    <Type Name="nx::simd::detail::simd_iterator&lt;*&gt;">
+        <DisplayString Condition="m_data == nullptr">null</DisplayString>
+        <DisplayString>{{ index={m_offset} }}</DisplayString>
+        <Expand>
+            <Item Name="[index]">m_offset</Item>
+            <Item Name="[vector]" Condition="m_data != nullptr">*m_data</Item>
+        </Expand>
+    </Type>
+
 </AutoVisualizer>

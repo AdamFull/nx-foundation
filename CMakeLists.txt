@@ -138,6 +138,18 @@ set(NX_FOUNDATION_HEADERS
   serialization/reflect_json.h
   serialization/reflect_binary.h
 
+  simd/algorithm.h
+  simd/backend_complex.h
+  simd/backend_generic.h
+  simd/backend_vector.h
+  simd/backend_x86.h
+  simd/bit.h
+  simd/complex.h
+  simd/detail.h
+  simd/math.h
+  simd/simd.h
+  simd/vec.h
+
   fibers/context.h
   fibers/scheduler.h
   fibers/stack.h
