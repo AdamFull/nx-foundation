@@ -243,6 +243,8 @@ template <class T> consteval int native_bytes() {
   return 32;
 #elif defined(__AVX__)
   return std::is_floating_point_v<E> ? 32 : 16;
+#elif defined(__ARM_FEATURE_SVE_BITS) && __ARM_FEATURE_SVE_BITS > 128
+  return __ARM_FEATURE_SVE_BITS / 8;
 #elif defined(__SSE2__) || defined(__ARM_NEON) || defined(__ARM_NEON__) ||     \
     defined(__wasm_simd128__) || defined(__ALTIVEC__) ||                       \
     defined(__riscv_vector)

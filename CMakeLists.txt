@@ -139,11 +139,13 @@ set(NX_FOUNDATION_HEADERS
   serialization/reflect_binary.h
 
   simd/algorithm.h
+  simd/backend_arm.h
   simd/backend_complex.h
   simd/backend_generic.h
   simd/backend_vector.h
   simd/backend_x86.h
   simd/bit.h
+  simd/bit_scalar.h
   simd/complex.h
   simd/detail.h
   simd/math.h

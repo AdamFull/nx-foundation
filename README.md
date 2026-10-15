@@ -172,13 +172,16 @@ void scale(std::span<float> values, float factor) {
 
 | Backend | Used for |
 | --- | --- |
-| GCC and Clang vector extensions | Every target those compilers build: SSE to AVX-512 on x86, NEON on ARM. Mask movemasks use SSE2/AVX2 or NEON directly. |
+| GCC and Clang vector extensions | Every target those compilers build: SSE to AVX-512 on x86, NEON and SVE on AArch64. Mask movemasks use SSE2/AVX2 or NEON directly. |
+| NEON and SVE intrinsics | AArch64 under GCC and Clang, over the vector extensions: across-vector reductions, rounding, bit counting and reversal with NEON; with SVE, predicated partial and masked loads and stores, compress, same-width gather and scatter, and SVE2 `bit_compress`/`bit_expand`. |
 | SSE2, SSE4.1 and AVX2 intrinsics | MSVC on x64. `/arch:AVX` enables the SSE4.1 paths; `/arch:AVX2` makes 32-byte registers native and adds FMA. |
 | Arrays of registers | Widths that fill several registers (`vec<float, 12>` is three SSE registers). |
-| Plain arrays | Widths that fill no register exactly, other compilers, and every type under `NX_SIMD_FORCE_FIXED`, which the tests use as the reference. |
+| Plain arrays | Widths that fill no register exactly, other compilers (MSVC on ARM64 among them), and every type under `NX_SIMD_FORCE_FIXED`, which the tests use as the reference. |
 
-- `vec<T>` has the native width of the compile flags: 4 floats with SSE, 8
-  with AVX2. Translation units built with different flags see different
+- `vec<T>` has the native width of the compile flags: 4 floats with SSE or
+  NEON, 8 with AVX2, and `__ARM_FEATURE_SVE_BITS / 32` with a fixed SVE
+  vector length (`-msve-vector-bits=256`). Without a fixed length SVE works
+  on 16-byte vectors. Translation units built with different flags see different
   types, so keep `vec<T>` out of interfaces shared between them.
 - Implicit broadcasts follow the standard: only value-preserving ones, so
   `v * 2.f` compiles and `v * 2` does not for `vec<float>`.
@@ -197,6 +200,11 @@ void scale(std::span<float> values, float factor) {
 - Widths go up to 64 lanes. `flag_aligned` and `flag_overaligned<N>` are
   checked in debug builds only: unaligned loads cost the same on every
   supported CPU.
+- The tests build once per backend: `nx_simd_fixed_tests` on plain arrays,
+  `nx_simd_avx2_tests` when the machine runs AVX2, `nx_simd_sve2_tests` when
+  it runs SVE2 or the build targets another AArch64 machine,
+  `nx_simd_sve2_bitperm_tests` when it runs SVE2 BitPerm, and
+  `nx_simd_tests` alone when cross-compiling, to be run on the target.
 - `nx.natvis` shows vector lanes and masks in the Visual Studio debugger.
 
 ## Command-line parsing

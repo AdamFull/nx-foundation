@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/foundation/simd/bit_scalar.h"
 #include "core/foundation/simd/detail.h"
 
 #include <cmath>
@@ -49,6 +50,10 @@ struct op_max {
     return a < b ? b : a;
   }
 };
+
+template <class T> constexpr auto as_unsigned(T x) {
+  return static_cast<std::make_unsigned_t<T>>(x);
+}
 
 template <class T> constexpr T shift_left(T a, int n) {
   if constexpr (sizeof(T) < sizeof(int))
@@ -224,6 +229,46 @@ template <class D, class T, int N, class S, class M> struct vec_ops_base {
     return D::generate([&](int i) {
       return std::fma(D::get(a, i), D::get(b, i), D::get(c, i));
     });
+  }
+  static constexpr S fmin(const S &a, const S &b) {
+    return D::select(D::ne(a, a), b, D::select(D::lt(b, a), b, a));
+  }
+  static constexpr S fmax(const S &a, const S &b) {
+    return D::select(D::ne(a, a), b, D::select(D::lt(a, b), b, a));
+  }
+
+  static constexpr S popcount(const S &a) {
+    return map(a, [](T x) { return std::popcount(as_unsigned(x)); });
+  }
+  static constexpr S countl_zero(const S &a) {
+    return map(a, [](T x) { return std::countl_zero(as_unsigned(x)); });
+  }
+  static constexpr S byteswap(const S &a) {
+    return map(a, [](T x) { return detail::byteswap(x); });
+  }
+  static constexpr S bit_reverse(const S &a) {
+    return map(a, [](T x) { return detail::bit_reverse(as_unsigned(x)); });
+  }
+  static constexpr S bit_compress(const S &a, const S &m) {
+    return zip(a, m, [](T x, T y) {
+      return detail::bit_compress(as_unsigned(x), as_unsigned(y));
+    });
+  }
+  static constexpr S bit_expand(const S &a, const S &m) {
+    return zip(a, m, [](T x, T y) {
+      return detail::bit_expand(as_unsigned(x), as_unsigned(y));
+    });
+  }
+
+  // The selected elements packed to the front; the rest are T().
+  static constexpr bool fast_compress = false;
+  static constexpr S compress(const S &v, const mstorage &k) {
+    T values[N] = {};
+    int n = 0;
+    for (int i = 0; i < N; ++i)
+      if (M::get(k, i))
+        values[n++] = D::get(v, i);
+    return D::generate([&](int i) { return values[i]; });
   }
 };
 
@@ -603,6 +648,25 @@ struct vec_ops<T, abi_multi<Part, C>>
       r.v[j] = P::fma(a.v[j], b.v[j], c.v[j]);
     return r;
   }
+#define NX_SIMD_MULTI_UNARY(name)                                              \
+  static constexpr S name(const S &a) {                                        \
+    return each(a, [](const auto &x) { return P::name(x); });                  \
+  }
+  NX_SIMD_MULTI_UNARY(popcount)
+  NX_SIMD_MULTI_UNARY(countl_zero)
+  NX_SIMD_MULTI_UNARY(byteswap)
+  NX_SIMD_MULTI_UNARY(bit_reverse)
+#undef NX_SIMD_MULTI_UNARY
+#define NX_SIMD_MULTI_BINARY(name)                                             \
+  static constexpr S name(const S &a, const S &b) {                            \
+    return each(a, b,                                                          \
+                [](const auto &x, const auto &y) { return P::name(x, y); });   \
+  }
+  NX_SIMD_MULTI_BINARY(fmin)
+  NX_SIMD_MULTI_BINARY(fmax)
+  NX_SIMD_MULTI_BINARY(bit_compress)
+  NX_SIMD_MULTI_BINARY(bit_expand)
+#undef NX_SIMD_MULTI_BINARY
 };
 
 } // namespace nx::simd::detail

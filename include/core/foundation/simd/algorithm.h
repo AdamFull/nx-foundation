@@ -739,6 +739,11 @@ constexpr V expand_impl(const V &v, const K &selector, const V &original) {
 
 template <detail::simd_vec_type V>
 constexpr V compress(const V &v, const typename V::mask_type &selector) {
+  using O = detail::vops<V>;
+  if constexpr (O::fast_compress)
+    if (!std::is_constant_evaluated())
+      return detail::access::make<V>(
+          O::compress(detail::access::data(v), detail::access::data(selector)));
   return detail::compress_impl(v, selector, [&](int i) { return v[i]; });
 }
 template <detail::simd_mask_type V>
@@ -748,6 +753,16 @@ constexpr V compress(const V &v, const std::type_identity_t<V> &selector) {
 template <detail::simd_vec_type V>
 constexpr V compress(const V &v, const typename V::mask_type &selector,
                      const typename V::value_type &fill_value) {
+  using O = detail::vops<V>;
+  if constexpr (O::fast_compress) {
+    if (!std::is_constant_evaluated()) {
+      const V packed = detail::access::make<V>(
+          O::compress(detail::access::data(v), detail::access::data(selector)));
+      const int n = reduce_count(selector);
+      const typename V::mask_type kept(n >= 64 ? ~0ull : (1ull << n) - 1ull);
+      return select(kept, packed, V(fill_value));
+    }
+  }
   return detail::compress_impl(v, selector, [&](int) { return fill_value; });
 }
 template <detail::simd_mask_type V>
@@ -774,6 +789,32 @@ using gather_vec_t =
     std::conditional_t<std::is_void_v<V>,
                        vec<std::ranges::range_value_t<R>, I::size()>, V>;
 
+template <class I>
+constexpr typename I::mask_type in_bounds(const I &indices, size_t n) {
+  using X = typename I::value_type;
+  const auto nonnegative = indices >= I(X(0));
+  if (std::cmp_greater(n, std::numeric_limits<X>::max()))
+    return nonnegative;
+  return nonnegative && indices < I(static_cast<X>(n));
+}
+
+// The lanes a gather or scatter may touch: selected and in bounds. An
+// unchecked one promises that every selected index is in bounds.
+template <class V, class I>
+constexpr typename V::mask_type touched_lanes(const typename I::mask_type *mask,
+                                              const I &indices, size_t n,
+                                              bool partial) {
+  auto ok = in_bounds(indices, n);
+  if (mask) {
+    if (!partial)
+      assert(none_of(*mask && !ok));
+    ok = ok && *mask;
+  } else if (!partial) {
+    assert(all_of(ok));
+  }
+  return typename V::mask_type(ok);
+}
+
 template <class V, class R, class I, class... Flags>
 constexpr V gather(R &&in, const typename I::mask_type *mask, const I &indices,
                    bool partial) {
@@ -785,6 +826,16 @@ constexpr V gather(R &&in, const typename I::mask_type *mask, const I &indices,
   const auto n = std::ranges::size(in);
   check_aligned_flag<V, R>(p, has_flag<aligned_flag, Flags...>);
   check_alignment<Flags...>(p);
+  using O = vops<V>;
+  if constexpr (requires { requires O::template gathers<I>; } &&
+                std::is_same_v<canonical_t<U>, canonical_t<T>>) {
+    if (!std::is_constant_evaluated()) {
+      const auto active = touched_lanes<V>(mask, indices, n, partial);
+      return access::make<V>(
+          O::gather(reinterpret_cast<const canonical_t<T> *>(p),
+                    access::data(indices), access::data(active)));
+    }
+  }
   return vec_generate<V>([&](int i) {
     if (mask && !(*mask)[i])
       return T();
@@ -805,6 +856,17 @@ constexpr void scatter(const V &v, R &&out, const typename I::mask_type *mask,
   const auto n = std::ranges::size(out);
   check_aligned_flag<V, R>(p, has_flag<aligned_flag, Flags...>);
   check_alignment<Flags...>(p);
+  using O = vops<V>;
+  if constexpr (requires { requires O::template gathers<I>; } &&
+                std::is_same_v<canonical_t<U>,
+                               canonical_t<typename V::value_type>>) {
+    if (!std::is_constant_evaluated()) {
+      const auto active = touched_lanes<V>(mask, indices, n, partial);
+      return O::scatter(reinterpret_cast<canonical_t<U> *>(p),
+                        access::data(indices), access::data(active),
+                        access::data(v));
+    }
+  }
   for (int i = 0; i < V::size(); ++i) {
     if (mask && !(*mask)[i])
       continue;

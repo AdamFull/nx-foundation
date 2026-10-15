@@ -260,7 +260,8 @@ detail::math_common_t<V0, V1> fmax(const V0 &x, const V1 &y) {
   using D = detail::math_common_t<V0, V1>;
   const D a = x;
   const D b = y;
-  return select(a != a, b, select(a < b, b, a));
+  return detail::access::make<D>(
+      detail::vops<D>::fmax(detail::access::data(a), detail::access::data(b)));
 }
 template <class V0, class V1>
   requires detail::math_common<V0, V1>
@@ -268,7 +269,8 @@ detail::math_common_t<V0, V1> fmin(const V0 &x, const V1 &y) {
   using D = detail::math_common_t<V0, V1>;
   const D a = x;
   const D b = y;
-  return select(a != a, b, select(b < a, b, a));
+  return detail::access::make<D>(
+      detail::vops<D>::fmin(detail::access::data(a), detail::access::data(b)));
 }
 
 #define NX_SIMD_MATH_COMPARE(name, expr)                                       \

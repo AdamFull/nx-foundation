@@ -1,14 +1,12 @@
 #pragma once
 
+#include "core/foundation/simd/backend_arm.h"
 #include "core/foundation/simd/backend_generic.h"
 
 #if defined(NX_SIMD_VECTOR_EXT)
 
 #if defined(__SSE2__)
 #include <immintrin.h>
-#endif
-#if defined(__aarch64__) && defined(__ARM_NEON)
-#include <arm_neon.h>
 #endif
 
 #if defined(__has_builtin)
@@ -90,7 +88,7 @@ struct mask_ops<B, abi_vector<Bytes>>
         return static_cast<u32>(_mm256_movemask_pd((__m256d)a));
     }
 #endif
-#if defined(__aarch64__) && defined(__ARM_NEON)
+#if defined(NX_SIMD_NEON)
     if constexpr (Bytes == 16) {
       if constexpr (B == 1) {
         const uint8x16_t bits =
@@ -124,7 +122,29 @@ struct mask_ops<B, abi_vector<Bytes>>
     return base::to_bits(a);
   }
 
+  static constexpr bool all_of(const S &a) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (Bytes == 16)
+      if (!std::is_constant_evaluated())
+        return neon::all_of(a);
+#endif
+    return base::all_of(a);
+  }
+  static constexpr bool any_of(const S &a) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (Bytes == 16)
+      if (!std::is_constant_evaluated())
+        return neon::any_of(a);
+#endif
+    return base::any_of(a);
+  }
+
   static constexpr S from_bits(u64 bits) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (Bytes == 16)
+      if (!std::is_constant_evaluated())
+        return neon::from_bits<B, S>(bits);
+#endif
     if constexpr (N > int(8 * B)) {
       return base::from_bits(bits);
     } else {
@@ -158,6 +178,16 @@ struct vec_ops<T, abi_vector<Bytes>>
   // Widened values stay inside one expression: a function returning a vector
   // wider than the target's registers changes the calling convention.
   using W = vector_t<std::conditional_t<std::is_signed_v<E>, i32, u32>, N * 4>;
+#if defined(NX_SIMD_NEON)
+  static constexpr bool neon_q = Bytes == 16;
+#else
+  static constexpr bool neon_q = false;
+#endif
+#if defined(NX_SIMD_SVE)
+  static constexpr bool sve_ok = sve::fits<Bytes>;
+#else
+  static constexpr bool sve_ok = false;
+#endif
 
   static constexpr S broadcast(T x) { return S{} + static_cast<E>(x); }
   static constexpr T get(const S &a, int i) { return static_cast<T>(a[i]); }
@@ -198,6 +228,10 @@ struct vec_ops<T, abi_vector<Bytes>>
   template <class U> static constexpr S load_n(const U *p, int n) {
     if (std::is_constant_evaluated() || n <= 0)
       return base::load_n(p, n);
+#if defined(NX_SIMD_SVE)
+    if constexpr (sve_ok && std::is_same_v<canonical_t<U>, E>)
+      return sve::load_n<E, S>(reinterpret_cast<const E *>(p), n);
+#endif
     if (n >= N)
       return load(p);
     U buffer[N] = {};
@@ -207,11 +241,34 @@ struct vec_ops<T, abi_vector<Bytes>>
   template <class U> static constexpr void store_n(const S &v, U *p, int n) {
     if (std::is_constant_evaluated() || n <= 0)
       return base::store_n(v, p, n);
+#if defined(NX_SIMD_SVE)
+    if constexpr (sve_ok && std::is_same_v<canonical_t<U>, E>)
+      return sve::store_n<E, S>(v, reinterpret_cast<E *>(p), n);
+#endif
     if (n >= N)
       return store(v, p);
     U buffer[N];
     store(v, buffer);
     std::memcpy(p, buffer, sizeof(U) * static_cast<size_t>(n));
+  }
+
+  template <class U>
+  static constexpr S load_masked(const U *p, const MS &k, int n) {
+#if defined(NX_SIMD_SVE)
+    if constexpr (sve_ok && std::is_same_v<canonical_t<U>, E>)
+      if (!std::is_constant_evaluated())
+        return sve::load_masked<E, S>(reinterpret_cast<const E *>(p), k, n);
+#endif
+    return base::load_masked(p, k, n);
+  }
+  template <class U>
+  static constexpr void store_masked(const S &v, U *p, const MS &k, int n) {
+#if defined(NX_SIMD_SVE)
+    if constexpr (sve_ok && std::is_same_v<canonical_t<U>, E>)
+      if (!std::is_constant_evaluated())
+        return sve::store_masked<E, S>(v, reinterpret_cast<E *>(p), k, n);
+#endif
+    base::store_masked(v, p, k, n);
   }
 
   template <class U, class UAbi>
@@ -315,30 +372,204 @@ struct vec_ops<T, abi_vector<Bytes>>
              std::is_same_v<Op, op_xor> || std::is_same_v<Op, op_min> ||
              std::is_same_v<Op, op_max>)
   static constexpr T reduce(const S &v, Op op) {
+    if (!std::is_constant_evaluated()) {
+#if defined(NX_SIMD_NEON)
+      if constexpr (neon_q && std::is_same_v<Op, op_add>)
+        return static_cast<T>(neon::add_across<E>(neon::q<E>(v)));
+      else if constexpr (neon_q && std::is_same_v<Op, op_min> &&
+                         neon::has_minmax_across<E>)
+        return static_cast<T>(neon::min_across<E>(neon::q<E>(v)));
+      else if constexpr (neon_q && std::is_same_v<Op, op_max> &&
+                         neon::has_minmax_across<E>)
+        return static_cast<T>(neon::max_across<E>(neon::q<E>(v)));
+#endif
+#if defined(NX_SIMD_SVE)
+      if constexpr (sve_ok && !neon_q && !std::is_same_v<Op, op_mul> &&
+                    !(is_float && (std::is_same_v<Op, op_and> ||
+                                   std::is_same_v<Op, op_or> ||
+                                   std::is_same_v<Op, op_xor>)))
+        return static_cast<T>(sve::reduce<E>(v, op));
+#endif
+    }
     return get(fold<N / 2>(v, op), 0);
   }
 
+  static S sqrt(const S &a) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (neon_q)
+      return neon::sqrt<E>(a);
+#endif
 #if NX_SIMD_HAS_BUILTIN(__builtin_elementwise_sqrt)
-  static S sqrt(const S &a) { return __builtin_elementwise_sqrt(a); }
+    return __builtin_elementwise_sqrt(a);
+#else
+    return base::sqrt(a);
+#endif
+  }
+  static S floor(const S &a) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (neon_q)
+      return neon::floor<E>(a);
 #endif
 #if NX_SIMD_HAS_BUILTIN(__builtin_elementwise_floor)
-  static S floor(const S &a) { return __builtin_elementwise_floor(a); }
+    return __builtin_elementwise_floor(a);
+#else
+    return base::floor(a);
+#endif
+  }
+  static S ceil(const S &a) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (neon_q)
+      return neon::ceil<E>(a);
 #endif
 #if NX_SIMD_HAS_BUILTIN(__builtin_elementwise_ceil)
-  static S ceil(const S &a) { return __builtin_elementwise_ceil(a); }
+    return __builtin_elementwise_ceil(a);
+#else
+    return base::ceil(a);
+#endif
+  }
+  static S trunc(const S &a) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (neon_q)
+      return neon::trunc<E>(a);
 #endif
 #if NX_SIMD_HAS_BUILTIN(__builtin_elementwise_trunc)
-  static S trunc(const S &a) { return __builtin_elementwise_trunc(a); }
+    return __builtin_elementwise_trunc(a);
+#else
+    return base::trunc(a);
+#endif
+  }
+  static S round(const S &a) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (neon_q)
+      return neon::round<E>(a);
 #endif
 #if NX_SIMD_HAS_BUILTIN(__builtin_elementwise_round)
-  static S round(const S &a) { return __builtin_elementwise_round(a); }
+    return __builtin_elementwise_round(a);
+#else
+    return base::round(a);
+#endif
+  }
+  static S rint(const S &a) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (neon_q)
+      return neon::rint<E>(a);
 #endif
 #if NX_SIMD_HAS_BUILTIN(__builtin_elementwise_rint)
-  static S rint(const S &a) { return __builtin_elementwise_rint(a); }
+    return __builtin_elementwise_rint(a);
+#else
+    return base::rint(a);
+#endif
+  }
+  static S fma(const S &a, const S &b, const S &c) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (neon_q)
+      return neon::fma<E>(a, b, c);
 #endif
 #if NX_SIMD_HAS_BUILTIN(__builtin_elementwise_fma)
-  static S fma(const S &a, const S &b, const S &c) {
     return __builtin_elementwise_fma(a, b, c);
+#else
+    return base::fma(a, b, c);
+#endif
+  }
+  static constexpr S fmin(const S &a, const S &b) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (neon_q)
+      if (!std::is_constant_evaluated())
+        return neon::fmin<E>(a, b);
+#endif
+    return base::fmin(a, b);
+  }
+  static constexpr S fmax(const S &a, const S &b) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (neon_q)
+      if (!std::is_constant_evaluated())
+        return neon::fmax<E>(a, b);
+#endif
+    return base::fmax(a, b);
+  }
+
+  static constexpr S popcount(const S &a) {
+    if (!std::is_constant_evaluated()) {
+#if defined(NX_SIMD_NEON)
+      if constexpr (neon_q)
+        return neon::popcount<sizeof(E)>(a);
+#endif
+#if NX_SIMD_HAS_BUILTIN(__builtin_elementwise_popcount)
+      return __builtin_elementwise_popcount(a);
+#endif
+    }
+    return base::popcount(a);
+  }
+  static constexpr S countl_zero(const S &a) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (neon_q)
+      if (!std::is_constant_evaluated())
+        return neon::countl_zero<sizeof(E)>(a);
+#endif
+    return base::countl_zero(a);
+  }
+  static constexpr S byteswap(const S &a) {
+#if defined(NX_SIMD_NEON)
+    if constexpr (neon_q)
+      if (!std::is_constant_evaluated())
+        return neon::byteswap<sizeof(E)>(a);
+#endif
+    return base::byteswap(a);
+  }
+  static constexpr S bit_reverse(const S &a) {
+    if (!std::is_constant_evaluated()) {
+#if defined(NX_SIMD_NEON)
+      if constexpr (neon_q)
+        return neon::bit_reverse<sizeof(E)>(a);
+#endif
+#if NX_SIMD_HAS_BUILTIN(__builtin_elementwise_bitreverse)
+      return __builtin_elementwise_bitreverse(a);
+#endif
+    }
+    return base::bit_reverse(a);
+  }
+  static constexpr S bit_compress(const S &a, const S &m) {
+#if defined(NX_SIMD_SVE) && defined(__ARM_FEATURE_SVE2_BITPERM)
+    if constexpr (sve_ok)
+      if (!std::is_constant_evaluated())
+        return sve::bit_compress<E>(a, m);
+#endif
+    return base::bit_compress(a, m);
+  }
+  static constexpr S bit_expand(const S &a, const S &m) {
+#if defined(NX_SIMD_SVE) && defined(__ARM_FEATURE_SVE2_BITPERM)
+    if constexpr (sve_ok)
+      if (!std::is_constant_evaluated())
+        return sve::bit_expand<E>(a, m);
+#endif
+    return base::bit_expand(a, m);
+  }
+
+  static constexpr bool fast_compress = sve_ok && sizeof(E) >= 4;
+  static constexpr S compress(const S &v, const MS &k) {
+#if defined(NX_SIMD_SVE)
+    if constexpr (fast_compress)
+      if (!std::is_constant_evaluated())
+        return sve::compress<E>(v, k);
+#endif
+    return base::compress(v, k);
+  }
+
+  // Hardware gathers and scatters take indices as wide as the elements.
+  template <class I>
+  static constexpr bool gathers =
+      sve_ok && sizeof(E) >= 4 &&
+      std::is_same_v<typename I::abi_type, abi_vector<Bytes>> &&
+      sizeof(typename I::value_type) == sizeof(E);
+#if defined(NX_SIMD_SVE)
+  template <class IS>
+  static S gather(const E *base, const IS &indices, const MS &active) {
+    return sve::gather<E, S>(base, indices, active);
+  }
+  template <class IS>
+  static void scatter(E *base, const IS &indices, const MS &active,
+                      const S &v) {
+    sve::scatter<E, S>(base, indices, active, v);
   }
 #endif
 

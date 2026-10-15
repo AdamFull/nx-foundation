@@ -15,6 +15,11 @@ function(nxtest_discover_tests target)
     if (NOT ARG_DISCOVERY_TIMEOUT)
         set(ARG_DISCOVERY_TIMEOUT 30)
     endif ()
+    # A cross-compiled binary cannot list its cases here; it still builds, to
+    # be run on its target.
+    if (CMAKE_CROSSCOMPILING AND NOT CMAKE_CROSSCOMPILING_EMULATOR)
+        return()
+    endif ()
 
     set(ctest_file "${CMAKE_CURRENT_BINARY_DIR}/${target}_tests.cmake")
 
@@ -144,7 +149,9 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${NX_FOUNDATION_TEST_SOURC
 nxtest_discover_tests(nx_foundation_tests LABELS foundation TIMEOUT 120)
 
 # The simd tests again on the other backends: plain arrays on every target,
-# and AVX2 registers on x86-64 when this machine can run them.
+# AVX2 registers on x86-64 and SVE2 on AArch64, when this machine can run them
+# or the build is for another one. SVE2 BitPerm is optional in SVE2, so its
+# tests build only for a machine known to have it.
 set(NX_SIMD_TEST_SOURCES
   simd/test_simd_arith.cpp
   simd/test_simd_bit.cpp
@@ -165,6 +172,11 @@ function(nx_add_simd_tests target prefix)
 endfunction()
 
 nx_add_simd_tests(nx_simd_fixed_tests "fixed: " -DNX_SIMD_FORCE_FIXED=1)
+# A target device may not run the whole foundation suite; give it the simd
+# tests on their own.
+if(CMAKE_CROSSCOMPILING)
+  nx_add_simd_tests(nx_simd_tests "")
+endif()
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64|amd64)$" AND NOT CMAKE_CROSSCOMPILING)
   if(MSVC)
@@ -196,6 +208,46 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64|amd64)$" AND NOT CMAKE_CROSSCO
     nx_add_simd_tests(nx_simd_avx2_tests "avx2: " ${_nx_avx2_flags})
   endif()
   unset(_nx_avx2_flags)
+endif()
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" AND NOT MSVC)
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag(-march=armv9-a+sve2 NX_FOUNDATION_HAS_SVE2_FLAG)
+  set(_nx_build_sve2 ${CMAKE_CROSSCOMPILING})
+  if(NX_FOUNDATION_HAS_SVE2_FLAG AND NOT CMAKE_CROSSCOMPILING)
+    include(CheckCXXSourceRuns)
+    set(CMAKE_REQUIRED_QUIET ON)
+    check_cxx_source_runs([[
+      #include <sys/auxv.h>
+      #ifndef HWCAP2_SVE2
+      #define HWCAP2_SVE2 (1 << 1)
+      #endif
+      int main() { return (getauxval(AT_HWCAP2) & HWCAP2_SVE2) ? 0 : 1; }
+    ]] NX_FOUNDATION_HOST_RUNS_SVE2)
+    set(_nx_build_sve2 ${NX_FOUNDATION_HOST_RUNS_SVE2})
+    check_cxx_compiler_flag(-march=armv9-a+sve2+sve2-bitperm
+                            NX_FOUNDATION_HAS_SVE2_BITPERM_FLAG)
+    if(NX_FOUNDATION_HOST_RUNS_SVE2 AND NX_FOUNDATION_HAS_SVE2_BITPERM_FLAG)
+      check_cxx_source_runs([[
+        #include <sys/auxv.h>
+        #ifndef HWCAP2_SVEBITPERM
+        #define HWCAP2_SVEBITPERM (1 << 4)
+        #endif
+        int main() {
+          return (getauxval(AT_HWCAP2) & HWCAP2_SVEBITPERM) ? 0 : 1;
+        }
+      ]] NX_FOUNDATION_HOST_RUNS_SVE2_BITPERM)
+      if(NX_FOUNDATION_HOST_RUNS_SVE2_BITPERM)
+        nx_add_simd_tests(nx_simd_sve2_bitperm_tests "sve2 bitperm: "
+                          -march=armv9-a+sve2+sve2-bitperm)
+      endif()
+    endif()
+    unset(CMAKE_REQUIRED_QUIET)
+  endif()
+  if(NX_FOUNDATION_HAS_SVE2_FLAG AND _nx_build_sve2)
+    nx_add_simd_tests(nx_simd_sve2_tests "sve2: " -march=armv9-a+sve2)
+  endif()
+  unset(_nx_build_sve2)
 endif()
 
 # Compile the production locale fallback even on hosts whose standard library

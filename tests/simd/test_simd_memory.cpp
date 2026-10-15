@@ -1,5 +1,7 @@
 #include "simd/simd_test_util.h"
 
+#include "core/foundation/platform/os.h"
+
 #include <algorithm>
 #include <array>
 #include <bitset>
@@ -197,9 +199,11 @@ template <class T, int N> void permutations() {
       sd::permute(v, [](int i) { return i % 2 == 0 ? sd::zero_element : i; });
   check_lanes("permute zero_element", zeroed,
               [&](int i) { return i % 2 == 0 ? T() : v[i]; });
-  const auto twice = sd::permute<2 * N>(v, [](int i) { return i / 2; });
-  static_assert(decltype(twice)::size() == 2 * N);
-  check_lanes("permute widening", twice, [&](int i) { return v[i / 2]; });
+  if constexpr (2 * N <= 64) {
+    const auto twice = sd::permute<2 * N>(v, [](int i) { return i / 2; });
+    static_assert(decltype(twice)::size() == 2 * N);
+    check_lanes("permute widening", twice, [&](int i) { return v[i / 2]; });
+  }
   if constexpr (N >= 2) {
     const auto first_half = sd::permute<N / 2>(v, [](int i) { return i; });
     check_lanes("permute narrowing", first_half, [&](int i) { return v[i]; });
@@ -255,9 +259,9 @@ template <class T> void permutation_widths() {
   permutations<T, sd::vec<T>::size()>();
 }
 
-template <class T, int N> void gather_scatter() {
+template <class T, int N, class X = int> void gather_scatter() {
   using V = sd::vec<T, N>;
-  using I = sd::rebind_t<int, V>;
+  using I = sd::rebind_t<X, V>;
   T table[40];
   for (int i = 0; i < 40; ++i)
     table[i] = static_cast<T>(i * 2 + 1);
@@ -328,10 +332,11 @@ template <class T> void chunk_and_cat() {
   check_lanes("chunk by type", by_type[3], [&](int i) { return v[i + 6]; });
 
   constexpr int W = sd::vec<T>::size();
+  constexpr int parts = 2 * W <= 64 ? 2 : 1;
   const auto native = sd::chunk<sd::vec<T>>(
-      sd::vec<T, 2 * W>([](int i) { return static_cast<T>(i); }));
-  check_lanes("chunk native", native[1],
-              [&](int i) { return static_cast<T>(i + W); });
+      sd::vec<T, parts * W>([](int i) { return static_cast<T>(i); }));
+  check_lanes("chunk native", native[parts - 1],
+              [&](int i) { return static_cast<T>(i + (parts - 1) * W); });
 
   const auto k = v > T(3);
   const auto mask_parts = sd::chunk<4>(k);
@@ -409,6 +414,71 @@ TEST_CASE("simd: gather and scatter") {
   gather_scatter<u8, 16>();
   gather_scatter<double, 3>();
   gather_scatter<long long, 12>();
+  gather_scatter<float, 4, int>();
+  gather_scatter<float, sd::vec<float>::size(), int>();
+  gather_scatter<double, 2, long long>();
+  gather_scatter<long long, 2, long long>();
+  gather_scatter<double, sd::vec<double>::size(), long long>();
+}
+
+namespace {
+
+// The data ends where an unmapped page begins, so any access past the range
+// faults.
+template <class T, int N> void stays_inside(T *end) {
+  using V = sd::vec<T, N>;
+  using I = sd::rebind_t<int, V>;
+  const V v([](int i) { return static_cast<T>(i + 1); });
+  const auto all = typename V::mask_type(true);
+  const auto odd = typename V::mask_type([](int i) { return i % 2 == 1; });
+  for (int k = 0; k <= N; ++k) {
+    T *data = end - k;
+    for (int i = 0; i < k; ++i)
+      data[i] = static_cast<T>(100 + i);
+    check_lanes("partial_load at the edge", sd::partial_load<V>(data, k),
+                [&](int i) { return i < k ? T(100 + i) : T(); });
+    check_lanes("masked partial_load at the edge",
+                sd::partial_load<V>(data, k, odd),
+                [&](int i) { return i < k && i % 2 ? T(100 + i) : T(); });
+    sd::partial_store(v, data, k, odd);
+    for (int i = 0; i < k; ++i)
+      CHECK(same(data[i], i % 2 ? T(i + 1) : T(100 + i)));
+    sd::partial_store(v, data, k);
+    for (int i = 0; i < k; ++i)
+      CHECK(same(data[i], T(i + 1)));
+    sd::partial_store(v, data, k, all);
+
+    const I past([k](int i) { return k + i; });
+    const std::span<T> range(data, size_t(k));
+    check_lanes("partial gather past the end",
+                sd::partial_gather_from(range, past), [](int) { return T(); });
+    sd::partial_scatter_to(v, range, past);
+  }
+}
+
+} // namespace
+
+TEST_CASE("simd: partial and masked accesses stay inside the range") {
+  const usize page = nx::vmem::get_page_size();
+  const usize bytes = nx::max(nx::vmem::get_allocation_granularity(), page * 2);
+  void *base = nullptr;
+  REQUIRE(nx::vmem::reserve(&base, bytes));
+  REQUIRE(nx::vmem::commit(base, page));
+  std::byte *end = static_cast<std::byte *>(base) + page;
+
+  stays_inside<u8, sd::vec<u8>::size()>(reinterpret_cast<u8 *>(end));
+  stays_inside<u8, 3>(reinterpret_cast<u8 *>(end));
+  stays_inside<short, sd::vec<short>::size()>(reinterpret_cast<short *>(end));
+  stays_inside<int, sd::vec<int>::size()>(reinterpret_cast<int *>(end));
+  stays_inside<int, 2 * sd::vec<int>::size()>(reinterpret_cast<int *>(end));
+  stays_inside<float, sd::vec<float>::size()>(reinterpret_cast<float *>(end));
+  stays_inside<float, 12>(reinterpret_cast<float *>(end));
+  stays_inside<double, sd::vec<double>::size()>(
+      reinterpret_cast<double *>(end));
+  stays_inside<long long, sd::vec<long long>::size()>(
+      reinterpret_cast<long long *>(end));
+
+  CHECK(nx::vmem::release(base, bytes));
 }
 
 TEST_CASE("simd: chunk and cat") {
@@ -478,9 +548,9 @@ TEST_CASE("simd: type relationships match std::simd") {
                 alignof(sd::vec<double, 8>));
   static_assert(alignof(std::tuple<sd::mask<int>, sd::vec<u8, 64>>) ==
                 std::max(alignof(sd::mask<int>), alignof(sd::vec<u8, 64>)));
+  // AArch64 aligns vectors wider than 16 bytes to 16.
   static_assert(alignof(sd::vec<float>) >=
-                    sizeof(float) * sd::vec<float>::size() ||
-                sd::vec<float>::size() == 1);
+                std::min<size_t>(sizeof(float) * sd::vec<float>::size(), 16));
   static_assert(sizeof(sd::vec<float, 4>) == 16);
   static_assert(sizeof(sd::vec<int, 8>) == 32);
 
