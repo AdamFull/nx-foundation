@@ -70,6 +70,10 @@ if(NX_FOUNDATION_TRACY)
   # Jobs run on nx::fiber fibers that migrate between threads; Tracy has to
   # follow them or zones spanning a suspension end on the wrong thread.
   set(TRACY_FIBERS    ON                    CACHE BOOL "" FORCE)
+  # A profiler connects over loopback or adb forward. Listening on every
+  # interface would also have the OS ask, for each new executable, to let it
+  # through the firewall.
+  set(TRACY_ONLY_LOCALHOST ON               CACHE BOOL "" FORCE)
 
   # Tracy's standalone build opportunistically installs ccache as a global
   # compile and link launcher. As a dependency it must not rewrite the parent
