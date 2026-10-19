@@ -80,6 +80,8 @@ add_subdirectory(third_party 3p)
 set(NX_FOUNDATION_HEADERS
   core/callable.h
   core/enum.h
+  core/fixed.h
+  core/fixed_step.h
   core/foundation.h
   core/handle.h
   core/hash.h
@@ -96,7 +98,9 @@ set(NX_FOUNDATION_HEADERS
   reflection/registry.h
   reflection/type.h
 
+  containers/bit_array.h
   containers/blob.h
+  containers/btree.h
   containers/concurrent_queue.h
   containers/fixed_vector.h
   containers/flat_map.h
@@ -108,6 +112,7 @@ set(NX_FOUNDATION_HEADERS
   containers/slot_map.h
   containers/radix_sort.h
   containers/raw_hash_table.h
+  containers/slot_policy.h
   containers/small_vector.h
   containers/sparse_set.h
   containers/stream_compact.h

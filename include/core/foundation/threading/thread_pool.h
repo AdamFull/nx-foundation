@@ -24,7 +24,8 @@ template <typename T> class completion_source;
 
 /// Scheduling urgency within a pool. Critical is intended for work on which
 /// the current frame or an audio deadline waits; Background is for progressive
-/// IO/decoding. Aging in the dispatcher guarantees lower lanes make progress.
+/// IO/decoding. Every 8th and 32nd pick looks at a lower lane first, so
+/// sustained higher-priority work cannot starve the rest.
 enum class task_priority : u8 {
   Background,
   Normal,

@@ -66,7 +66,7 @@ ctest --test-dir build -C Debug
 
 | Folder (under `include/core/foundation/`) | Scope |
 | --- | --- |
-| `core/` | Platform/compiler detection, allocators, and the primitives everything else builds on (`foundation.h`, `handle.h`, `hash.h`, `result.h`, `scope_guard.h`, `callable.h`, `enum.h`, `random.h`, `sha256.h`). |
+| `core/` | Platform/compiler detection, allocators, and the primitives everything else builds on (`foundation.h`, `handle.h`, `hash.h`, `result.h`, `scope_guard.h`, `callable.h`, `enum.h`, `random.h`, `sha256.h`, `time.h`, `fixed.h`, `fixed_step.h`, `type_index.h`). |
 | `containers/` | Custom container types. |
 | `strings/` | UTF-8 string, string view, `std::format` integration, interned ids. |
 | `fibers/` | Stackful context switching and fiber stacks, the base of the fiber job system. |
@@ -94,7 +94,12 @@ ctest --test-dir build -C Debug
 | `nx::mpmc::Queue` | `containers/concurrent_queue.h` | A bounded lock-free queue for many producers and many consumers. |
 | `nx::mpsc::Queue` | `containers/concurrent_queue.h` | A bounded lock-free queue for many producers and a single consumer, with `consume_all`/`consume_batch` helpers. |
 | `nx::sort_by_key` / `nx::sort_by_key_into` | `containers/radix_sort.h` | A stable radix sort on a 32-bit key: it sorts (key, index) pairs, then gathers each element once. `coherent_sort_by_key_into` is for data re-sorted every frame with little change - it starts from the previous call's order and falls back to the radix when too much moved, with the same result either way. |
-| `nx::sort_by_key` / `nx::sort_by_key_into` | `containers/radix_sort.h` | A stable radix sort on a 32-bit key: it sorts (key, index) pairs, then gathers each element once. `coherent_sort_by_key_into` is for data re-sorted every frame with little change - it starts from the previous call's order and falls back to the radix when too much moved, with the same result either way. |
+| `nx::radix_context` / `nx::radix_sort_pairs` | `containers/radix_sort.h` | The radix sort underneath: (key, value) pairs with caller-owned scratch, serial or across a `thread_pool` past a calibrated size. |
+| `nx::compact_context` | `containers/stream_compact.h` | Keeps the elements a predicate accepts, in order, serially or across a `thread_pool`; `transform_compact` produces and filters in one pass. |
+| `nx::spsc::Ring` | `containers/ring_buffer.h` | A bounded lock-free ring for one producer and one consumer over trivially copyable data, written and read in bulk. |
+| `nx::bit_array` | `containers/bit_array.h` | `N` flags packed into 64-bit words, with `count`, `all`/`any`/`none` and `find_first`/`find_next` over set bits. Not thread-safe. |
+| `nx::string_map` | `containers/string_map.h` | A `flat_hash_map` keyed by `nx::string` that looks up by `string_view` without building a string. |
+| `nx::sync_slot_map` | `containers/sync_slot_map.h` | A `slot_map` two threads share, such as render resources the main thread creates and the render thread reads. A pointer from `try_get` stays valid while other entries come and go; the caller must not erase one still in use. |
 
 ## Strings
 
@@ -355,11 +360,9 @@ comment.
 | --- | --- | --- |
 | `nx::fiber::Context` | `fibers/context.h` | A suspended or running execution context. `switch_to(from, to, data)` suspends one and resumes the other, passing a pointer both ways; `exit_to` leaves a fiber for good. Saves the ABI's callee-saved registers and FP control state; on Windows it also swaps the TIB stack bounds, so SEH, `__chkstk` and guard-page growth work on fiber stacks. Carries unwind info so debuggers walk fiber stacks, and ASan/TSan annotations. |
 | `nx::fiber::StackPool` / `nx::fiber::Stack` | `fibers/stack.h` | Guard-paged fiber stacks that only consume memory as deep as they are used (Windows commits on demand; POSIX faults pages lazily), recycled most-recent-first with a bounded cache and a `trim()` that returns grown pages to the OS. |
-
 | `nx::fiber::Scheduler` | `fibers/scheduler.h` | The fiber job system. Worker threads run jobs (`{entry, arg}`, three priorities, per-worker queues with stealing) on pooled fibers. `wait(counter)` suspends the calling fiber instead of its thread. The constructing thread is the main thread: it runs only main-affine work (`run_on_main`), inside `pump_main(budget)` or while it waits, and always on its own stack, never a fiber's. `run_blocking(fn)` moves the calling fiber to one of `Config::blocking_threads` service threads for a call that blocks in the OS or a driver, then back to a worker. Destruction finishes outstanding jobs. |
 | `nx::fiber::Counter` | `fibers/scheduler.h` | Outstanding-work count that jobs decrement on completion and fibers wait on. Any thread may decrement it, including I/O completion threads the scheduler does not own. |
-
-| `nx::fiber::mutex` et al. | `fibers/sync.h` | `mutex`, `rw_lock` (writer-preferring), `event`, `semaphore`, `cond_var`, `barrier` (with `arrive_and_drop` for a participant that stops early) and `sleep_for` that suspend the waiting fiber instead of its thread, with timed waits on the scheduler's timers. Waking hands ownership straight to the waiter. On a thread no scheduler owns, the same objects block the thread. Unlike `nx::mutex`, they may be held across a suspension. |
+| `nx::fiber::mutex` et al. | `fibers/sync.h` | `mutex`, `rw_lock` (writer-preferring), `event`, `semaphore`, `cond_var`, `barrier` (with `arrive_and_drop` for a participant that stops early) and `sleep_for` that suspend the waiting fiber instead of its thread, with timed waits on the scheduler's timers. `rw_lock`, an auto-reset `event` and `semaphore` hand what they release to the waiters they wake; `mutex` does not, so a running fiber may take it before the woken waiter tries again. On a thread no scheduler owns, the same objects block the thread. Unlike `nx::mutex`, they may be held across a suspension. |
 
 A fiber can resume on a different OS thread than the one it suspended on. Code
 that switches or waits must not keep a `thread_local` address across the call,
@@ -399,8 +402,6 @@ non-inlined calls.
 | `nx::unique_function` | `core/callable.h` | A move-only callable, like `std::move_only_function`: small targets live inline, larger ones on the nx heap. The shape for queued work. |
 | `nx::inplace_function` | `core/callable.h` | A type-erased callable stored in a fixed inline buffer (16 bytes by default on 64-bit); never allocates. |
 | `nx::function_ref` | `core/callable.h` | A non-owning reference to a callable, for parameters that only call it. |
-
-The owning wrappers convert implicitly from any callable invocable with their signature, a void signature discards the result, and a null function pointer or `nullptr` makes them empty (`valid()`, `== nullptr`, `reset()`).
 | `nx::enums::map` | `core/enum.h` | A fixed array indexed directly by enum value, sized from the enum's `Count`. Zero-overhead enum-to-value lookup. |
 | `nx::enums::flags` | `core/enum.h` | A type-safe bitset over a scoped enum's enumerators, with bit operators. |
 | `nx::result` / `nx::err` | `core/result.h` | An error-or-value type for exception-free error handling, with `and_then`/`transform`/`or_else`/`transform_error` combinators. |
@@ -409,6 +410,11 @@ The owning wrappers convert implicitly from any callable invocable with their si
 | `nx::Guid` | `core/random.h` | A 128-bit unique identifier (UUID): parse, format, compare, hash. Generate via `nx::Rng::guid()`. |
 | `nx::Rng` | `core/random.h` | A seedable pseudo-random generator; not for secrets, which come from `nx::os::random_bytes`. |
 | `nx::sha256` | `core/sha256.h` | The SHA-256 digest (FIPS 180-4) of a byte span, for identities and checks such as PKCE; not a password hash. |
+| `nx::duration` / `nx::timestamp` / `nx::stopwatch` | `core/time.h` | Signed nanosecond spans and monotonic time points, a stopwatch, and `scoped_micros` that writes a scope's length on exit. |
+| `nx::fixed` | `core/fixed.h` | Q16.16 fixed point whose overflow wraps as defined behaviour, so every peer of a rollback session computes the same bits. |
+| `nx::fixed_step` | `core/fixed_step.h` | A fixed-rate simulation clock: how many steps a frame runs, capped by measured step cost, with the remainder as an interpolation `alpha()`. |
+
+The owning callable wrappers convert implicitly from any callable invocable with their signature, a void signature discards the result, and a null function pointer or `nullptr` makes them empty (`valid()`, `== nullptr`, `reset()`).
 
 ## Core
 
@@ -418,5 +424,6 @@ small math helpers (`min`, `max`, `clamp`, `align_up`, `next_pow2`), the bounded
 `str_copy` string helper, the `mem_alloc` / `allocate` family, and the default
 `nx::Allocator` (mimalloc-backed). `core/handle.h` defines the versioned
 `basic_handle` (and `handle32` / `handle64`) used as keys by the handle-based
-containers. `core/hash.h` provides the hashing utilities (`nx::hash`,
-FNV/wyhash-style helpers) consumed by `hash_map` and `id_string`.
+containers. `core/hash.h` provides FNV-1a (`hash_fnv1a32`/`hash_fnv1a64`
+and the incremental `fnv1a32`/`fnv1a64`), the integer mixers `hash_u32` and
+`hash_u64`, `hash_ptr` and `hash_comb`, which `hash_map` and `id_string` use.

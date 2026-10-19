@@ -158,7 +158,7 @@
                     </ArrayItems>
                 </Expand>
             </Synthetic>
-            <ArrayItems>
+            <ArrayItems Optional="true">
                 <Size>m_values._Mypair._Myval2._Mylast - m_values._Mypair._Myval2._Myfirst</Size>
                 <ValuePointer>m_values._Mypair._Myval2._Myfirst</ValuePointer>
             </ArrayItems>
