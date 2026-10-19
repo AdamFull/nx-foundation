@@ -233,12 +233,36 @@ TEST_CASE("crash: the tail keeps the newest records, not the oldest") {
 TEST_CASE("crash: earlier reports are listed newest first") {
   (void)installed_dir();
   REQUIRE(nx::crash::report({"one"}));
+  // File times can be a millisecond apart at best.
+  nx::this_thread::sleep_for(std::chrono::milliseconds(20));
   REQUIRE(nx::crash::report({"two"}));
 
   const nx::vector<nx::string> found = nx::crash::pending_reports();
   REQUIRE(found.size() >= 2u);
-  for (usize i = 1; i < found.size(); ++i)
-    CHECK(found[i - 1] > found[i]);
+  CHECK(nx::fs::path::filename(found[0].view()) ==
+        nx::fs::path::filename(nx::crash::last_report()));
+}
+
+TEST_CASE("crash: reports are ordered by age, not by kind") {
+  const nx::string &where = installed_dir();
+  const nx::string older = nx::fs::path::join(where.view(), "zzz-older.txt");
+  const nx::string newer = nx::fs::path::join(where.view(), "aaa-newer.txt");
+  REQUIRE(nx::fs::file_write_text(nx::fs::path_view(older), "old").has_value());
+  nx::this_thread::sleep_for(std::chrono::milliseconds(50));
+  REQUIRE(nx::fs::file_write_text(nx::fs::path_view(newer), "new").has_value());
+
+  const nx::vector<nx::string> found = nx::crash::pending_reports();
+  const auto at = [&](const nx::string_view name) {
+    return std::find_if(found.begin(), found.end(),
+                        [&](const nx::string &path) {
+                          return nx::fs::path::filename(path.view()) == name;
+                        }) -
+           found.begin();
+  };
+  CHECK(at("aaa-newer.txt") < at("zzz-older.txt"));
+  CHECK(at("zzz-older.txt") < nx::cast<isize>(found.size()));
+  (void)nx::fs::remove(nx::fs::path_view(older));
+  (void)nx::fs::remove(nx::fs::path_view(newer));
 }
 
 TEST_CASE("crash: kind names the file, so a script fault is filed as one") {

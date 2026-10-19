@@ -24,6 +24,15 @@ namespace {
 
 const nx::log::Category log_vfs = nx::log::category("vfs");
 
+/// After the last byte of an entry: one more read must find its end, which
+/// also lets minizip check the CRC, and closing reports a mismatch.
+[[nodiscard]] bool finish_entry(void *reader) {
+  u8 extra = 0;
+  const bool ended = mz_zip_reader_entry_read(reader, &extra, 1) == 0;
+  const bool closed = mz_zip_reader_entry_close(reader) == MZ_OK;
+  return ended && closed;
+}
+
 struct ZipEntry {
   u64 size = 0;
   bool is_dir = false;
@@ -258,32 +267,24 @@ public:
       : m_archive(nx::make_shared<ZipArchive>(std::move(source))),
         m_subdir(std::move(subdir)) {}
 
+  /// False when the central directory cannot be read to its end: a mount of
+  /// a damaged archive fails rather than showing part of it.
   bool build_index() {
     ZipReader *reader = m_archive->acquire();
     void *r = reader ? reader->handle : nullptr;
     if (!r)
       return false;
+    defer { m_archive->release_reader(reader); };
     i32 e = mz_zip_reader_goto_first_entry(r);
     while (e == MZ_OK) {
       mz_zip_file *info = nullptr;
-      if (mz_zip_reader_entry_get_info(r, &info) == MZ_OK && info &&
-          info->filename) {
-        nx::string_view full(info->filename);
-        nx::string_view rel;
-        if (strip_subdir(full, rel) && !rel.empty()) {
-          const bool is_dir = rel.back() == '/';
-          nx::string key(is_dir ? rel.substr(0, rel.size() - 1) : rel);
-          if (!key.empty()) {
-            const i64 sz = info->uncompressed_size;
-            m_index[std::move(key)] = ZipEntry{
-                .size = nx::cast<u64>(sz < 0 ? 0 : sz), .is_dir = is_dir};
-          }
-        }
-      }
+      if (mz_zip_reader_entry_get_info(r, &info) != MZ_OK || !info ||
+          !info->filename)
+        return false;
+      index_entry(*info);
       e = mz_zip_reader_goto_next_entry(r);
     }
-    m_archive->release_reader(reader);
-    return true;
+    return e == MZ_END_OF_LIST;
   }
 
   [[nodiscard]] io_result<nx::blob<u8>> read(const path_view rel) override {
@@ -307,22 +308,29 @@ public:
         mz_zip_reader_entry_open(r) != MZ_OK)
       return err(file_error{io_error::NotFound, 0});
 
-    nx::blob<u8> data(nx::cast<usize>(size));
+    // The size is the archive's own claim, so memory follows the bytes that
+    // arrive: a forged header cannot make this allocate gigabytes up front.
+    constexpr u64 FIRST_BLOCK = u64{1} << 20;
+    nx::blob<u8> data(nx::cast<usize>(nx::min(size, FIRST_BLOCK)));
     usize off = 0;
     bool ok = true;
     while (off < size) {
-      const i32 want = nx::cast<i32>(nx::min<u64>(size - off, 1u << 20));
+      if (off == data.size()) {
+        nx::blob<u8> grown(
+            nx::cast<usize>(nx::min(size, nx::cast<u64>(data.size()) * 2)));
+        std::memcpy(grown.data(), data.data(), off);
+        data = std::move(grown);
+      }
+      const i32 want = nx::cast<i32>(
+          nx::min<usize>(data.size() - off, nx::cast<usize>(FIRST_BLOCK)));
       const i32 n = mz_zip_reader_entry_read(r, data.data() + off, want);
-      if (n < 0) {
+      if (n <= 0) {
         ok = false;
         break;
       }
-      if (n == 0)
-        break;
       off += nx::cast<usize>(n);
     }
-    mz_zip_reader_entry_close(r);
-    if (!ok || off != size)
+    if (!ok || !finish_entry(r))
       return err(file_error{io_error::ReadFailed, 0});
     return data;
   }
@@ -393,6 +401,29 @@ public:
   [[nodiscard]] const char *name() const noexcept override { return "zip"; }
 
 private:
+  /// Indexes an entry under its canonical name. One that names anything else,
+  /// such as "../x" or "a//b", is left out: it is not a path the VFS can ask
+  /// for, and listing it would hand callers a name that climbs out.
+  void index_entry(const mz_zip_file &info) {
+    const nx::string_view full(info.filename);
+    nx::string_view rel;
+    if (!strip_subdir(full, rel) || rel.empty())
+      return;
+    const bool is_dir = rel.back() == '/';
+    const nx::string_view name = is_dir ? rel.substr(0, rel.size() - 1) : rel;
+    nx::string key = canon_rel(path_view(name));
+    if (key.empty())
+      return;
+    if (key.view() != name) {
+      nx::logw(log_vfs, "vfs: zip entry '{}' is not a plain path; skipped",
+               full);
+      return;
+    }
+    const i64 sz = info.uncompressed_size;
+    m_index[std::move(key)] =
+        ZipEntry{.size = nx::cast<u64>(sz < 0 ? 0 : sz), .is_dir = is_dir};
+  }
+
   [[nodiscard]] bool strip_subdir(const nx::string_view full,
                                   nx::string_view &out) const {
     if (m_subdir.empty()) {
@@ -459,6 +490,13 @@ public:
       }
       total += nx::cast<usize>(count);
       m_position += nx::cast<u64>(count);
+    }
+    if (!m_failed && m_position == m_size && m_open) {
+      m_open = false;
+      if (!finish_entry(m_reader->handle)) {
+        m_failed = true;
+        return 0;
+      }
     }
     return total;
   }

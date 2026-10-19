@@ -868,3 +868,18 @@ TEST_CASE("log: the file sink writes and rotates under a non-ASCII path") {
     (void)nx::fs::remove(nx::fs::path_view(p));
   nx::log::set_level(saved);
 }
+
+TEST_CASE("log: categories past the first page keep their own names") {
+  nx::vector<nx::log::Category> made;
+  for (int i = 0; i < 200; ++i)
+    made.push_back(nx::log::category(nx::format("f19_page_{}", i).view()));
+  for (int i = 0; i < 200; ++i)
+    CHECK(nx::string_view(made[i].name()) ==
+          nx::format("f19_page_{}", i).view());
+  CHECK(nx::log::category("f19_page_150").raw() == made[150].raw());
+
+  const nx::log::Level before = made[0].level();
+  nx::log::set_level(made[180], nx::log::Level::Error);
+  CHECK(made[0].level() == before);
+  CHECK(made[180].level() == nx::log::Level::Error);
+}

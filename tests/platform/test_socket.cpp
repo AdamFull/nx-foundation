@@ -280,3 +280,33 @@ TEST_CASE("net: a udp receive with nothing waiting is 0") {
   net::Endpoint from;
   CHECK(s.recv_from({buffer, sizeof(buffer)}, from) == 0);
 }
+
+TEST_CASE("net: a closed udp port and an oversized datagram are not errors") {
+  net::UdpSocket sender;
+  REQUIRE(sender.bind(net::Endpoint::loopback(net::Family::V4, 0)));
+  net::UdpSocket closed;
+  REQUIRE(closed.bind(net::Endpoint::loopback(net::Family::V4, 0)));
+  const net::Endpoint gone = closed.local();
+  closed.close();
+
+  const nx::string_view ping = "ping";
+  REQUIRE(sender.send_to({ping.data(), ping.size()}, gone) == 4);
+  nx::this_thread::sleep_for(std::chrono::milliseconds(50));
+  char buffer[64];
+  net::Endpoint from;
+  CHECK(sender.recv_from({buffer, sizeof(buffer)}, from) == 0);
+
+  net::UdpSocket receiver;
+  REQUIRE(receiver.bind(net::Endpoint::loopback(net::Family::V4, 0)));
+  const std::string big(100, 'x');
+  REQUIRE(sender.send_to({big.data(), big.size()}, receiver.local()) == 100);
+  char small[10];
+  isize got = 0;
+  for (u32 i = 0; i < 200 && got == 0; ++i) {
+    got = receiver.recv_from({small, sizeof(small)}, from);
+    if (got == 0)
+      nx::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  CHECK(got == 10);
+  CHECK(from == sender.local());
+}

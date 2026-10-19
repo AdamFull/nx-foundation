@@ -645,6 +645,17 @@ bool UdpSocket::bind(const Endpoint &at) {
     shut(widen(s));
     return false;
   }
+#if NX_HAS_WINDOWS_API
+  // Windows reports an ICMP "port unreachable" from an earlier send as a
+  // failed receive; POSIX does not, and the socket is fine either way.
+  {
+    BOOL report = FALSE;
+    DWORD returned = 0;
+    constexpr DWORD UDP_CONNRESET = _WSAIOW(IOC_VENDOR, 12);
+    (void)::WSAIoctl(s, UDP_CONNRESET, &report, sizeof(report), nullptr, 0,
+                     &returned, nullptr, nullptr);
+  }
+#endif
 
   sockaddr_storage bound;
   socklen_t bound_size = sizeof(bound);
@@ -706,6 +717,15 @@ isize UdpSocket::recv_from(const std::span<char> into, Endpoint &from) {
     from = endpoint_from(reinterpret_cast<const sockaddr *>(&address));
     return static_cast<isize>(got);
   }
+#if NX_HAS_WINDOWS_API
+  const int error = ::WSAGetLastError();
+  if (error == WSAEMSGSIZE) {
+    from = endpoint_from(reinterpret_cast<const sockaddr *>(&address));
+    return static_cast<isize>(into.size());
+  }
+  if (error == WSAECONNRESET || error == WSAENETRESET)
+    return 0;
+#endif
   return would_block() ? 0 : -1;
 }
 

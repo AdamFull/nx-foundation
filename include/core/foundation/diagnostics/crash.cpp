@@ -804,20 +804,37 @@ usize stamp_now(char *const out, const usize capacity) {
                                  parts.tm_sec));
 }
 
+/// Reports (and dumps, when @p dumps) newest first. By write time: a report's
+/// name starts with its kind, so names do not sort by age.
+vector<string> newest_first(const vector<fs::directory_entry> &listed,
+                            const bool dumps) {
+  struct dated {
+    u64 mtime_ns;
+    string path;
+  };
+  vector<dated> found;
+  for (const fs::directory_entry &entry : listed)
+    if (entry.path.ends_with(".txt") || (dumps && entry.path.ends_with(".dmp")))
+      found.push_back({fs::stat_file(entry.path).mtime_ns, entry.path});
+  std::sort(found.begin(), found.end(), [](const dated &a, const dated &b) {
+    return a.mtime_ns != b.mtime_ns ? a.mtime_ns > b.mtime_ns : a.path > b.path;
+  });
+  vector<string> out;
+  out.reserve(found.size());
+  for (dated &d : found)
+    out.push_back(std::move(d.path));
+  return out;
+}
+
 void prune(const string_view where, const u32 keep) {
   const auto listed = fs::directory_entries(where);
   if (!listed)
     return;
-  vector<string> reports;
-  for (const fs::directory_entry &entry : listed.value())
-    if (entry.path.ends_with(".txt") || entry.path.ends_with(".dmp"))
-      reports.push_back(entry.path);
+  const vector<string> reports = newest_first(listed.value(), true);
   if (reports.size() <= keep)
     return;
 
-  std::sort(reports.begin(), reports.end());
-  const usize drop = reports.size() - keep;
-  for (usize i = 0; i < drop; ++i) {
+  for (usize i = keep; i < reports.size(); ++i) {
     if (reports[i].ends_with(".txt")) {
       string attachment_prefix(
           reports[i].view().substr(0, reports[i].size() - 4));
@@ -1030,12 +1047,7 @@ vector<string> pending_reports() {
   const auto listed = fs::directory_entries(directory());
   if (!listed)
     return found;
-  for (const fs::directory_entry &entry : listed.value())
-    if (entry.path.ends_with(".txt"))
-      found.push_back(entry.path);
-  std::sort(found.begin(), found.end(),
-            [](const string &a, const string &b) { return a > b; });
-  return found;
+  return newest_first(listed.value(), false);
 }
 
 } // namespace nx::crash

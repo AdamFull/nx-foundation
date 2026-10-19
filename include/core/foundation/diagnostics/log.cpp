@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <new>
 
 #if NX_HAS_WINDOWS_API
 #include <io.h>
@@ -31,14 +32,21 @@ namespace nx::log {
 
 namespace {
 
-constexpr usize MAX_CATEGORIES = 64;
+constexpr usize CATEGORY_PAGE = 64;
+constexpr usize MAX_CATEGORY_PAGES = 64;
 constexpr usize LOG_QUEUE_CAPACITY = 1024;
 constexpr usize LINE_CAPACITY = LOG_MESSAGE_CAPACITY + 160;
 
+/// Categories live in pages that never move, as a Category holds a pointer.
+/// The pages are never freed: logging may outlive any static destructor.
 struct Registry {
-  CategoryState entries[MAX_CATEGORIES];
-  std::atomic<u32> count{0};
+  CategoryState *pages[MAX_CATEGORY_PAGES] = {};
+  u32 count = 0;
   mutex mtx;
+
+  [[nodiscard]] CategoryState &at(const u32 i) noexcept {
+    return pages[i / CATEGORY_PAGE][i % CATEGORY_PAGE];
+  }
 };
 
 Registry &registry() noexcept {
@@ -386,21 +394,28 @@ Category category(const string_view name) noexcept {
 
   const u64 key = hash_fnv1a64(name);
   const usize length = min(name.size(), sizeof(CategoryState::name) - 1);
-  const u32 count = r.count.load(std::memory_order_relaxed);
-  for (u32 i = 0; i < count; ++i)
-    if (r.entries[i].key == key &&
-        string_view(r.entries[i].name) == name.substr(0, length))
-      return Category{&r.entries[i]};
+  for (u32 i = 0; i < r.count; ++i)
+    if (r.at(i).key == key &&
+        string_view(r.at(i).name) == name.substr(0, length))
+      return Category{&r.at(i)};
 
-  if (count >= MAX_CATEGORIES)
-    return Category{&r.entries[0]};
+  // Past the last page, or out of memory: no category rather than another
+  // one's, whose name and level would then be wrong.
+  const usize page = r.count / CATEGORY_PAGE;
+  if (page >= MAX_CATEGORY_PAGES)
+    return Category{};
+  if (r.pages[page] == nullptr) {
+    r.pages[page] = new (std::nothrow) CategoryState[CATEGORY_PAGE];
+    if (r.pages[page] == nullptr)
+      return Category{};
+  }
 
-  CategoryState &e = r.entries[count];
+  CategoryState &e = r.at(r.count);
   memcpy(e.name, name.data(), length);
   e.name[length] = '\0';
   e.key = key;
   e.level.store(nx::cast<u8>(Level::Trace), std::memory_order_relaxed);
-  r.count.store(count + 1, std::memory_order_release);
+  ++r.count;
   return Category{&e};
 }
 

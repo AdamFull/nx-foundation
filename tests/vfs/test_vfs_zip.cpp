@@ -8,6 +8,8 @@
 
 #include <atomic>
 #include <cstring>
+#include <string>
+#include <vector>
 
 namespace vfs = nx::vfs;
 using vfs_fixture::blob_of;
@@ -467,4 +469,153 @@ TEST_CASE("vfs zip keeps its archive when the file is replaced on disk") {
   vfs::mount("/new", *fresh, 0);
   CHECK(read_eq("/new/a.txt", "NEW A"));
   CHECK_FALSE(vfs::exists("/new/b.txt"));
+}
+
+namespace {
+
+/// Stored entries written byte by byte, for archives ZipWriter refuses to
+/// make: wrong CRCs, forged sizes, names that climb out.
+struct raw_entry {
+  std::string name;
+  std::string data;
+  u32 crc = 0;
+  u32 declared = 0;
+};
+
+u32 crc32_of(const std::string_view s) {
+  u32 c = ~0u;
+  for (const unsigned char b : s) {
+    c ^= b;
+    for (int k = 0; k < 8; ++k)
+      c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1u)));
+  }
+  return ~c;
+}
+
+raw_entry stored(std::string name, std::string data) {
+  const u32 crc = crc32_of(data);
+  const auto size = nx::cast<u32>(data.size());
+  return {std::move(name), std::move(data), crc, size};
+}
+
+void put16(std::string &o, const u32 v) {
+  o.push_back(nx::cast<char>(v & 0xffu));
+  o.push_back(nx::cast<char>((v >> 8) & 0xffu));
+}
+
+void put32(std::string &o, const u32 v) {
+  put16(o, v & 0xffffu);
+  put16(o, v >> 16);
+}
+
+std::string raw_zip(const std::vector<raw_entry> &entries) {
+  std::string out;
+  std::string central;
+  for (const raw_entry &e : entries) {
+    const auto offset = nx::cast<u32>(out.size());
+    const auto stored_size = nx::cast<u32>(e.data.size());
+    const auto name_size = nx::cast<u32>(e.name.size());
+    put32(out, 0x04034b50u);
+    put16(out, 20);
+    put16(out, 0);
+    put16(out, 0);
+    put16(out, 0);
+    put16(out, 0x21);
+    put32(out, e.crc);
+    put32(out, stored_size);
+    put32(out, e.declared);
+    put16(out, name_size);
+    put16(out, 0);
+    out += e.name;
+    out += e.data;
+
+    put32(central, 0x02014b50u);
+    put16(central, 20);
+    put16(central, 20);
+    put16(central, 0);
+    put16(central, 0);
+    put16(central, 0);
+    put16(central, 0x21);
+    put32(central, e.crc);
+    put32(central, stored_size);
+    put32(central, e.declared);
+    put16(central, name_size);
+    put16(central, 0);
+    put16(central, 0);
+    put16(central, 0);
+    put16(central, 0);
+    put32(central, 0);
+    put32(central, offset);
+    central += e.name;
+  }
+  const auto directory_at = nx::cast<u32>(out.size());
+  out += central;
+  put32(out, 0x06054b50u);
+  put16(out, 0);
+  put16(out, 0);
+  put16(out, nx::cast<u32>(entries.size()));
+  put16(out, nx::cast<u32>(entries.size()));
+  put32(out, nx::cast<u32>(central.size()));
+  put32(out, directory_at);
+  put16(out, 0);
+  return out;
+}
+
+auto mount_raw(const std::string &zip) {
+  return vfs::make_zip_device(nx::blob<u8>(std::span<const u8>(
+      reinterpret_cast<const u8 *>(zip.data()), zip.size())));
+}
+
+} // namespace
+
+TEST_CASE("vfs zip refuses an entry whose CRC does not match") {
+  raw_entry bad = stored("bad.txt", "HELLO");
+  bad.crc ^= 1u;
+  auto zd = mount_raw(raw_zip({stored("good.txt", "FINE"), bad}));
+  REQUIRE(zd.has_value());
+  scoped_vfs guard;
+  vfs::mount("/", *zd, 0);
+
+  CHECK(read_eq("/good.txt", "FINE"));
+  CHECK_FALSE(vfs::read("/bad.txt").has_value());
+
+  auto stream = vfs::open("/bad.txt");
+  REQUIRE(stream.has_value());
+  char buffer[16] = {};
+  CHECK((*stream)->read(buffer, 5) == 0u);
+  CHECK((*stream)->eof());
+}
+
+TEST_CASE("vfs zip does not trust an entry's declared size") {
+  raw_entry forged = stored("forged.bin", "SHORT");
+  forged.declared = 0x7fff0000u;
+  auto zd = mount_raw(raw_zip({forged}));
+  REQUIRE(zd.has_value());
+  scoped_vfs guard;
+  vfs::mount("/", *zd, 0);
+  CHECK_FALSE(vfs::read("/forged.bin").has_value());
+}
+
+TEST_CASE("vfs zip refuses an archive whose directory breaks off") {
+  std::string zip = raw_zip({stored("one.txt", "1"), stored("two.txt", "2")});
+  const usize first = zip.find("PK\x01\x02");
+  REQUIRE(first != std::string::npos);
+  const usize second = zip.find("PK\x01\x02", first + 4);
+  REQUIRE(second != std::string::npos);
+  zip[second + 3] = '\x09';
+  CHECK_FALSE(mount_raw(zip).has_value());
+}
+
+TEST_CASE("vfs zip leaves out entries that are not plain paths") {
+  auto zd = mount_raw(
+      raw_zip({stored("../evil.txt", "E"), stored("a/../../up.txt", "U"),
+               stored("ok.txt", "K")}));
+  REQUIRE(zd.has_value());
+  scoped_vfs guard;
+  vfs::mount("/", *zd, 0);
+  CHECK(read_eq("/ok.txt", "K"));
+  const auto listed = vfs::list("/");
+  REQUIRE(listed.has_value());
+  CHECK(listed->size() == 1u);
+  CHECK(has_name(*listed, "ok.txt"));
 }

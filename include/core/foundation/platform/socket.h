@@ -137,7 +137,8 @@ public:
   [[nodiscard]] isize send_to(std::span<const char> from, const Endpoint &to);
   /// Bytes read, and in @p from who sent them. 0 when nothing was waiting - the
   /// normal idle case - and -1 on error. A zero-length datagram is a real 0,
-  /// not a closed peer: UDP has no close.
+  /// not a closed peer: UDP has no close. A datagram longer than @p into is
+  /// cut to fit on every platform, and a peer's closed port is not an error.
   [[nodiscard]] isize recv_from(std::span<char> into, Endpoint &from);
 
 private:
