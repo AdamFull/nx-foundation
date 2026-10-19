@@ -3,6 +3,7 @@
 #include "core/foundation/strings/id_string.h"
 
 #include <algorithm>
+#include <format>
 #include <set>
 #include <string>
 #include <thread>
@@ -316,4 +317,11 @@ TEST_CASE("id_string: formats as its text, or as a hex id when unresolvable") {
 
   const nx::id_string opaque = nx::id_string::from_id(0x0123456789ABCDEFull);
   CHECK(std::format("{}", opaque) == "0x0123456789abcdef");
+}
+
+TEST_CASE("id_string: formats into wide text as UTF-16 or UTF-32") {
+  const nx::id_string id(nx::string_view("h\u00e9llo \U0001F600"));
+  CHECK(std::format(L"{}", id) == std::wstring(L"h\u00e9llo \U0001F600"));
+  CHECK(std::format(L"[{:>4}]", nx::id_string("ab")) ==
+        std::wstring(L"[  ab]"));
 }

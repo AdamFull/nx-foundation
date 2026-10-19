@@ -13,6 +13,7 @@ const char *format_to(char (&buf)[N], string_view fmt,
   struct capped_out_it {
     char **cur;
     char *limit;
+    bool *cut;
     using difference_type = std::ptrdiff_t;
     capped_out_it &operator++() noexcept { return *this; }
     capped_out_it operator++(int) noexcept { return *this; }
@@ -20,14 +21,20 @@ const char *format_to(char (&buf)[N], string_view fmt,
     capped_out_it &operator=(const char c) noexcept {
       if (*cur < limit)
         *(*cur)++ = c;
+      else
+        *cut = true;
       return *this;
     }
   };
 
   char *cur = buf;
+  bool cut = false;
   try {
-    std::vformat_to(capped_out_it{&cur, buf + N - 1}, fmt,
+    std::vformat_to(capped_out_it{&cur, buf + N - 1, &cut}, fmt,
                     std::make_format_args(args...));
+    if (cut)
+      cur = buf +
+            utf8::complete_prefix(string_view(buf, nx::cast<usize>(cur - buf)));
   } catch (...) {
     cur = buf;
     constexpr string_view fallback = "[format error]";

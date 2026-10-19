@@ -8,6 +8,7 @@
 #include <cstring>
 #include <format>
 #include <iterator>
+#include <stdexcept>
 #include <string>
 
 namespace nx {
@@ -206,6 +207,16 @@ void for_each_codepoint(const char *data, const usize length, Fn &&fn) {
   while (at > 0 && is_continuation_byte(text[at]))
     --at;
   return at;
+}
+
+/// The length of @p text without a sequence cut short at its end, as text
+/// truncated at a byte limit leaves one.
+[[nodiscard]] constexpr usize complete_prefix(const string_view text) noexcept {
+  const usize last = prev_char(text, text.size());
+  if (last == text.size())
+    return last;
+  const usize need = sequence_length(text[last]);
+  return need != 0 && text.size() - last < need ? last : text.size();
 }
 
 // Places a caret can stand, which is what next_char steps through. basic_string::code_point_count
@@ -566,7 +577,8 @@ public:
   }
 
   basic_string &insert(const usize pos, string_view sv) {
-    assert(pos <= size());
+    if (pos > size())
+      throw std::out_of_range("nx::basic_string::insert");
     const usize n = sv.size();
     if (n == 0)
       return *this;
@@ -575,7 +587,7 @@ public:
       return insert(pos, string_view(tmp.data(), tmp.size()));
     }
     const usize sz = size();
-    ensure_capacity(sz + n);
+    ensure_capacity(grown(sz, n));
     char *d = data();
     std::memmove(d + pos + n, d + pos, sz - pos);
     std::memcpy(d + pos, sv.data(), n);
@@ -585,7 +597,8 @@ public:
 
   basic_string &erase(const usize pos = 0, const usize count = npos) {
     const usize sz = size();
-    assert(pos <= sz);
+    if (pos > sz)
+      throw std::out_of_range("nx::basic_string::erase");
     const usize n = count < sz - pos ? count : sz - pos;
     char *d = data();
     std::memmove(d + pos, d + pos + n, sz - pos - n);
@@ -816,13 +829,21 @@ private:
 
   void grow(const usize min_cap) {
     const usize cur = capacity();
-    usize new_cap = cur + cur / 2;
+    usize new_cap = nx::min(cur + cur / 2, max_size());
     if (new_cap < min_cap)
       new_cap = min_cap;
     reallocate(new_cap);
   }
 
+  [[nodiscard]] usize grown(const usize sz, const usize n) const {
+    if (n > max_size() - sz)
+      throw std::length_error("nx::basic_string: longer than max_size");
+    return sz + n;
+  }
+
   void reallocate(const usize new_cap) {
+    if (new_cap > max_size())
+      throw std::length_error("nx::basic_string: longer than max_size");
     const usize sz = size();
     const char8_t *src = is_heap() ? m_heap.data : m_sso.data;
     char8_t *nb = ATraits::allocate(m_alloc, new_cap + 1);
@@ -858,12 +879,12 @@ private:
     const usize sz = size();
     if (NX_UNLIKELY(aliases(s))) {
       const auto off = nx::cast<usize>(s - data());
-      ensure_capacity(sz + n);
+      ensure_capacity(grown(sz, n));
       char *d = data();
       std::memmove(d + sz, d + off, n);
       set_size(sz + n);
     } else {
-      ensure_capacity(sz + n);
+      ensure_capacity(grown(sz, n));
       std::memcpy(data() + sz, s, n);
       set_size(sz + n);
     }
@@ -873,7 +894,7 @@ private:
     if (count == 0)
       return;
     const usize sz = size();
-    ensure_capacity(sz + count);
+    ensure_capacity(grown(sz, count));
     std::memset(data() + sz, nx::cast<int>(c), count);
     set_size(sz + count);
   }

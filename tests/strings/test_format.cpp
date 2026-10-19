@@ -126,3 +126,32 @@ TEST_CASE("format: round-trips text containing NULs and UTF-8") {
   const nx::string with_nul("a\0b", usize(3));
   CHECK(nx::format("{}", with_nul).size() == 3);
 }
+
+TEST_CASE("format_to: a cut at the end never splits a character") {
+  char tight[5];
+  nx::format_to(tight, "{}", "ab\u65e5");
+  CHECK(std::strcmp(tight, "ab") == 0);
+
+  char fits[6];
+  nx::format_to(fits, "{}", "ab\u65e5");
+  CHECK(std::strcmp(fits, "ab\u65e5") == 0);
+
+  char emoji[4];
+  nx::format_to(emoji, "{}", "\U0001F600");
+  CHECK(std::strcmp(emoji, "") == 0);
+
+  char ascii[4];
+  nx::format_to(ascii, "{}", "abcdef");
+  CHECK(std::strcmp(ascii, "abc") == 0);
+}
+
+TEST_CASE("utf8: complete_prefix drops only a sequence cut short") {
+  using nx::utf8::complete_prefix;
+  static_assert(complete_prefix("") == 0);
+  static_assert(complete_prefix("abc") == 3);
+  static_assert(complete_prefix("a\xE6\x97") == 1);
+  static_assert(complete_prefix("a\xE6\x97\xA5") == 4);
+  static_assert(complete_prefix("a\xF0") == 1);
+  static_assert(complete_prefix("a\x97") == 2);
+  CHECK(true);
+}

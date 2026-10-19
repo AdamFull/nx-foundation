@@ -1038,3 +1038,23 @@ TEST_CASE("utf8: UTF-16 and UTF-32 output never holds a surrogate") {
   for (const char32_t c : nx::string("\xF4\x90\x80\x80").u32string())
     CHECK(nx::utf8::is_valid_codepoint(c));
 }
+
+TEST_CASE(
+    "string: growth past max_size throws length_error and keeps the text") {
+  nx::string s("keep");
+  CHECK_THROWS_AS(s.reserve(~usize{0}), std::length_error);
+  CHECK_THROWS_AS(s.reserve(s.max_size() + 1), std::length_error);
+  CHECK_THROWS_AS(s.resize(~usize{0}), std::length_error);
+  CHECK_THROWS_AS(s.append(~usize{0} - 1, 'x'), std::length_error);
+  CHECK(s == "keep");
+}
+
+TEST_CASE("string: insert and erase past the end throw out_of_range") {
+  nx::string s("abc");
+  CHECK_THROWS_AS(s.insert(4, nx::string_view("x")), std::out_of_range);
+  CHECK_THROWS_AS(s.erase(4), std::out_of_range);
+  CHECK(s == "abc");
+  s.insert(3, nx::string_view("d"));
+  s.erase(0, 1);
+  CHECK(s == "bcd");
+}

@@ -258,12 +258,15 @@ struct std::formatter<nx::id_string, CharT>
       return Base::format(std::string_view(buf, nx::cast<std::size_t>(len)),
                           ctx);
     } else {
-      const nx::string owned = s.to_string();
-      const std::u32string wide = owned.u32string();
-      return std::formatter<std::basic_string_view<CharT>, CharT>::format(
-          std::basic_string_view<CharT>(
-              reinterpret_cast<const CharT *>(wide.data()), wide.size()),
-          ctx);
+      std::basic_string<CharT> wide;
+      if constexpr (sizeof(CharT) == sizeof(char16_t)) {
+        const std::u16string units = s.to_string().u16string();
+        wide.assign(units.begin(), units.end());
+      } else {
+        const std::u32string units = s.to_string().u32string();
+        wide.assign(units.begin(), units.end());
+      }
+      return Base::format(std::basic_string_view<CharT>(wide), ctx);
     }
   }
 };
