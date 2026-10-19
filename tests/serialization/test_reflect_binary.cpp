@@ -148,3 +148,36 @@ TEST_CASE("reflect binary: an impossible sequence count fails before resize") {
   REQUIRE(decoded.values.size() == 1u);
   CHECK(decoded.values[0] == 9.f);
 }
+
+namespace nxtest_reflect_binary {
+
+struct Narrow {
+  u8 small = 0;
+  i8 tiny = 0;
+  Facing facing = Facing::Left;
+};
+
+[[nodiscard]] bool read_narrow(const u64 small, const i64 tiny,
+                               const u64 facing, Narrow &out) {
+  nx::nva::Writer w;
+  w.u64v(small);
+  w.u64v(static_cast<u64>(tiny));
+  w.u64v(facing);
+  nx::nva::Reader r(w.span());
+  return nx::reflect::read_binary(r, out);
+}
+
+} // namespace nxtest_reflect_binary
+
+TEST_CASE("reflect binary: an integer wider than its field fails the read") {
+  Narrow n;
+  REQUIRE(read_narrow(255, -128, 2, n));
+  CHECK(n.small == 255);
+  CHECK(n.tiny == -128);
+  CHECK(n.facing == Facing::Up);
+
+  CHECK_FALSE(read_narrow(256, 0, 0, n));
+  CHECK_FALSE(read_narrow(0, 128, 0, n));
+  CHECK_FALSE(read_narrow(0, -129, 0, n));
+  CHECK_FALSE(read_narrow(0, 0, 300, n));
+}

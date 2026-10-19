@@ -272,3 +272,27 @@ TEST_CASE("ini: load prefers the cooked sibling, falls back to the source "
   REQUIRE_FALSE(broken);
   CHECK(broken.error().kind == nx::ini::LoadErrorKind::Malformed);
 }
+
+TEST_CASE("ini: a key that would read back as a comment is refused") {
+  nx::ini::Document document;
+  CHECK_FALSE(document.set("s", "#key", "1"));
+  CHECK_FALSE(document.set("s", ";key", "1"));
+  CHECK(document.set("s", "k#ey", "1"));
+  CHECK_FALSE(nx::ini::assign("[s]\n", "s", "#key", "1").has_value());
+}
+
+TEST_CASE("ini: assign sees through a byte order mark") {
+  const nx::string_view source = "\xef\xbb\xbf[audio]\nvolume = 1\n";
+  const auto changed = nx::ini::assign(source, "audio", "volume", "0.5");
+  REQUIRE(changed.has_value());
+  CHECK(changed->view() == "\xef\xbb\xbf[audio]\nvolume = 0.5\n");
+
+  const auto top = nx::ini::assign("\xef\xbb\xbf[s]\nx = 1\n", "", "b", "2");
+  REQUIRE(top.has_value());
+  CHECK(top->view() == "\xef\xbb\xbf"
+                       "b = 2\n[s]\nx = 1\n");
+  const auto reparsed = nx::ini::parse(top->view());
+  REQUIRE(reparsed.has_value());
+  REQUIRE(reparsed->find("", "b") != nullptr);
+  CHECK(reparsed->find("s", "b") == nullptr);
+}

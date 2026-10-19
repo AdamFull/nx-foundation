@@ -26,8 +26,17 @@ namespace {
   return true;
 }
 
+[[nodiscard]] constexpr usize bom_length(const nx::string_view text) {
+  return text.size() >= 3 && nx::cast<u8>(text[0]) == 0xefu &&
+                 nx::cast<u8>(text[1]) == 0xbbu &&
+                 nx::cast<u8>(text[2]) == 0xbfu
+             ? 3
+             : 0;
+}
+
 [[nodiscard]] constexpr bool valid_key(const nx::string_view key) {
-  if (key.empty() || trim(key) != key)
+  if (key.empty() || trim(key) != key || key.front() == ';' ||
+      key.front() == '#')
     return false;
   for (const char c : key)
     if (c == '=' || c == '[' || c == ']' || c == '\r' || c == '\n')
@@ -266,11 +275,7 @@ nx::result<Document, ParseError> parse(nx::string_view text) {
   Document document;
   nx::string section;
   usize line_number = 1;
-  usize offset = 0;
-
-  if (text.size() >= 3 && nx::cast<u8>(text[0]) == 0xefu &&
-      nx::cast<u8>(text[1]) == 0xbbu && nx::cast<u8>(text[2]) == 0xbfu)
-    offset = 3;
+  usize offset = bom_length(text);
 
   while (offset < text.size()) {
     const usize end = text.find('\n', offset);
@@ -344,13 +349,14 @@ nx::result<nx::string, ParseError> assign(const nx::string_view text,
                                       ? "\r\n"
                                       : "\n";
 
-  nx::string out;
+  const usize bom = bom_length(text);
+  nx::string out(text.substr(0, bom));
   nx::string current;
   bool assigned = false;
   // Where a missing key goes: after the section's last assignment, or its
   // header when it has none.
   usize insert_at = nx::string_view::npos;
-  usize offset = 0;
+  usize offset = bom;
   while (offset < text.size()) {
     const usize end = text.find('\n', offset);
     const usize next = end == nx::string_view::npos ? text.size() : end + 1;
@@ -407,9 +413,9 @@ nx::result<nx::string, ParseError> assign(const nx::string_view text,
   added.append(newline);
   // Keys outside any section come before the first header.
   if (section.empty() && insert_at == nx::string_view::npos)
-    insert_at = 0;
+    insert_at = bom;
   if (insert_at != nx::string_view::npos) {
-    if (insert_at > 0 && out[insert_at - 1] != '\n')
+    if (insert_at > bom && out[insert_at - 1] != '\n')
       added.insert(0, newline);
     out.insert(insert_at, added.view());
     return out;

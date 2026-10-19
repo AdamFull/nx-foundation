@@ -16,6 +16,20 @@
 
 namespace nx::reflect {
 
+/// Whether @p bits, a 64-bit integer as reflection writes one (sign-extended
+/// when @p is_signed), fits a field @p size bytes wide.
+[[nodiscard]] constexpr bool integer_fits(const u64 bits, const u32 size,
+                                          const bool is_signed) noexcept {
+  if (size >= sizeof(u64))
+    return true;
+  const u32 width = size * 8;
+  if (!is_signed)
+    return (bits >> width) == 0;
+  const i64 v = static_cast<i64>(bits);
+  const i64 low = -(i64{1} << (width - 1));
+  return v >= low && v < -low;
+}
+
 using type_id = u64;
 
 enum class type_kind : u8 {

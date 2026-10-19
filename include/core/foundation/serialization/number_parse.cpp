@@ -6,12 +6,14 @@
 #define NX_NUMBER_PARSE_LOCALE_FALLBACK 1
 #endif
 
+#include <cmath>
+#include <limits>
+
 #if defined(NX_NUMBER_PARSE_LOCALE_FALLBACK)
 #include <cerrno>
 #include <clocale>
 #include <cstdlib>
 #include <cstring>
-#include <limits>
 #include <memory>
 #include <new>
 
@@ -141,8 +143,51 @@ parse_f64_fallback(const char *first, const char *last, f64 &out) noexcept {
     return {first, std::errc::invalid_argument};
 
   out = nx::cast<f64>(value);
+  // strtod also sets ERANGE for a subnormal it did produce.
+  const bool lost = parse_errno == ERANGE && (out == 0.0 || std::isinf(out));
   return {first + (end - buffer),
-          parse_errno == ERANGE ? std::errc::result_out_of_range : std::errc{}};
+          lost ? std::errc::result_out_of_range : std::errc{}};
+}
+
+#else
+
+/// What an out-of-range [first, last) rounds to: the decimal exponent of its
+/// leading digit says whether it overflowed or underflowed.
+[[nodiscard]] f64 out_of_range_value(const char *first,
+                                     const char *const last) noexcept {
+  const bool negative = first < last && *first == '-';
+  if (negative)
+    ++first;
+  const auto digit = [](const char c) { return c >= '0' && c <= '9'; };
+  i64 lead = 0;
+  bool seen = false;
+  for (; first < last && digit(*first); ++first) {
+    seen = seen || *first != '0';
+    if (seen)
+      ++lead;
+  }
+  if (first < last && *first == '.')
+    for (++first; first < last && digit(*first) && !seen; ++first) {
+      seen = *first != '0';
+      if (!seen)
+        --lead;
+    }
+  while (first < last && digit(*first))
+    ++first;
+  i64 exponent = 0;
+  if (first < last && (*first == 'e' || *first == 'E')) {
+    ++first;
+    const bool down = first < last && *first == '-';
+    if (first < last && (*first == '-' || *first == '+'))
+      ++first;
+    for (; first < last && digit(*first); ++first)
+      exponent = nx::min<i64>(exponent * 10 + (*first - '0'), 1'000'000'000);
+    if (down)
+      exponent = -exponent;
+  }
+  const f64 magnitude =
+      lead + exponent > 0 ? std::numeric_limits<f64>::infinity() : 0.0;
+  return negative ? -magnitude : magnitude;
 }
 
 #endif
@@ -154,7 +199,10 @@ std::from_chars_result parse_f64(const char *first, const char *last,
 #if defined(NX_NUMBER_PARSE_LOCALE_FALLBACK)
   return parse_f64_fallback(first, last, out);
 #else
-  return std::from_chars(first, last, out);
+  const std::from_chars_result r = std::from_chars(first, last, out);
+  if (r.ec == std::errc::result_out_of_range)
+    out = out_of_range_value(first, r.ptr);
+  return r;
 #endif
 }
 

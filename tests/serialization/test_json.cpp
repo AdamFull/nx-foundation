@@ -1,8 +1,10 @@
 #include "framework/nxtest.h"
 
 #include "core/foundation/serialization/json.h"
+#include "core/foundation/serialization/reflect_json.h"
 
 #include <charconv>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <string>
@@ -1086,4 +1088,40 @@ TEST_CASE("json: validate_utf8 rejects overlong forms and surrogates") {
     CHECK_FALSE(nx::json::parse(bad, {.validate_utf8 = true}).has_value());
   CHECK(nx::json::parse("\"\xF0\x9F\x98\x80\"", {.validate_utf8 = true})
             .has_value());
+}
+
+TEST_CASE("json::parse: out-of-range numbers saturate the same everywhere") {
+  CHECK(std::isinf(ok("1e400").as_double()));
+  CHECK(ok("-1e400").as_double() < -1e308);
+  CHECK(ok("1e-400").as_double() == 0.0);
+}
+
+namespace json_reflect_narrow {
+
+enum class Shade : u8 { Dark, Light };
+
+struct Narrow {
+  u8 small = 1;
+  i8 tiny = 1;
+  Shade shade = Shade::Light;
+};
+
+} // namespace json_reflect_narrow
+
+NX_REFLECT_ENUM(json_reflect_narrow::Shade, (Dark, "dark"), (Light, "light"))
+
+TEST_CASE("json reflect: an integer the field cannot hold leaves it alone") {
+  using json_reflect_narrow::Narrow;
+  using json_reflect_narrow::Shade;
+  Narrow n;
+  nx::json::read_fields(ok(R"({ "small": 300, "tiny": -129, "shade": 256 })"),
+                        n);
+  CHECK(n.small == 1);
+  CHECK(n.tiny == 1);
+  CHECK(n.shade == Shade::Light);
+
+  nx::json::read_fields(ok(R"({ "small": 255, "tiny": -128, "shade": 0 })"), n);
+  CHECK(n.small == 255);
+  CHECK(n.tiny == -128);
+  CHECK(n.shade == Shade::Dark);
 }

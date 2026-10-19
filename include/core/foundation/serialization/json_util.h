@@ -4,6 +4,8 @@
 #include "core/foundation/reflection/type.h"
 #include "core/foundation/serialization/json.h"
 
+#include <limits>
+
 namespace nx::json {
 
 [[nodiscard]] inline f64 at_or(const value &array, const usize i,
@@ -20,12 +22,17 @@ namespace nx::json {
 
 [[nodiscard]] inline u32 u32_or(const value &owner, const string_view key,
                                 const u32 fallback) noexcept {
-  return cast<u32>(owner[key].get_u64(fallback));
+  const u64 got = owner[key].get_u64(fallback);
+  return got <= std::numeric_limits<u32>::max() ? cast<u32>(got) : fallback;
 }
 
 [[nodiscard]] inline i32 i32_or(const value &owner, const string_view key,
                                 const i32 fallback) noexcept {
-  return cast<i32>(owner[key].get_i64(fallback));
+  const i64 got = owner[key].get_i64(fallback);
+  return got >= std::numeric_limits<i32>::min() &&
+                 got <= std::numeric_limits<i32>::max()
+             ? cast<i32>(got)
+             : fallback;
 }
 
 [[nodiscard]] inline string_view string_or(const value &owner,

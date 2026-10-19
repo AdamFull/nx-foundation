@@ -116,3 +116,14 @@ TEST_CASE("json util: an enum writes back as its first spelling") {
   CHECK(nx::json::enum_text(Mode::Loop) == "loop");
   CHECK(nx::json::enum_text(Mode::PingPong) == "pingpong");
 }
+
+TEST_CASE("json util: an integer the field cannot hold reads as the fallback") {
+  const nx::json::value v = doc(
+      R"({ "big": 4294967296, "neg": -1, "wide": 2147483648, "low": -2147483649, "ok": -7 })");
+  CHECK(nx::json::u32_or(v, "big", 5u) == 5u);
+  CHECK(nx::json::u32_or(v, "neg", 5u) == 5u);
+  CHECK(nx::json::i32_or(v, "wide", 5) == 5);
+  CHECK(nx::json::i32_or(v, "low", 5) == 5);
+  CHECK(nx::json::i32_or(v, "ok", 5) == -7);
+  CHECK(nx::json::u32_or(v, "big", 0u) == 0u);
+}

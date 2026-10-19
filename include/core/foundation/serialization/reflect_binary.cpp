@@ -257,9 +257,18 @@ void write_one(const type_info &t, const void *p, nx::nva::Writer &w) {
     break;
   case type_kind::integer:
   case type_kind::unsigned_integer:
-  case type_kind::enumeration:
-    store_integer(p, t.size, r.u64v());
+  case type_kind::enumeration: {
+    const u64 bits = r.u64v();
+    const bool is_signed =
+        t.kind == type_kind::integer ||
+        (t.kind == type_kind::enumeration && t.enumeration->is_signed);
+    if (!integer_fits(bits, t.size, is_signed)) {
+      r.fail();
+      return false;
+    }
+    store_integer(p, t.size, bits);
     break;
+  }
   case type_kind::floating:
     if (t.size == sizeof(f32)) {
       store_real(p, t.size, r.f32v());

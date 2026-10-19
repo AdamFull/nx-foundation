@@ -68,23 +68,33 @@ TEST_CASE(
   }
 }
 
-TEST_CASE("number parse: range errors preserve the saturated fallback value") {
+TEST_CASE("number parse: out of range is infinity or zero on every platform") {
   f64 value = 1.0;
   CHECK(parse("1e5000", value).ec == std::errc::result_out_of_range);
-
-#if defined(NX_FORCE_LOCALE_NUMBER_FALLBACK) ||                                \
-    defined(NX_PLATFORM_ANDROID) || defined(NX_PLATFORM_APPLE) ||              \
-    !defined(__cpp_lib_to_chars)
   CHECK(std::isinf(value));
-#endif
+  CHECK(value > 0.0);
+
+  value = 1.0;
+  CHECK(parse("-12.5e400", value).ec == std::errc::result_out_of_range);
+  CHECK(std::isinf(value));
+  CHECK(value < 0.0);
 
   value = 1.0;
   CHECK(parse("1e-5000", value).ec == std::errc::result_out_of_range);
-#if defined(NX_FORCE_LOCALE_NUMBER_FALLBACK) ||                                \
-    defined(NX_PLATFORM_ANDROID) || defined(NX_PLATFORM_APPLE) ||              \
-    !defined(__cpp_lib_to_chars)
   CHECK(value == 0.0);
-#endif
+
+  value = 1.0;
+  CHECK(parse("-0.000001e-400", value).ec == std::errc::result_out_of_range);
+  CHECK(value == 0.0);
+  CHECK(std::signbit(value));
+
+  value = 1.0;
+  CHECK(parse("123456e-320", value).ec == std::errc{});
+  CHECK(value > 0.0);
+
+  value = 1.0;
+  CHECK(parse("4.9e-324", value).ec == std::errc{});
+  CHECK(value > 0.0);
 }
 
 TEST_CASE("number parse: long literals are not limited by the stack buffer") {

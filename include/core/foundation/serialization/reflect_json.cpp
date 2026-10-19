@@ -145,13 +145,18 @@ void read_value(const type_info &t, const value &v, void *p) {
   case type_kind::boolean:
     *static_cast<bool *>(p) = v.get_bool(*static_cast<const bool *>(p));
     break;
-  case type_kind::integer:
-    store_integer(p, t.size,
-                  static_cast<u64>(v.get_i64(load_signed(p, t.size))));
+  case type_kind::integer: {
+    const auto got = static_cast<u64>(v.get_i64(load_signed(p, t.size)));
+    if (reflect::integer_fits(got, t.size, true))
+      store_integer(p, t.size, got);
     break;
-  case type_kind::unsigned_integer:
-    store_integer(p, t.size, v.get_u64(load_unsigned(p, t.size)));
+  }
+  case type_kind::unsigned_integer: {
+    const u64 got = v.get_u64(load_unsigned(p, t.size));
+    if (reflect::integer_fits(got, t.size, false))
+      store_integer(p, t.size, got);
     break;
+  }
   case type_kind::floating:
     store_real(p, t.size, v.get_double(load_real(p, t.size)));
     break;
@@ -175,7 +180,13 @@ void read_value(const type_info &t, const value &v, void *p) {
       if (t.enumeration->value(v.get_string({}), out))
         store_integer(p, t.size, static_cast<u64>(out));
     } else if (v.is_number()) {
-      store_integer(p, t.size, static_cast<u64>(v.get_i64(load_enum(t, p))));
+      const bool is_signed = t.enumeration->is_signed;
+      const u64 current = static_cast<u64>(load_enum(t, p));
+      const u64 got =
+          is_signed ? static_cast<u64>(v.get_i64(static_cast<i64>(current)))
+                    : v.get_u64(current);
+      if (reflect::integer_fits(got, t.size, is_signed))
+        store_integer(p, t.size, got);
     }
     break;
   case type_kind::aggregate:
