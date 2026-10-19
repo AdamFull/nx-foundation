@@ -387,6 +387,8 @@ non-inlined calls.
 
 | Type | Header | Use it for |
 | --- | --- | --- |
+| `nx::unique_ptr` / `nx::make_unique` | `core/foundation.h` | Sole ownership of an object on the nx heap. There is no constructor from a raw pointer: `make_unique` creates (honouring `alignof(T)`, and reaching a private constructor that befriends it), and `adopt_unique` takes back a pointer from `release()` or `nx::allocate`. Converts to a base with a virtual destructor, so it owns interfaces too. With a custom deleter it accepts raw pointers like `std::unique_ptr`. |
+| `nx::shared_ptr` / `nx::make_shared` | `core/foundation.h` | Shared ownership, one pointer wide: the count sits in front of the object. No weak half; `nx::life_token` / `life_watch` answer "is it still alive". |
 | `nx::function` | `core/callable.h` | A type-erased, heap-backed callable wrapper, like `std::function`. |
 | `nx::inplace_function` | `core/callable.h` | A type-erased callable stored in a fixed inline buffer; never allocates. |
 | `nx::enums::map` | `core/enum.h` | A fixed array indexed directly by enum value, sized from the enum's `Count`. Zero-overhead enum-to-value lookup. |

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -833,32 +834,214 @@ private:
   shared_ptr<std::atomic<bool>> m_flag;
 };
 
+namespace detail {
+
+// The start of the allocation holding *p: a base subobject of a polymorphic
+// object need not sit at the front of it.
+template <typename T> [[nodiscard]] void *heap_block(T *p) noexcept {
+  if constexpr (std::is_polymorphic_v<T>)
+    return const_cast<void *>(dynamic_cast<const volatile void *>(p));
+  else
+    return const_cast<void *>(static_cast<const volatile void *>(p));
+}
+
+template <typename T> [[nodiscard]] bool on_nx_heap(T *p) noexcept {
+#if NX_USE_MIMALLOC
+  return p == nullptr || mi_is_in_heap_region(heap_block(p));
+#else
+  (void)p;
+  return true;
+#endif
+}
+
+struct AdoptUnique {};
+
+} // namespace detail
+
+/// Destroys and frees an object made by nx::make_unique or nx::allocate.
+/// Converts to the deleter of a base only when that base has a virtual
+/// destructor.
 template <typename T> struct AllocDeleter {
+  constexpr AllocDeleter() noexcept = default;
+
+  template <typename U>
+    requires(std::is_convertible_v<U *, T *> &&
+             (std::is_same_v<std::remove_cv_t<U>, std::remove_cv_t<T>> ||
+              std::has_virtual_destructor_v<T>))
+  constexpr AllocDeleter(const AllocDeleter<U> &) noexcept {}
+
   void operator()(T *p) const noexcept {
+    static_assert(sizeof(T) > 0, "AllocDeleter: T must be complete");
     if (p == nullptr)
       return;
-    using traits = std::allocator_traits<Allocator<T>>;
-    Allocator<T> alloc;
-    traits::destroy(alloc, p);
-    traits::deallocate(alloc, p, 1);
+    assert(detail::on_nx_heap(p) && "AllocDeleter: not allocated by nx");
+    void *const block = detail::heap_block(p);
+    p->~T();
+    mem_free(block);
   }
 };
 
-template <typename T, typename Deleter = AllocDeleter<T>>
-using unique_ptr = std::unique_ptr<T, Deleter>;
+/// Sole owner of an object. With the default deleter it holds only what nx
+/// allocated: there is no constructor or reset() from a raw pointer, and a
+/// pointer handed out by release() comes back through nx::adopt_unique.
+template <typename T, typename D = AllocDeleter<T>> class unique_ptr {
+  static_assert(!std::is_array_v<T>, "nx::unique_ptr does not own arrays");
+  static_assert(!std::is_reference_v<D>, "nx::unique_ptr holds its deleter");
 
+  static constexpr bool raw_ok = !std::is_same_v<D, AllocDeleter<T>>;
+
+public:
+  using pointer = T *;
+  using element_type = T;
+  using deleter_type = D;
+
+  constexpr unique_ptr() noexcept
+    requires std::is_default_constructible_v<D>
+  = default;
+  constexpr unique_ptr(std::nullptr_t) noexcept
+    requires std::is_default_constructible_v<D>
+  {}
+
+  unique_ptr(detail::AdoptUnique, T *p) noexcept : m_ptr(p) {}
+
+  explicit unique_ptr(T *p) noexcept
+    requires(raw_ok && std::is_default_constructible_v<D>)
+      : m_ptr(p) {}
+  unique_ptr(T *p, const D &d) noexcept
+    requires(raw_ok)
+      : m_ptr(p), m_deleter(d) {}
+  unique_ptr(T *p, D &&d) noexcept
+    requires(raw_ok)
+      : m_ptr(p), m_deleter(std::move(d)) {}
+
+  unique_ptr(unique_ptr &&other) noexcept
+      : m_ptr(other.release()), m_deleter(std::move(other.m_deleter)) {}
+
+  template <typename U, typename E>
+    requires(std::is_convertible_v<U *, T *> && std::is_convertible_v<E, D>)
+  unique_ptr(unique_ptr<U, E> &&other) noexcept
+      : m_ptr(other.release()), m_deleter(std::move(other.get_deleter())) {}
+
+  unique_ptr(const unique_ptr &) = delete;
+  unique_ptr &operator=(const unique_ptr &) = delete;
+
+  ~unique_ptr() {
+    if (m_ptr != nullptr)
+      m_deleter(m_ptr);
+  }
+
+  unique_ptr &operator=(unique_ptr &&other) noexcept {
+    if (this != &other) {
+      take(other.release());
+      m_deleter = std::move(other.m_deleter);
+    }
+    return *this;
+  }
+
+  template <typename U, typename E>
+    requires(std::is_convertible_v<U *, T *> && std::is_assignable_v<D &, E &&>)
+  unique_ptr &operator=(unique_ptr<U, E> &&other) noexcept {
+    take(other.release());
+    m_deleter = std::move(other.get_deleter());
+    return *this;
+  }
+
+  unique_ptr &operator=(std::nullptr_t) noexcept {
+    reset();
+    return *this;
+  }
+
+  [[nodiscard]] T *release() noexcept {
+    T *const held = m_ptr;
+    m_ptr = nullptr;
+    return held;
+  }
+
+  void reset() noexcept { take(nullptr); }
+  void reset(T *p) noexcept
+    requires(raw_ok)
+  {
+    take(p);
+  }
+
+  void swap(unique_ptr &other) noexcept {
+    std::swap(m_ptr, other.m_ptr);
+    std::swap(m_deleter, other.m_deleter);
+  }
+
+  [[nodiscard]] T *get() const noexcept { return m_ptr; }
+  [[nodiscard]] D &get_deleter() noexcept { return m_deleter; }
+  [[nodiscard]] const D &get_deleter() const noexcept { return m_deleter; }
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return m_ptr != nullptr;
+  }
+  [[nodiscard]] T *operator->() const noexcept { return m_ptr; }
+  [[nodiscard]] T &operator*() const noexcept { return *m_ptr; }
+
+private:
+  void take(T *p) noexcept {
+    T *const old = m_ptr;
+    m_ptr = p;
+    if (old != nullptr)
+      m_deleter(old);
+  }
+
+  T *m_ptr = nullptr;
+  NX_NO_UNIQUE_ADDRESS D m_deleter{};
+};
+
+template <typename T, typename D, typename U, typename E>
+[[nodiscard]] bool operator==(const unique_ptr<T, D> &a,
+                              const unique_ptr<U, E> &b) noexcept {
+  return a.get() == b.get();
+}
+
+template <typename T, typename D>
+[[nodiscard]] bool operator==(const unique_ptr<T, D> &a,
+                              std::nullptr_t) noexcept {
+  return a.get() == nullptr;
+}
+
+template <typename T, typename D, typename U, typename E>
+[[nodiscard]] auto operator<=>(const unique_ptr<T, D> &a,
+                               const unique_ptr<U, E> &b) noexcept {
+  return std::compare_three_way{}(a.get(), b.get());
+}
+
+template <typename T, typename D>
+void swap(unique_ptr<T, D> &a, unique_ptr<T, D> &b) noexcept {
+  a.swap(b);
+}
+
+/// Allocates T on the nx heap with alignof(T) and constructs it in place, so a
+/// class with a private constructor can befriend make_unique.
 template <typename T, typename... Args>
 [[nodiscard]] unique_ptr<T> make_unique(Args &&...args) {
-  using traits = std::allocator_traits<Allocator<T>>;
-  Allocator<T> alloc;
-  T *p = traits::allocate(alloc, 1);
+  static_assert(!std::is_array_v<T>, "nx::make_unique does not make arrays");
+  void *const raw = mem_alloc(sizeof(T), alignof(T));
+  if (raw == nullptr) [[unlikely]]
+    throw std::bad_alloc{};
+  T *object = nullptr;
   try {
-    traits::construct(alloc, p, std::forward<Args>(args)...);
+    object = ::new (raw) T(std::forward<Args>(args)...);
   } catch (...) {
-    traits::deallocate(alloc, p, 1);
+    mem_free(raw);
     throw;
   }
-  return unique_ptr<T>(p);
+  return unique_ptr<T>(detail::AdoptUnique{}, object);
 }
 
+/// Takes back ownership of a pointer that came from nx::make_unique (via
+/// release()) or nx::allocate. Debug builds check that it lives on the nx heap.
+template <typename T> [[nodiscard]] unique_ptr<T> adopt_unique(T *p) noexcept {
+  assert(detail::on_nx_heap(p) && "adopt_unique: not allocated by nx");
+  return unique_ptr<T>(detail::AdoptUnique{}, p);
 }
+
+} // namespace nx
+
+template <typename T, typename D> struct std::hash<nx::unique_ptr<T, D>> {
+  [[nodiscard]] usize operator()(const nx::unique_ptr<T, D> &p) const noexcept {
+    return std::hash<T *>{}(p.get());
+  }
+};

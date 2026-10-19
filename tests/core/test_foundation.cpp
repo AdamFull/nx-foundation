@@ -620,21 +620,104 @@ struct CountingDeleter {
   }
 };
 
+struct alignas(64) OverAligned {
+  char bytes[8] = {};
+};
+
+struct NonVirtualBase {
+  int value = 0;
+};
+struct NonVirtualDerived : NonVirtualBase {};
+
+class FactoryOnly {
+public:
+  static nx::unique_ptr<FactoryOnly> make(const int value) {
+    return nx::make_unique<FactoryOnly>(value);
+  }
+  int value;
+
+private:
+  explicit FactoryOnly(const int v) : value(v) {}
+
+  template <typename T, typename... Args>
+  friend nx::unique_ptr<T> nx::make_unique(Args &&...);
+};
+
+struct Counted {
+  static inline int alive = 0;
+  Counted() { ++alive; }
+  ~Counted() { --alive; }
+};
+
+template <typename P>
+concept resets_from_raw = requires(P p, int *raw) { p.reset(raw); };
+
+} // namespace
+
+TEST_CASE("foundation: nx::unique_ptr refuses raw pointers") {
+  static_assert(!std::is_constructible_v<nx::unique_ptr<int>, int *>);
+  static_assert(!std::is_convertible_v<int *, nx::unique_ptr<int>>);
+  static_assert(!resets_from_raw<nx::unique_ptr<int>>);
+  static_assert(resets_from_raw<nx::unique_ptr<int, CountingDeleter>>);
+  static_assert(sizeof(nx::unique_ptr<int>) == sizeof(int *));
+
+  nx::unique_ptr<int> empty;
+  CHECK(empty == nullptr);
+  CHECK_FALSE(empty);
 }
 
-TEST_CASE("foundation: nx::unique_ptr does not convert to a base") {
+TEST_CASE("foundation: nx::adopt_unique takes back a released pointer") {
+  nx::unique_ptr<Counted> owned = nx::make_unique<Counted>();
+  CHECK(Counted::alive == 1);
+  Counted *const raw = owned.release();
+  CHECK(owned == nullptr);
+  {
+    const nx::unique_ptr<Counted> back = nx::adopt_unique(raw);
+    CHECK(back.get() == raw);
+  }
+  CHECK(Counted::alive == 0);
+
+  Counted *const allocated = nx::allocate<Counted>();
+  nx::unique_ptr<Counted> from_allocate = nx::adopt_unique(allocated);
+  CHECK(Counted::alive == 1);
+  from_allocate.reset();
+  CHECK(Counted::alive == 0);
+}
+
+TEST_CASE("foundation: nx::make_unique honours over-alignment") {
+  for (int i = 0; i < 16; ++i) {
+    const nx::unique_ptr<OverAligned> p = nx::make_unique<OverAligned>();
+    CHECK(reinterpret_cast<uintptr_t>(p.get()) % alignof(OverAligned) == 0);
+  }
+}
+
+TEST_CASE("foundation: nx::make_unique reaches a befriended private ctor") {
+  const nx::unique_ptr<FactoryOnly> made = FactoryOnly::make(42);
+  REQUIRE(made != nullptr);
+  CHECK(made->value == 42);
+}
+
+TEST_CASE("foundation: nx::unique_ptr converts to a virtual base") {
   const Impl impl;
   const void *object = &impl;
   const void *subobject = static_cast<const Iface *>(&impl);
   CHECK(object != subobject);
 
   static_assert(
-      !std::is_convertible_v<nx::unique_ptr<Impl>, nx::unique_ptr<Iface>>,
-      "giving AllocDeleter a converting constructor trades this compile error "
-      "for heap corruption; own an interface with std::unique_ptr");
+      std::is_convertible_v<nx::unique_ptr<Impl>, nx::unique_ptr<Iface>>);
+  static_assert(
+      std::is_convertible_v<nx::unique_ptr<Impl>, nx::unique_ptr<const Impl>>);
+  static_assert(!std::is_convertible_v<nx::unique_ptr<NonVirtualDerived>,
+                                       nx::unique_ptr<NonVirtualBase>>);
+  static_assert(
+      !std::is_convertible_v<nx::unique_ptr<Iface>, nx::unique_ptr<Impl>>);
 
-  nx::unique_ptr<Impl> owned = nx::make_unique<Impl>();
+  nx::unique_ptr<Iface> owned = nx::make_unique<Impl>();
   CHECK(owned != nullptr);
+  CHECK(static_cast<const void *>(owned.get()) != nullptr);
+  owned = nx::make_unique<Impl>();
+  owned.reset();
+  CHECK(owned == nullptr);
 }
 
 TEST_CASE("foundation: nx::unique_ptr accepts a custom deleter") {

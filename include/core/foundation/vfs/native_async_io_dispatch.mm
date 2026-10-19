@@ -244,7 +244,7 @@ nx::unique_ptr<NativeAsyncIo> make_native_async_io(const char *thread_name) {
     nx::release(backend);
     return {};
   }
-  return nx::unique_ptr<NativeAsyncIo>(backend);
+  return nx::adopt_unique<NativeAsyncIo>(backend);
 }
 
 } // namespace nx::vfs::detail
