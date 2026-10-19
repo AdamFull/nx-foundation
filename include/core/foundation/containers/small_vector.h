@@ -2,11 +2,15 @@
 
 #include <algorithm>
 #include <compare>
+#include <functional>
 #include <initializer_list>
 #include <iterator>
 #include <memory>
+#include <new>
 #include <span>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 #include "core/foundation/core/foundation.h"
 
@@ -39,44 +43,38 @@ public:
 
   explicit small_vector(const usize count, const Alloc &alloc = Alloc())
       : m_alloc(alloc) {
-    resize(count);
+    guarded([&] { resize(count); });
   }
 
   small_vector(const usize count, const T &value, const Alloc &alloc = Alloc())
       : m_alloc(alloc) {
-    assign(count, value);
+    guarded([&] { assign(count, value); });
   }
 
   template <std::input_iterator It>
   small_vector(It first, It last, const Alloc &alloc = Alloc())
       : m_alloc(alloc) {
-    assign(first, last);
+    guarded([&] { assign(first, last); });
   }
 
   small_vector(std::initializer_list<T> il, const Alloc &alloc = Alloc())
       : m_alloc(alloc) {
-    assign(il.begin(), il.end());
+    guarded([&] { assign(il.begin(), il.end()); });
   }
 
   explicit small_vector(std::span<const T> sp, const Alloc &alloc = Alloc())
       : m_alloc(alloc) {
-    assign(sp.begin(), sp.end());
+    guarded([&] { assign(sp.begin(), sp.end()); });
   }
 
   small_vector(const small_vector &other)
       : m_alloc(alloc_traits::select_on_container_copy_construction(
             other.m_alloc)) {
-    reserve(other.m_size);
-    for (usize i = 0; i < other.m_size; ++i)
-      alloc_traits::construct(m_alloc, m_data + i, other.m_data[i]);
-    m_size = other.m_size;
+    guarded([&] { assign(other.begin(), other.end()); });
   }
 
   small_vector(const small_vector &other, const Alloc &alloc) : m_alloc(alloc) {
-    reserve(other.m_size);
-    for (usize i = 0; i < other.m_size; ++i)
-      alloc_traits::construct(m_alloc, m_data + i, other.m_data[i]);
-    m_size = other.m_size;
+    guarded([&] { assign(other.begin(), other.end()); });
   }
 
   small_vector(small_vector &&other) noexcept(
@@ -86,20 +84,13 @@ public:
   }
 
   small_vector(small_vector &&other, const Alloc &alloc) noexcept(
+      alloc_traits::is_always_equal::value &&
       std::is_nothrow_move_constructible_v<T>)
       : m_alloc(alloc) {
     if (m_alloc == other.m_alloc)
       steal_or_move(other);
-    else {
-      reserve(other.m_size);
-      for (usize i = 0; i < other.m_size; ++i) {
-        alloc_traits::construct(m_alloc, m_data + i,
-                                std::move(other.m_data[i]));
-        alloc_traits::destroy(m_alloc, other.m_data + i);
-      }
-      m_size = other.m_size;
-      other.m_size = 0;
-    }
+    else
+      guarded([&] { move_elements_from(other); });
   }
 
   ~small_vector() noexcept { release(); }
@@ -132,17 +123,8 @@ public:
     } else {
       if (m_alloc == other.m_alloc)
         steal_or_move(other);
-      else {
-        if (other.m_size > m_capacity)
-          reallocate(other.m_size);
-        for (usize i = 0; i < other.m_size; ++i) {
-          alloc_traits::construct(m_alloc, m_data + i,
-                                  std::move(other.m_data[i]));
-          alloc_traits::destroy(m_alloc, other.m_data + i);
-        }
-        m_size = other.m_size;
-        other.m_size = 0;
-      }
+      else
+        move_elements_from(other);
     }
     return *this;
   }
@@ -153,24 +135,21 @@ public:
   }
 
   void assign(const usize count, const T &value) {
+    if (aliases(value)) {
+      const T copy(value);
+      assign(count, copy);
+      return;
+    }
     clear();
-    if (count > m_capacity)
-      reallocate(count);
-
-    for (usize i = 0; i < count; ++i)
-      alloc_traits::construct(m_alloc, m_data + i, value);
-    m_size = count;
+    reserve(count);
+    append_n(count, value);
   }
 
   template <std::input_iterator It> void assign(It first, It last) {
     clear();
-    if constexpr (std::random_access_iterator<It>) {
-      if (usize count = cast<usize>(std::distance(first, last));
-          count > m_capacity)
-        reallocate(count);
-    }
-    for (; first != last; ++first)
-      emplace_back(*first);
+    if constexpr (std::random_access_iterator<It>)
+      reserve(cast<usize>(std::distance(first, last)));
+    append(first, last);
   }
 
   void assign(std::initializer_list<T> il) { assign(il.begin(), il.end()); }
@@ -246,8 +225,11 @@ public:
   [[nodiscard]] usize capacity() const noexcept { return m_capacity; }
 
   void reserve(usize n) {
-    if (n > m_capacity)
-      reallocate(n);
+    if (n <= m_capacity)
+      return;
+    if (n > max_size())
+      throw std::length_error("small_vector::reserve");
+    reallocate(n);
   }
 
   void shrink_to_fit() {
@@ -255,14 +237,11 @@ public:
       return;
 
     if (m_size <= N) {
-      T *old_data = m_data;
-      usize old_cap = m_capacity;
+      T *const old_data = m_data;
+      const usize old_cap = m_capacity;
+      relocate(old_data, m_size, inline_ptr());
       m_data = inline_ptr();
       m_capacity = N;
-      for (usize i = 0; i < m_size; ++i) {
-        alloc_traits::construct(m_alloc, m_data + i, std::move(old_data[i]));
-        alloc_traits::destroy(m_alloc, old_data + i);
-      }
       alloc_traits::deallocate(m_alloc, old_data, old_cap);
     } else if (m_size < m_capacity)
       reallocate(m_size);
@@ -278,8 +257,8 @@ public:
   void push_back(T &&v) { emplace_back(std::move(v)); }
 
   template <typename... Args> reference emplace_back(Args &&...args) {
-    if (m_size == m_capacity)
-      grow();
+    if (m_size == m_capacity) [[unlikely]]
+      return emplace_back_grow(std::forward<Args>(args)...);
     alloc_traits::construct(m_alloc, m_data + m_size,
                             std::forward<Args>(args)...);
     return m_data[m_size++];
@@ -290,15 +269,15 @@ public:
     alloc_traits::destroy(m_alloc, m_data + --m_size);
   }
 
+  // Inserting appends and rotates into place, so a throwing constructor never
+  // leaves a destroyed slot inside the vector, and an argument that refers to
+  // one of its elements is read before anything moves.
   template <typename... Args>
   iterator emplace(const_iterator pos, Args &&...args) {
-    usize off = nx::cast<usize>(pos - m_data);
-    ensure_space(1);
-    T *p = m_data + off;
-    shift_right(p, 1);
-    alloc_traits::construct(m_alloc, p, std::forward<Args>(args)...);
-    ++m_size;
-    return p;
+    const usize off = offset_of(pos);
+    emplace_back(std::forward<Args>(args)...);
+    std::rotate(m_data + off, m_data + m_size - 1, m_data + m_size);
+    return m_data + off;
   }
 
   iterator insert(const_iterator pos, const T &v) { return emplace(pos, v); }
@@ -307,43 +286,30 @@ public:
   }
 
   iterator insert(const_iterator pos, usize count, const T &v) {
+    const usize off = offset_of(pos);
     if (count == 0)
-      return const_cast<iterator>(pos);
-
-    usize off = nx::cast<usize>(pos - m_data);
+      return m_data + off;
+    if (aliases(v)) {
+      const T copy(v);
+      return insert(m_data + off, count, copy);
+    }
+    const usize tail = m_size;
     ensure_space(count);
-    T *p = m_data + off;
-    shift_right(p, count);
-    for (usize i = 0; i < count; ++i)
-      alloc_traits::construct(m_alloc, p + i, v);
-
-    m_size += count;
-    return p;
+    append_n(count, v);
+    std::rotate(m_data + off, m_data + tail, m_data + m_size);
+    return m_data + off;
   }
 
+  /// [first, last) must not be a range of this vector, as with std::vector.
   template <std::input_iterator It>
   iterator insert(const_iterator pos, It first, It last) {
-    usize off = nx::cast<usize>(pos - m_data);
-    if constexpr (std::random_access_iterator<It>) {
-      const usize count = nx::cast<usize>(std::distance(first, last));
-      if (count == 0)
-        return m_data + off;
-
-      ensure_space(count);
-      T *p = m_data + off;
-      shift_right(p, count);
-      for (usize i = 0; first != last; ++first, ++i)
-        alloc_traits::construct(m_alloc, p + i, *first);
-
-      m_size += count;
-      return p;
-    } else {
-      usize tail = m_size;
-      for (; first != last; ++first)
-        emplace_back(*first);
-      std::rotate(m_data + off, m_data + tail, m_data + m_size);
-      return m_data + off;
-    }
+    const usize off = offset_of(pos);
+    const usize tail = m_size;
+    if constexpr (std::random_access_iterator<It>)
+      ensure_space(cast<usize>(std::distance(first, last)));
+    append(first, last);
+    std::rotate(m_data + off, m_data + tail, m_data + m_size);
+    return m_data + off;
   }
 
   iterator insert(const const_iterator pos, std::initializer_list<T> il) {
@@ -367,32 +333,34 @@ public:
   }
 
   void resize(const usize count) {
-    if (count < m_size) {
-      for (usize i = count; i < m_size; ++i)
-        alloc_traits::destroy(m_alloc, m_data + i);
-    } else if (count > m_size) {
-      if (count > m_capacity)
-        reallocate(count);
-      for (usize i = m_size; i < count; ++i)
-        alloc_traits::construct(m_alloc, m_data + i);
+    if (count <= m_size) {
+      truncate(count);
+      return;
     }
-    m_size = count;
+    ensure_space(count - m_size);
+    while (m_size < count) {
+      alloc_traits::construct(m_alloc, m_data + m_size);
+      ++m_size;
+    }
   }
 
   void resize(const usize count, const T &value) {
-    if (count < m_size) {
-      for (usize i = count; i < m_size; ++i)
-        alloc_traits::destroy(m_alloc, m_data + i);
-    } else if (count > m_size) {
-      if (count > m_capacity)
-        reallocate(count);
-      for (usize i = m_size; i < count; ++i)
-        alloc_traits::construct(m_alloc, m_data + i, value);
+    if (count <= m_size) {
+      truncate(count);
+      return;
     }
-    m_size = count;
+    if (aliases(value)) {
+      const T copy(value);
+      resize(count, copy);
+      return;
+    }
+    ensure_space(count - m_size);
+    append_n(count - m_size, value);
   }
 
-  void swap(small_vector &other) noexcept {
+  void
+  swap(small_vector &other) noexcept(std::is_nothrow_move_constructible_v<T> &&
+                                     std::is_nothrow_move_assignable_v<T>) {
     if (this == &other)
       return;
 
@@ -449,6 +417,28 @@ private:
   }
   bool is_inline() const noexcept { return m_data == inline_ptr(); }
 
+  [[nodiscard]] usize offset_of(const const_iterator pos) const noexcept {
+    assert(pos >= m_data && pos <= m_data + m_size);
+    return nx::cast<usize>(pos - m_data);
+  }
+
+  [[nodiscard]] bool aliases(const T &value) const noexcept {
+    const T *const p = std::addressof(value);
+    return std::less_equal<const T *>{}(m_data, p) &&
+           std::less<const T *>{}(p, m_data + m_size);
+  }
+
+  // A constructor body that throws skips the destructor, so it releases what
+  // it built first.
+  template <typename F> void guarded(F &&build) {
+    try {
+      build();
+    } catch (...) {
+      release();
+      throw;
+    }
+  }
+
   void release() noexcept {
     clear();
     if (!is_inline()) {
@@ -458,27 +448,120 @@ private:
     }
   }
 
-  void grow() { reallocate(m_capacity * 2); }
-
-  void ensure_space(usize extra) {
-    if (m_size + extra <= m_capacity)
-      return;
-    usize new_cap = m_capacity;
-    while (new_cap < m_size + extra)
-      new_cap *= 2;
-    reallocate(new_cap);
+  void truncate(const usize count) noexcept {
+    for (usize i = count; i < m_size; ++i)
+      alloc_traits::destroy(m_alloc, m_data + i);
+    m_size = count;
   }
 
-  void reallocate(usize new_cap) {
-    T *new_data = alloc_traits::allocate(m_alloc, new_cap);
-    for (usize i = 0; i < m_size; ++i) {
-      alloc_traits::construct(m_alloc, new_data + i, std::move(m_data[i]));
-      alloc_traits::destroy(m_alloc, m_data + i);
+  void append_n(const usize count, const T &value) {
+    const usize start = m_size;
+    try {
+      for (usize i = 0; i < count; ++i) {
+        if (m_size == m_capacity)
+          reallocate(grown_capacity(m_size + 1));
+        alloc_traits::construct(m_alloc, m_data + m_size, value);
+        ++m_size;
+      }
+    } catch (...) {
+      truncate(start);
+      throw;
     }
+  }
+
+  template <typename It> void append(It first, It last) {
+    const usize start = m_size;
+    try {
+      for (; first != last; ++first)
+        emplace_back(*first);
+    } catch (...) {
+      truncate(start);
+      throw;
+    }
+  }
+
+  [[nodiscard]] usize grown_capacity(const usize needed) const {
+    const usize limit = max_size();
+    if (needed > limit)
+      throw std::length_error("small_vector: size exceeds max_size()");
+    const usize doubled = m_capacity > limit / 2 ? limit : m_capacity * 2;
+    return nx::max(doubled, needed);
+  }
+
+  void ensure_space(const usize extra) {
+    if (extra > max_size() - m_size)
+      throw std::length_error("small_vector: size exceeds max_size()");
+    if (m_size + extra > m_capacity)
+      reallocate(grown_capacity(m_size + extra));
+  }
+
+  // Moves (copies, when moving could throw and copying can) count elements
+  // from src to dst and destroys the sources. On a throw the sources are
+  // untouched and the copies made so far are destroyed.
+  void relocate(T *const src, const usize count, T *const dst) {
+    usize built = 0;
+    try {
+      for (; built < count; ++built)
+        alloc_traits::construct(m_alloc, dst + built,
+                                std::move_if_noexcept(src[built]));
+    } catch (...) {
+      for (usize i = 0; i < built; ++i)
+        alloc_traits::destroy(m_alloc, dst + i);
+      throw;
+    }
+    for (usize i = 0; i < count; ++i)
+      alloc_traits::destroy(m_alloc, src + i);
+  }
+
+  void adopt_buffer(T *const new_data, const usize new_cap) noexcept {
     if (!is_inline())
       alloc_traits::deallocate(m_alloc, m_data, m_capacity);
     m_data = new_data;
     m_capacity = new_cap;
+  }
+
+  void reallocate(const usize new_cap) {
+    T *const new_data = alloc_traits::allocate(m_alloc, new_cap);
+    try {
+      relocate(m_data, m_size, new_data);
+    } catch (...) {
+      alloc_traits::deallocate(m_alloc, new_data, new_cap);
+      throw;
+    }
+    adopt_buffer(new_data, new_cap);
+  }
+
+  // The new element is built before the old ones move, so arguments that
+  // refer to them are still alive.
+  template <typename... Args>
+  NX_NO_INLINE reference emplace_back_grow(Args &&...args) {
+    const usize new_cap = grown_capacity(m_size + 1);
+    T *const new_data = alloc_traits::allocate(m_alloc, new_cap);
+    try {
+      alloc_traits::construct(m_alloc, new_data + m_size,
+                              std::forward<Args>(args)...);
+    } catch (...) {
+      alloc_traits::deallocate(m_alloc, new_data, new_cap);
+      throw;
+    }
+    try {
+      relocate(m_data, m_size, new_data);
+    } catch (...) {
+      alloc_traits::destroy(m_alloc, new_data + m_size);
+      alloc_traits::deallocate(m_alloc, new_data, new_cap);
+      throw;
+    }
+    adopt_buffer(new_data, new_cap);
+    return m_data[m_size++];
+  }
+
+  void move_elements_from(small_vector &other) {
+    reserve(other.m_size);
+    for (usize i = 0; i < other.m_size; ++i) {
+      alloc_traits::construct(m_alloc, m_data + i, std::move(other.m_data[i]));
+      ++m_size;
+    }
+    other.clear();
   }
 
   void steal_or_move(small_vector &other) noexcept(
@@ -498,28 +581,6 @@ private:
       other.m_data = other.inline_ptr();
       other.m_capacity = N;
       other.m_size = 0;
-    }
-  }
-
-  void shift_right(T *pos, usize count) {
-    T *old_end = m_data + m_size;
-    const auto n = nx::cast<usize>(old_end - pos);
-    if (n == 0)
-      return;
-
-    if (count >= n) {
-      for (usize i = 0; i < n; ++i)
-        alloc_traits::construct(m_alloc, pos + count + i, std::move(pos[i]));
-      for (usize i = 0; i < n; ++i)
-        alloc_traits::destroy(m_alloc, pos + i);
-    } else {
-      T *tail = old_end - count;
-      for (usize i = 0; i < count; ++i)
-        alloc_traits::construct(m_alloc, old_end + i, std::move(tail[i]));
-      for (isize j = nx::cast<isize>(n - count) - 1; j >= 0; --j)
-        pos[count + j] = std::move(pos[j]);
-      for (usize i = 0; i < count; ++i)
-        alloc_traits::destroy(m_alloc, pos + i);
     }
   }
 };
@@ -546,4 +607,4 @@ usize erase_if(small_vector<T, N, A> &c, Pred pred) {
   return n;
 }
 
-}
+} // namespace nx

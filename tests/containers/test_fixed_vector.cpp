@@ -1,4 +1,5 @@
 #include "framework/nxtest.h"
+#include <new>
 
 #include "core/foundation/containers/fixed_vector.h"
 
@@ -721,4 +722,91 @@ TEST_CASE("fixed_vector: mirrors std::vector under a long mixed workload") {
 
   REQUIRE(v.size() == model.size());
   CHECK(std::vector<int>(v.begin(), v.end()) == model);
+}
+
+namespace {
+
+// Throws on the copy or move that brings the shared countdown to zero.
+struct Fragile {
+  static inline int countdown = -1;
+  static inline int alive = 0;
+  std::string text;
+
+  explicit Fragile(std::string t) : text(std::move(t)) { ++alive; }
+  Fragile(const Fragile &o) : text(o.text) {
+    tick();
+    ++alive;
+  }
+  Fragile(Fragile &&o) : text(std::move(o.text)) {
+    tick();
+    ++alive;
+  }
+  Fragile &operator=(const Fragile &) = default;
+  Fragile &operator=(Fragile &&) = default;
+  ~Fragile() { --alive; }
+
+  static void tick() {
+    if (countdown > 0 && --countdown == 0)
+      throw std::runtime_error("fragile");
+  }
+};
+
+} // namespace
+
+TEST_CASE("fixed_vector: growing past capacity throws in every build") {
+  nx::fixed_vector<int, 2> v{1, 2};
+  CHECK(v.full());
+  CHECK_THROWS_AS(v.push_back(3), std::bad_alloc);
+  CHECK_THROWS_AS(v.insert(v.begin(), 4), std::bad_alloc);
+  CHECK_THROWS_AS(v.resize(3), std::bad_alloc);
+  CHECK_THROWS_AS((nx::fixed_vector<int, 2>{1, 2, 3}), std::bad_alloc);
+  CHECK(v.size() == 2);
+  CHECK(v[1] == 2);
+}
+
+TEST_CASE("fixed_vector: try_push_back reports a full vector") {
+  nx::fixed_vector<int, 2> v;
+  REQUIRE(v.try_push_back(1) != nullptr);
+  int *const second = v.try_emplace_back(2);
+  REQUIRE(second != nullptr);
+  CHECK(*second == 2);
+  CHECK(v.try_push_back(3) == nullptr);
+  CHECK(v.size() == 2);
+}
+
+TEST_CASE("fixed_vector: insert of its own element in the middle") {
+  nx::fixed_vector<std::string, 8> v{"a", "b", "c"};
+  v.insert(v.begin(), v.back());
+  CHECK(v[0] == "c");
+  v.insert(v.begin() + 1, 2, v[3]);
+  REQUIRE(v.size() == 6);
+  CHECK(v[1] == "c");
+  CHECK(v[3] == "a");
+}
+
+TEST_CASE("fixed_vector: a throwing insert leaves no destroyed slot") {
+  Fragile::alive = 0;
+  {
+    nx::fixed_vector<Fragile, 8> v;
+    v.emplace_back("one");
+    v.emplace_back("two");
+    const Fragile extra("x");
+    Fragile::countdown = 2;
+    CHECK_THROWS_AS(v.insert(v.begin(), 3, extra), std::runtime_error);
+    Fragile::countdown = -1;
+    REQUIRE(v.size() == 2);
+    CHECK(v[0].text == "one");
+  }
+  CHECK(Fragile::alive == 0);
+}
+
+TEST_CASE("fixed_vector: a throwing copy in the constructor leaks nothing") {
+  Fragile::alive = 0;
+  nx::fixed_vector<Fragile, 4> source;
+  for (const char *t : {"a", "b", "c"})
+    source.emplace_back(t);
+  Fragile::countdown = 2;
+  CHECK_THROWS_AS((nx::fixed_vector<Fragile, 4>(source)), std::runtime_error);
+  Fragile::countdown = -1;
+  CHECK(Fragile::alive == 3);
 }

@@ -82,7 +82,7 @@ ctest --test-dir build -C Debug
 | Type | Header | Use it for |
 | --- | --- | --- |
 | `nx::blob` | `containers/blob.h` | An owning array whose size is fixed at construction. A `std::vector` that never resizes, for buffers of known length (file contents, decoded data, scratch). |
-| `nx::fixed_vector` | `containers/fixed_vector.h` | A vector with compile-time capacity and no heap use. Lives on the stack; growing past `N` is an error. |
+| `nx::fixed_vector` | `containers/fixed_vector.h` | A vector with compile-time capacity and no heap use. Lives on the stack. Like C++26 `inplace_vector`, growing past `N` throws `std::bad_alloc` in every build; `try_push_back`/`try_emplace_back` return null instead, and `full()` says when it would. |
 | `nx::small_vector` | `containers/small_vector.h` | A dynamic vector that keeps its first `N` elements inline and only spills to the heap when it grows past them. For collections that are usually small. |
 | `nx::flat_map` | `containers/flat_map.h` | An ordered key/value map over sorted contiguous arrays. Cache-friendly binary-search lookups; best for read-heavy maps built once and queried often. |
 | `nx::hash_map` | `containers/hash_map.h` | A SwissTable-style open-addressing unordered map with SIMD probing. The general-purpose key/value map. |

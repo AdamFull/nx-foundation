@@ -1,4 +1,5 @@
 #include "framework/nxtest.h"
+#include <new>
 
 #include "core/foundation/containers/small_vector.h"
 
@@ -793,4 +794,128 @@ TEST_CASE("small_vector: mirrors std::vector under a long mixed workload") {
   }
 
   CHECK(std::vector<int>(v.begin(), v.end()) == model);
+}
+
+namespace {
+
+// Throws on the copy or move that brings the shared countdown to zero.
+struct Fragile {
+  static inline int countdown = -1;
+  static inline int alive = 0;
+  std::string text;
+
+  explicit Fragile(std::string t) : text(std::move(t)) { ++alive; }
+  Fragile(const Fragile &o) : text(o.text) {
+    tick();
+    ++alive;
+  }
+  Fragile(Fragile &&o) : text(std::move(o.text)) {
+    tick();
+    ++alive;
+  }
+  Fragile &operator=(const Fragile &) = default;
+  Fragile &operator=(Fragile &&) = default;
+  ~Fragile() { --alive; }
+
+  static void tick() {
+    if (countdown > 0 && --countdown == 0)
+      throw std::runtime_error("fragile");
+  }
+};
+
+} // namespace
+
+TEST_CASE("small_vector: push_back of its own element while growing") {
+  nx::small_vector<std::string, 2> v;
+  v.push_back("a long string that does not fit any small-string buffer");
+  v.push_back("second");
+  REQUIRE(v.size() == v.capacity());
+  v.push_back(v[0]);
+  v.emplace_back(v[1]);
+  REQUIRE(v.size() == 4);
+  CHECK(v[2] == v[0]);
+  CHECK(v[3] == "second");
+  v.resize(9, v[0]);
+  CHECK(v[8] == v[0]);
+}
+
+TEST_CASE("small_vector: insert of its own element in the middle") {
+  nx::small_vector<std::string, 4> v{"a", "b", "c"};
+  v.insert(v.begin(), v.back());
+  CHECK(v[0] == "c");
+  v.insert(v.begin() + 1, 3, v[3]);
+  REQUIRE(v.size() == 7);
+  CHECK(v[1] == "c");
+  CHECK(v[3] == "c");
+  CHECK(v[4] == "a");
+  v.assign(5, v[4]);
+  CHECK(v.size() == 5);
+  CHECK(v[4] == "a");
+}
+
+TEST_CASE("small_vector: a throwing copy while growing leaves it unchanged") {
+  Fragile::alive = 0;
+  {
+    nx::small_vector<Fragile, 2> v;
+    v.emplace_back("one");
+    v.emplace_back("two");
+    Fragile::countdown = 2;
+    CHECK_THROWS_AS(v.push_back(v[0]), std::runtime_error);
+    Fragile::countdown = -1;
+    REQUIRE(v.size() == 2);
+    CHECK(v[0].text == "one");
+    CHECK(v[1].text == "two");
+    CHECK(Fragile::alive == 2);
+  }
+  CHECK(Fragile::alive == 0);
+}
+
+TEST_CASE("small_vector: a throwing insert leaves no destroyed slot") {
+  Fragile::alive = 0;
+  {
+    nx::small_vector<Fragile, 8> v;
+    v.emplace_back("one");
+    v.emplace_back("two");
+    const Fragile extra("x");
+    Fragile::countdown = 2;
+    CHECK_THROWS_AS(v.insert(v.begin(), 3, extra), std::runtime_error);
+    Fragile::countdown = -1;
+    REQUIRE(v.size() == 2);
+    CHECK(v[0].text == "one");
+    CHECK(v[1].text == "two");
+  }
+  CHECK(Fragile::alive == 0);
+}
+
+TEST_CASE("small_vector: a throwing copy in the constructor leaks nothing") {
+  Fragile::alive = 0;
+  nx::small_vector<Fragile, 2> source;
+  for (const char *t : {"a", "b", "c", "d"})
+    source.emplace_back(t);
+  Fragile::countdown = 3;
+  CHECK_THROWS_AS((nx::small_vector<Fragile, 2>(source)), std::runtime_error);
+  Fragile::countdown = -1;
+  CHECK(Fragile::alive == 4);
+}
+
+TEST_CASE("small_vector: sizes past max_size throw instead of wrapping") {
+  nx::small_vector<int, 4> v{1, 2, 3};
+  CHECK_THROWS_AS(v.reserve(v.max_size() + 1), std::length_error);
+  CHECK_THROWS_AS(v.insert(v.begin(), usize(-1), 7), std::length_error);
+  CHECK_THROWS_AS(v.resize(usize(-1)), std::length_error);
+  CHECK(v.size() == 3);
+}
+
+TEST_CASE("small_vector: resize grows geometrically") {
+  nx::small_vector<int, 2> v;
+  usize reallocations = 0;
+  usize capacity = v.capacity();
+  for (usize n = 1; n <= 1000; ++n) {
+    v.resize(n);
+    if (v.capacity() != capacity) {
+      ++reallocations;
+      capacity = v.capacity();
+    }
+  }
+  CHECK(reallocations < 16);
 }
