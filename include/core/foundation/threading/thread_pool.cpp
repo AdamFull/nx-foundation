@@ -287,9 +287,13 @@ void thread_pool::enqueue(detail::pool_task &&t) {
     dispatch(node);
     return;
   }
-  {
+  try {
     scoped_lock guard(m_background_lock);
     m_background_waiting.push_back(node);
+  } catch (...) {
+    // Out of memory to queue it: run it past the limit rather than lose it.
+    dispatch(node);
+    return;
   }
   m_background_pending.fetch_add(1, std::memory_order_seq_cst);
   pump_background();
@@ -353,8 +357,16 @@ void thread_pool::pump_background() noexcept {
       scoped_lock guard(m_background_lock);
       if (m_background_head < m_background_waiting.size()) {
         node = m_background_waiting[m_background_head++];
+        // Producers that keep ahead never empty the list, so the taken prefix
+        // is dropped once it is half of it.
         if (m_background_head == m_background_waiting.size()) {
           m_background_waiting.clear();
+          m_background_head = 0;
+        } else if (m_background_head >= BACKGROUND_COMPACT_MIN &&
+                   m_background_head * 2 >= m_background_waiting.size()) {
+          m_background_waiting.erase(m_background_waiting.begin(),
+                                     m_background_waiting.begin() +
+                                         nx::cast<isize>(m_background_head));
           m_background_head = 0;
         }
       }

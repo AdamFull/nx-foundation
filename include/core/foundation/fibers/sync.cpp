@@ -232,4 +232,19 @@ void barrier::arrive_and_wait() noexcept {
   resume_all(woken);
 }
 
+void barrier::arrive_and_drop() noexcept {
+  m_lock.lock();
+  assert(m_threshold > 0 && "barrier: more participants dropped than it had");
+  --m_threshold;
+  if (m_arrived == 0 || m_arrived < m_threshold) {
+    m_lock.unlock();
+    return;
+  }
+  m_arrived = 0;
+  Woken woken;
+  claim_all(m_waiters, woken);
+  m_lock.unlock();
+  resume_all(woken);
+}
+
 } // namespace nx::fiber

@@ -10,7 +10,8 @@ namespace nx {
 /// Runs tasks on a thread_pool one at a time, in the order they were posted,
 /// with no thread of its own: while any are queued, one pool task runs them,
 /// and nothing is scheduled while the queue is empty. For work that must not
-/// overlap or reorder, such as one database's reads and writes.
+/// overlap or reorder, such as one database's reads and writes. A task that
+/// throws is logged, and the next one runs.
 class serial_queue {
 public:
   using task = unique_function<void()>;

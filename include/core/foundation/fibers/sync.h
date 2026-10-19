@@ -211,9 +211,12 @@ public:
   barrier &operator=(const barrier &) = delete;
 
   void arrive_and_wait() noexcept;
+  /// Leaves the barrier: this phase and every later one wait for one fewer.
+  /// For a participant that stops early, such as one that threw.
+  void arrive_and_drop() noexcept;
 
 private:
-  const u32 m_threshold;
+  u32 m_threshold;
   u32 m_arrived = 0;
   spin_lock m_lock;
   internal::WaitList m_waiters;

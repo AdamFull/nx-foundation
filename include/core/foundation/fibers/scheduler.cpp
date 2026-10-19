@@ -368,13 +368,10 @@ Fiber *SchedulerState::acquire_fiber() noexcept {
   if (free_fibers.try_pop(fiber))
     return fiber;
 
-  u32 index = fiber_count.load(std::memory_order_relaxed);
-  do {
-    if (index >= config.max_fibers)
-      return nullptr;
-  } while (!fiber_count.compare_exchange_weak(index, index + 1,
-                                              std::memory_order_relaxed));
-
+  if (fiber_count.load(std::memory_order_relaxed) >= config.max_fibers)
+    return nullptr;
+  // The slot is claimed last, so a stack or allocation failure leaves no
+  // index claimed and never filled.
   auto stack = stacks.acquire();
   if (!stack) {
     logw(log_fiber, "fiber: out of address space for fiber stacks");
@@ -385,6 +382,15 @@ Fiber *SchedulerState::acquire_fiber() noexcept {
     stacks.release(*stack);
     return nullptr;
   }
+  u32 index = fiber_count.load(std::memory_order_relaxed);
+  do {
+    if (index >= config.max_fibers) {
+      release(fiber);
+      stacks.release(*stack);
+      return nullptr;
+    }
+  } while (!fiber_count.compare_exchange_weak(index, index + 1,
+                                              std::memory_order_relaxed));
   fiber->stack = *stack;
   fiber->owner = this;
   fiber->context.reset(fiber->stack, &fiber_entry);

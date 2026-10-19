@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <stdexcept>
 
 namespace {
 
@@ -142,4 +143,16 @@ TEST_CASE("serial queue: closing keeps what was queued, and going waits for "
     CHECK_FALSE(queue.post([&] { ran.fetch_add(100); }, true));
   }
   CHECK(ran.load() == 50u);
+}
+
+TEST_CASE("serial queue: a task that throws is logged and the next one runs") {
+  nx::thread_pool pool(pool_config(2));
+  nx::serial_queue queue(pool, {});
+  std::atomic<i32> ran{0};
+  REQUIRE(queue.post([] { throw std::runtime_error("task"); }));
+  REQUIRE(queue.post([] { throw 7; }));
+  REQUIRE(queue.post([&] { ran.fetch_add(1); }));
+  queue.flush();
+  CHECK(ran.load() == 1);
+  CHECK(queue.pending() == 0);
 }

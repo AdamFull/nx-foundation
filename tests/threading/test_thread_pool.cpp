@@ -1284,3 +1284,43 @@ TEST_CASE("thread_pool: worker_os_ids names every thread its tasks run on") {
   std::vector<u64> tiny(1);
   CHECK(pool.worker_os_ids(tiny) == 1u);
 }
+
+TEST_CASE("parallel_for: a chunk's exception reaches the caller") {
+  nx::thread_pool pool(small_config());
+  REQUIRE(pool.worker_count() > 0);
+  std::atomic<u32> ran{0};
+  CHECK_THROWS_AS(pool.parallel_for(0, 4096, 16,
+                                    [&](const usize i) {
+                                      ran.fetch_add(1);
+                                      if (i == 2000)
+                                        throw std::runtime_error("chunk");
+                                    }),
+                  std::runtime_error);
+  CHECK(ran.load() <= 4096u);
+
+  std::atomic<u32> after{0};
+  pool.parallel_for(0, 4096, 16, [&](usize) { after.fetch_add(1); });
+  CHECK(after.load() == 4096u);
+}
+
+TEST_CASE("parallel_region: a participant that throws does not strand the "
+          "others at the barrier") {
+  nx::thread_pool pool(small_config());
+  const u32 expected = pool.worker_count() + 1;
+  REQUIRE(expected > 2);
+
+  std::atomic<u32> finished{0};
+  CHECK_THROWS_AS(
+      pool.parallel_region(0,
+                           [&](const u32 index, u32, nx::fiber::barrier &bar) {
+                             if (index == 0)
+                               throw std::logic_error("caller");
+                             bar.arrive_and_wait();
+                             if (index == 1)
+                               throw std::logic_error("worker");
+                             bar.arrive_and_wait();
+                             finished.fetch_add(1);
+                           }),
+      std::logic_error);
+  CHECK(finished.load() == expected - 2);
+}

@@ -1,7 +1,11 @@
 #include "core/foundation/threading/serial_queue.h"
 
+#include "core/foundation/diagnostics/log.h"
 #include "core/foundation/fibers/scheduler.h"
+#include "core/foundation/threading/cancellation.h"
 #include "core/foundation/threading/sync.h"
+
+#include <exception>
 
 namespace nx {
 
@@ -43,8 +47,16 @@ void serial_queue::drain() noexcept {
       m_running = batch.size();
     }
     const auto run = [&batch] {
-      for (task &fn : batch)
-        fn();
+      for (task &fn : batch) {
+        try {
+          fn();
+        } catch (const task_cancelled &) {
+        } catch (const std::exception &e) {
+          nx::loge("serial queue: unhandled task exception: {}", e.what());
+        } catch (...) {
+          nx::loge("serial queue: unhandled non-standard task exception");
+        }
+      }
     };
     if (m_config.blocking)
       fiber::run_blocking(run);

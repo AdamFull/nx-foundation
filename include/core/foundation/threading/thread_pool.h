@@ -151,6 +151,31 @@ using cancellable_result_t = typename cancellable_result<F>::type;
 /// Completion counter for a batch of tasks: submit any number against a group,
 /// then wait(). Reusable afterwards, and must outlive its tasks. Waiting in a
 /// task suspends its fiber rather than blocking the worker.
+namespace detail {
+
+/// The first exception of a fork and join, kept to rethrow after the join.
+class first_error {
+public:
+  void keep(std::exception_ptr error) noexcept {
+    if (!m_failed.exchange(true, std::memory_order_acq_rel))
+      m_error = std::move(error);
+  }
+  [[nodiscard]] bool failed() const noexcept {
+    return m_failed.load(std::memory_order_acquire);
+  }
+  /// After the join, which orders the write before this read.
+  void rethrow() const {
+    if (m_error)
+      std::rethrow_exception(m_error);
+  }
+
+private:
+  std::atomic<bool> m_failed{false};
+  std::exception_ptr m_error;
+};
+
+} // namespace detail
+
 class task_group {
 public:
   task_group() = default;
@@ -587,6 +612,8 @@ public:
   when_any(nx::vector<future<void>> futures,
            task_priority priority = task_priority::Normal);
 
+  /// The first exception @p body throws is rethrown once every running chunk
+  /// has finished; chunks that had not started are skipped.
   template <typename F> void parallel_for(usize begin, usize end, F &&body) {
     parallel_for(begin, end, 0, std::forward<F>(body));
   }
@@ -605,18 +632,28 @@ public:
     }
 
     std::remove_reference_t<F> *bp = std::addressof(body);
+    detail::first_error error;
     task_group group;
     for (usize chunk = begin; chunk < end; chunk += grain) {
       const usize cb = chunk;
       const usize ce = min(chunk + grain, end);
-      submit(group, task_priority::Critical, [bp, cb, ce] {
-        for (usize i = cb; i < ce; ++i)
-          (*bp)(i);
+      submit(group, task_priority::Critical, [bp, cb, ce, &error] {
+        if (error.failed())
+          return;
+        try {
+          for (usize i = cb; i < ce; ++i)
+            (*bp)(i);
+        } catch (...) {
+          error.keep(std::current_exception());
+        }
       });
     }
     group.wait();
+    error.rethrow();
   }
 
+  /// The first exception a participant throws is rethrown once all have
+  /// finished.
   template <typename F> void parallel_region(u32 requested, F &&body) {
     const u32 workers = worker_count();
     const u32 count =
@@ -628,12 +665,23 @@ public:
     }
 
     std::remove_reference_t<F> *bp = std::addressof(body);
+    detail::first_error error;
+    // A participant that throws leaves the barrier, so the others do not wait
+    // for it at a phase it will never reach.
+    const auto take_part = [bp, count, &bar, &error](const u32 i) {
+      try {
+        (*bp)(i, count, bar);
+      } catch (...) {
+        error.keep(std::current_exception());
+        bar.arrive_and_drop();
+      }
+    };
     task_group group;
     for (u32 i = 1; i < count; ++i)
-      submit(group, task_priority::Critical,
-             [bp, i, count, &bar] { (*bp)(i, count, bar); });
-    body(u32{0}, count, bar);
+      submit(group, task_priority::Critical, [&take_part, i] { take_part(i); });
+    take_part(0);
     group.wait();
+    error.rethrow();
   }
 
   /// Runs @p job on the low-priority lane, counted on @p counter, outside the
@@ -681,6 +729,8 @@ private:
   fiber::Counter m_unfinished;
   mpmc::Queue<task_node *, 256> m_free_nodes;
   lane_counters m_counters[static_cast<usize>(task_priority::Count)];
+
+  static constexpr usize BACKGROUND_COMPACT_MIN = 256;
 
   mutex m_background_lock;
   vector<task_node *> m_background_waiting;
