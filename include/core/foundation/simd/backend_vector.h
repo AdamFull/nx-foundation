@@ -545,6 +545,26 @@ struct vec_ops<T, abi_vector<Bytes>>
     return base::bit_expand(a, m);
   }
 
+#if NX_SIMD_HAS_BUILTIN(__builtin_shufflevector)
+  static constexpr void deinterleave2(const S &a, const S &b, S &even, S &odd) {
+    if (std::is_constant_evaluated())
+      return base::deinterleave2(a, b, even, odd);
+    [&]<int... I>(std::integer_sequence<int, I...>) {
+      even = __builtin_shufflevector(a, b, (2 * I)...);
+      odd = __builtin_shufflevector(a, b, (2 * I + 1)...);
+    }(std::make_integer_sequence<int, N>());
+  }
+  static constexpr void interleave2(const S &a, const S &b, S &lo, S &hi) {
+    if (std::is_constant_evaluated())
+      return base::interleave2(a, b, lo, hi);
+    [&]<int... I>(std::integer_sequence<int, I...>) {
+      lo = __builtin_shufflevector(a, b, (I % 2 ? N + I / 2 : I / 2)...);
+      hi = __builtin_shufflevector(
+          a, b, ((N + I) % 2 ? N + (N + I) / 2 : (N + I) / 2)...);
+    }(std::make_integer_sequence<int, N>());
+  }
+#endif
+
   static constexpr bool fast_compress = sve_ok && sizeof(E) >= 4;
   static constexpr S compress(const S &v, const MS &k) {
 #if defined(NX_SIMD_SVE)

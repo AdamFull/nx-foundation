@@ -148,7 +148,9 @@ set(NX_FOUNDATION_HEADERS
   simd/bit_scalar.h
   simd/complex.h
   simd/detail.h
+  simd/interleave.h
   simd/math.h
+  simd/pipeline.h
   simd/simd.h
   simd/vec.h
 

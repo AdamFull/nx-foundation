@@ -105,9 +105,9 @@ using load_vec_t =
                        basic_vec<std::ranges::range_value_t<R>>, V>;
 
 template <class V, class R>
-constexpr void
-check_aligned_flag(const typename std::ranges::range_value_t<R> *p,
-                   bool aligned) {
+constexpr void check_aligned_flag(
+    [[maybe_unused]] const typename std::ranges::range_value_t<R> *p,
+    bool aligned) {
   if (std::is_constant_evaluated() || !aligned)
     return;
   assert((reinterpret_cast<uintptr_t>(p) %

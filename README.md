@@ -206,6 +206,95 @@ void scale(std::span<float> values, float factor) {
   `nx_simd_sve2_bitperm_tests` when it runs SVE2 BitPerm, and
   `nx_simd_tests` alone when cross-compiling, to be run on the target.
 - `nx.natvis` shows vector lanes and masks in the Visual Studio debugger.
+- Under MSVC, vectors narrower than a register (`vec<u8, 4>`) are plain
+  arrays, so a widening conversion from them runs element by element.
+
+### Interleaved data
+
+`simd/interleave.h` (an extension) loads K-element tuples, such as stereo
+frames, RGBA pixels or xyz positions, as one vector per component, and
+stores them back:
+
+```cpp
+#include "core/foundation/simd/interleave.h"
+
+using V = sd::vec<float>;
+const auto [left, right] = sd::unchecked_load_interleaved<V, 2>(frames, 2 * V::size());
+sd::unchecked_store_interleaved(std::array{right, left}, swapped, 2 * V::size());
+```
+
+- Lane i of part k is `first[i * K + k]`. The unchecked forms touch exactly
+  `K * V::size()` elements; `partial_load_interleaved` and
+  `partial_store_interleaved` take the first n, loading zeros past them and
+  storing nothing past them.
+- Two components are one shuffle per pair of registers: `uzp`/`zip` on NEON
+  and SSE/AVX unpacks and shuffles on x86 (through the vector extensions
+  under GCC and Clang, intrinsics under MSVC). Four are two rounds of two.
+  Other counts, and plain-array vectors, go lane by lane.
+- Elements are not converted: the range holds the vector's element type.
+
+### Pipelines
+
+`simd/pipeline.h` (an extension; `std::simd` has no counterpart) builds a
+loop once from element-wise stages and runs it over ranges:
+
+```cpp
+#include "core/foundation/simd/pipeline.h"
+
+const auto to_unit = sd::pipeline([](auto p) {
+  return sd::rebind_t<float, decltype(p)>(p) * (1.f / 255.f);
+});
+to_unit(pixels, sd::out(unit)); // u8 in, float out
+
+const auto [lo, hi] = sd::pipeline([](auto v) { return std::tuple(v, v); },
+                                   sd::fold(sd::minimum, sd::maximum))(values);
+
+const size_t visible = sd::pipeline(sd::keep_if([](auto r) { return r > 0.f; }))(
+    radii, sd::out(kept));
+```
+
+- A stage takes the previous values as `vec`s, the inputs first, and returns
+  a `vec` or a `std::tuple` of them; generic lambdas let the pipeline choose
+  the width. `keep_if(pred)` drops lanes. `fold(reducers...)` ends a pipeline
+  with one reducer per value: `sum`, `product`, `minimum`, `maximum`, the
+  `std::plus<>`-style operations, or `reducer(op, identity)`. A pipeline
+  without a fold takes `out(ranges...)` last and returns how many elements it
+  wrote. A pipeline is itself a stage, so parts are built once and reused.
+- An input is a range, `interleaved<K>(range)` for K values per element, or
+  `index` (the element's index as `int`; `index_as<T>` for another type),
+  which takes no data and needs a sized input beside it. `out` takes ranges
+  and `interleaved<K>(range)` the same way, K values each:
+
+  ```cpp
+  // Gain ramp over stereo frames, in place.
+  sd::pipeline([=](auto l, auto r, auto f) {
+    const auto g = start + step * f;
+    return std::tuple(l * g, r * g);
+  })(sd::interleaved<2>(frames), sd::index_as<float>,
+     sd::out(sd::interleaved<2>(frames)));
+  ```
+- The stages run as one loop: nothing is stored between stages, and several
+  outputs or folds take one pass over the data.
+- The widest element type in the flow fills one register, so `u8` in and
+  `float` out run `vec<float>::size()` lanes. `lanes<N>` overrides that and
+  `unroll<N>` sets the chunks in flight: 2 by default, and 8, 4 or 2
+  accumulators for folds of one, two or more values.
+- The last partial chunk is padded with its own first element, and the
+  index with its own first index: stages only see values from the data,
+  never a padding zero to divide by.
+- Element types convert at the edges by the `std::simd` rules; a narrowing
+  output takes `out(flag_convert, ranges...)`.
+- Inputs have equal sizes. An output holds at least that many elements and is
+  one of the inputs or disjoint from all of them.
+- A fold's order depends on the lane count and unroll: it is the same on
+  every run of a build, but differs in the last bits from a scalar loop and
+  between targets.
+- Pipelines run in constant expressions.
+- With Clang a pipeline is as fast as the hand-written loop, and its folds
+  beat a one-accumulator loop. MSVC keeps fold accumulators in memory, so a
+  fold of several values runs at about half Clang's speed there.
+- `sd::pipeline` is a function: as a class, `sd::pipeline(f)(in, sd::out(o));`
+  would declare a variable `f`.
 
 ## Command-line parsing
 

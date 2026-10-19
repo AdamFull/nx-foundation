@@ -1227,6 +1227,108 @@ struct vec_ops<T, abi_x86<Bytes>>
     }
   }
 #endif
+
+  // Narrow elements split by packing: the sign- or zero-extended halves of
+  // each wider lane are in range, so packing them is exact.
+  static constexpr void deinterleave2(const S &a, const S &b, S &even, S &odd) {
+    if (std::is_constant_evaluated())
+      return base::deinterleave2(a, b, even, odd);
+    const auto x = x86i::as_int(a);
+    const auto y = x86i::as_int(b);
+    if constexpr (wide) {
+#if defined(NX_SIMD_X86_AVX2)
+      __m256i e, o;
+      if constexpr (L == 8) {
+        e = _mm256_unpacklo_epi64(x, y);
+        o = _mm256_unpackhi_epi64(x, y);
+      } else if constexpr (L == 4) {
+        const __m256 fx = _mm256_castsi256_ps(x), fy = _mm256_castsi256_ps(y);
+        e = _mm256_castps_si256(
+            _mm256_shuffle_ps(fx, fy, _MM_SHUFFLE(2, 0, 2, 0)));
+        o = _mm256_castps_si256(
+            _mm256_shuffle_ps(fx, fy, _MM_SHUFFLE(3, 1, 3, 1)));
+      } else if constexpr (L == 2) {
+        e = _mm256_packs_epi32(_mm256_srai_epi32(_mm256_slli_epi32(x, 16), 16),
+                               _mm256_srai_epi32(_mm256_slli_epi32(y, 16), 16));
+        o = _mm256_packs_epi32(_mm256_srai_epi32(x, 16),
+                               _mm256_srai_epi32(y, 16));
+      } else {
+        const __m256i low = _mm256_set1_epi16(0x00ff);
+        e = _mm256_packus_epi16(_mm256_and_si256(x, low),
+                                _mm256_and_si256(y, low));
+        o = _mm256_packus_epi16(_mm256_srli_epi16(x, 8),
+                                _mm256_srli_epi16(y, 8));
+      }
+      // Each step above stays inside its 128-bit half.
+      even = x86i::as<S>(_mm256_permute4x64_epi64(e, _MM_SHUFFLE(3, 1, 2, 0)));
+      odd = x86i::as<S>(_mm256_permute4x64_epi64(o, _MM_SHUFFLE(3, 1, 2, 0)));
+#endif
+    } else {
+      if constexpr (L == 8) {
+        even = x86i::as<S>(_mm_unpacklo_epi64(x, y));
+        odd = x86i::as<S>(_mm_unpackhi_epi64(x, y));
+      } else if constexpr (L == 4) {
+        const __m128 fx = _mm_castsi128_ps(x), fy = _mm_castsi128_ps(y);
+        even = x86i::as<S>(
+            x86i::as_int(_mm_shuffle_ps(fx, fy, _MM_SHUFFLE(2, 0, 2, 0))));
+        odd = x86i::as<S>(
+            x86i::as_int(_mm_shuffle_ps(fx, fy, _MM_SHUFFLE(3, 1, 3, 1))));
+      } else if constexpr (L == 2) {
+        even = x86i::as<S>(
+            _mm_packs_epi32(_mm_srai_epi32(_mm_slli_epi32(x, 16), 16),
+                            _mm_srai_epi32(_mm_slli_epi32(y, 16), 16)));
+        odd = x86i::as<S>(
+            _mm_packs_epi32(_mm_srai_epi32(x, 16), _mm_srai_epi32(y, 16)));
+      } else {
+        const __m128i low = _mm_set1_epi16(0x00ff);
+        even = x86i::as<S>(
+            _mm_packus_epi16(_mm_and_si128(x, low), _mm_and_si128(y, low)));
+        odd = x86i::as<S>(
+            _mm_packus_epi16(_mm_srli_epi16(x, 8), _mm_srli_epi16(y, 8)));
+      }
+    }
+  }
+
+  static constexpr void interleave2(const S &a, const S &b, S &lo, S &hi) {
+    if (std::is_constant_evaluated())
+      return base::interleave2(a, b, lo, hi);
+    const auto x = x86i::as_int(a);
+    const auto y = x86i::as_int(b);
+    if constexpr (wide) {
+#if defined(NX_SIMD_X86_AVX2)
+      __m256i l, h;
+      if constexpr (L == 8) {
+        l = _mm256_unpacklo_epi64(x, y);
+        h = _mm256_unpackhi_epi64(x, y);
+      } else if constexpr (L == 4) {
+        l = _mm256_unpacklo_epi32(x, y);
+        h = _mm256_unpackhi_epi32(x, y);
+      } else if constexpr (L == 2) {
+        l = _mm256_unpacklo_epi16(x, y);
+        h = _mm256_unpackhi_epi16(x, y);
+      } else {
+        l = _mm256_unpacklo_epi8(x, y);
+        h = _mm256_unpackhi_epi8(x, y);
+      }
+      lo = x86i::as<S>(_mm256_permute2x128_si256(l, h, 0x20));
+      hi = x86i::as<S>(_mm256_permute2x128_si256(l, h, 0x31));
+#endif
+    } else {
+      if constexpr (L == 8) {
+        lo = x86i::as<S>(_mm_unpacklo_epi64(x, y));
+        hi = x86i::as<S>(_mm_unpackhi_epi64(x, y));
+      } else if constexpr (L == 4) {
+        lo = x86i::as<S>(_mm_unpacklo_epi32(x, y));
+        hi = x86i::as<S>(_mm_unpackhi_epi32(x, y));
+      } else if constexpr (L == 2) {
+        lo = x86i::as<S>(_mm_unpacklo_epi16(x, y));
+        hi = x86i::as<S>(_mm_unpackhi_epi16(x, y));
+      } else {
+        lo = x86i::as<S>(_mm_unpacklo_epi8(x, y));
+        hi = x86i::as<S>(_mm_unpackhi_epi8(x, y));
+      }
+    }
+  }
 };
 
 } // namespace nx::simd::detail

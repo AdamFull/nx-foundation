@@ -270,6 +270,23 @@ template <class D, class T, int N, class S, class M> struct vec_ops_base {
         values[n++] = D::get(v, i);
     return D::generate([&](int i) { return values[i]; });
   }
+
+  // a then b hold pairs: even gets their first elements, odd their second.
+  static constexpr void deinterleave2(const S &a, const S &b, S &even, S &odd) {
+    const auto at = [&](int j) {
+      return j < N ? D::get(a, j) : D::get(b, j - N);
+    };
+    even = D::generate([&](int i) { return at(2 * i); });
+    odd = D::generate([&](int i) { return at(2 * i + 1); });
+  }
+  // The inverse: the pairs (a[i], b[i]) in order, the first N in lo.
+  static constexpr void interleave2(const S &a, const S &b, S &lo, S &hi) {
+    const auto at = [&](int j) {
+      return j % 2 == 0 ? D::get(a, j / 2) : D::get(b, j / 2);
+    };
+    lo = D::generate([&](int i) { return at(i); });
+    hi = D::generate([&](int i) { return at(N + i); });
+  }
 };
 
 // Masks keep one lane per element, all bits set or clear, so the same bits
@@ -667,6 +684,23 @@ struct vec_ops<T, abi_multi<Part, C>>
   NX_SIMD_MULTI_BINARY(bit_compress)
   NX_SIMD_MULTI_BINARY(bit_expand)
 #undef NX_SIMD_MULTI_BINARY
+
+  // Part j of each result comes from memory registers 2j and 2j + 1, which
+  // are a's parts and then b's.
+  static constexpr void deinterleave2(const S &a, const S &b, S &even, S &odd) {
+    const auto part = [&](int r) -> const auto & {
+      return r < C ? a.v[r] : b.v[r - C];
+    };
+    for (int j = 0; j < C; ++j)
+      P::deinterleave2(part(2 * j), part(2 * j + 1), even.v[j], odd.v[j]);
+  }
+  static constexpr void interleave2(const S &a, const S &b, S &lo, S &hi) {
+    for (int j = 0; j < C; ++j) {
+      auto &first = 2 * j < C ? lo.v[2 * j] : hi.v[2 * j - C];
+      auto &second = 2 * j + 1 < C ? lo.v[2 * j + 1] : hi.v[2 * j + 1 - C];
+      P::interleave2(a.v[j], b.v[j], first, second);
+    }
+  }
 };
 
 } // namespace nx::simd::detail
