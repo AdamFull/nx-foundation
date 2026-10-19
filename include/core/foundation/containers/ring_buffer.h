@@ -12,19 +12,19 @@ namespace nx {
 /// Bounded lock-free SPSC ring over bulk trivially-copyable data.
 namespace spsc {
 
-template <typename T> class Ring {
+template <typename T> class ring {
   static_assert(std::is_trivially_copyable_v<T>,
-                "spsc::Ring moves its elements with memcpy");
+                "spsc::ring moves its elements with memcpy");
 
 public:
-  Ring() noexcept = default;
+  ring() noexcept = default;
 
-  ~Ring() { release_storage(); }
+  ~ring() { release_storage(); }
 
-  Ring(const Ring &) = delete;
-  Ring &operator=(const Ring &) = delete;
-  Ring(Ring &&) = delete;
-  Ring &operator=(Ring &&) = delete;
+  ring(const ring &) = delete;
+  ring &operator=(const ring &) = delete;
+  ring(ring &&) = delete;
+  ring &operator=(ring &&) = delete;
 
   /// Allocates @p capacity elements, rounded up to a power of two, and drops
   /// whatever was buffered. No other thread may be touching the ring.
@@ -128,6 +128,8 @@ private:
   usize m_mask = 0;
 };
 
+/// Deprecated: the name before foundation types were snake_case.
+template <typename T> using Ring = ring<T>;
 }
 
 }

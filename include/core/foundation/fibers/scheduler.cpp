@@ -93,7 +93,7 @@ struct Worker {
   // The profiler connection that has seen which fiber this thread is in.
   std::optional<u64> profiled_connection;
 #endif
-  mpmc::Queue<Work, LOCAL_QUEUE> local[PRIORITY_COUNT];
+  mpmc::queue<Work, LOCAL_QUEUE> local[PRIORITY_COUNT];
   thread os_thread;
   std::atomic<u64> os_id{0};
 };
@@ -180,11 +180,11 @@ struct SchedulerState {
   Fiber **fibers = nullptr;
   std::atomic<u32> fiber_count{0};
 
-  mpmc::Queue<Fiber *, FIBER_QUEUE> free_fibers;
-  mpmc::Queue<Fiber *, FIBER_QUEUE> ready[PRIORITY_COUNT];
-  mpmc::Queue<Work, GLOBAL_QUEUE> global[PRIORITY_COUNT];
-  mpmc::Queue<Work, MAIN_QUEUE> main_work;
-  mpmc::Queue<Fiber *, FIBER_QUEUE> blocking_ready;
+  mpmc::queue<Fiber *, FIBER_QUEUE> free_fibers;
+  mpmc::queue<Fiber *, FIBER_QUEUE> ready[PRIORITY_COUNT];
+  mpmc::queue<Work, GLOBAL_QUEUE> global[PRIORITY_COUNT];
+  mpmc::queue<Work, MAIN_QUEUE> main_work;
+  mpmc::queue<Fiber *, FIBER_QUEUE> blocking_ready;
 
   std::atomic<u32> worker_epoch{0};
   std::atomic<u32> sleepers{0};

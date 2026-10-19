@@ -285,7 +285,7 @@ private:
 };
 
 struct Logger {
-  mpmc::Queue<Record, LOG_QUEUE_CAPACITY> *queue = nullptr;
+  mpmc::queue<Record, LOG_QUEUE_CAPACITY> *queue = nullptr;
   std::atomic<u64> enqueued{0};
   std::atomic<u64> processed{0};
   std::atomic<bool> running{false};
@@ -486,7 +486,7 @@ void init(const Config &config) {
     add_sink(make_file_sink(config.file_path, config.file_max_bytes,
                             config.file_max_files));
 
-  l.queue = allocate<mpmc::Queue<Record, LOG_QUEUE_CAPACITY>>();
+  l.queue = allocate<mpmc::queue<Record, LOG_QUEUE_CAPACITY>>();
   l.configured.store(true, std::memory_order_release);
   l.running.store(true, std::memory_order_release);
 }

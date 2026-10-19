@@ -10,12 +10,12 @@ namespace nx {
 
 /// 128-bit globally unique identifier (UUID). Holds 16 raw bytes. Parses from
 /// and formats to the canonical 8-4-4-4-12 hex string, is comparable and
-/// hashable. Generate one with nx::Rng::guid() from an Rng seeded with
+/// hashable. Generate one with nx::rng::guid() from an rng seeded with
 /// os::random_bytes.
-struct Guid {
+struct guid {
   std::array<u8, 16> bytes{};
 
-  [[nodiscard]] static constexpr std::optional<Guid>
+  [[nodiscard]] static constexpr std::optional<guid>
   parse(string_view str) noexcept {
     constexpr auto hex_val = [](const char c) noexcept -> i32 {
       if (c >= '0' && c <= '9')
@@ -28,7 +28,7 @@ struct Guid {
     };
 
     constexpr int layout[] = {8, 4, 4, 4, 12};
-    Guid result{};
+    guid result{};
     int byte_idx = 0;
     usize pos = 0;
 
@@ -81,34 +81,40 @@ struct Guid {
 
   [[nodiscard]] string to_string() const { return to_chars().data(); }
 
-  bool operator==(const Guid &) const = default;
-  auto operator<=>(const Guid &) const = default;
+  bool operator==(const guid &) const = default;
+  auto operator<=>(const guid &) const = default;
 };
 
 /// A deterministic generator: one algorithm and seed give the same stream on
-/// every platform. A default Rng is Pcg seeded with 0, so it repeats every run.
-class Rng {
+/// every platform. A default rng is Pcg seeded with 0, so it repeats every run.
+class rng {
 public:
-  enum class Alg { Pcg, Xoshiro256, Splitmix64 };
+  enum class alg { Pcg, Xoshiro256, Splitmix64 };
 
-  struct PcgState {
+  struct pcg_state {
     u64 state;
     u64 inc;
   };
-  struct Xoshiro256State {
+  struct xoshiro256_state {
     u64 s[4];
   };
-  struct Splitmix64State {
+  struct splitmix64_state {
     u64 state;
   };
 
-  Rng() { init(Alg::Pcg, 0); }
-  Rng(const Alg alg, const u64 seed) { init(alg, seed); }
+  /// Deprecated: the names before foundation types were snake_case.
+  using Alg = alg;
+  using PcgState = pcg_state;
+  using Xoshiro256State = xoshiro256_state;
+  using Splitmix64State = splitmix64_state;
 
-  void init(Alg alg, u64 seed);
+  rng() { init(alg::Pcg, 0); }
+  rng(const alg kind, const u64 seed) { init(kind, seed); }
+
+  void init(alg kind, u64 seed);
   void seed(u64 seed);
 
-  [[nodiscard]] Alg algorithm() const noexcept { return m_alg; }
+  [[nodiscard]] alg algorithm() const noexcept { return m_alg; }
 
   [[nodiscard]] u32 next_u32();
   [[nodiscard]] u64 next_u64();
@@ -130,21 +136,25 @@ public:
 
   void fill(std::span<std::byte> buffer);
 
-  [[nodiscard]] Guid guid();
+  [[nodiscard]] nx::guid guid();
 
 private:
-  Alg m_alg = Alg::Pcg;
+  alg m_alg = alg::Pcg;
   union {
-    PcgState m_pcg;
-    Xoshiro256State m_xoshiro256;
-    Splitmix64State m_splitmix64;
+    pcg_state m_pcg;
+    xoshiro256_state m_xoshiro256;
+    splitmix64_state m_splitmix64;
   };
 };
 
+/// Deprecated: the names before foundation types were snake_case.
+using Guid = guid;
+using Rng = rng;
+
 }
 
-template <> struct std::hash<nx::Guid> {
-  std::size_t operator()(const nx::Guid &g) const noexcept {
+template <> struct std::hash<nx::guid> {
+  std::size_t operator()(const nx::guid &g) const noexcept {
     const auto words = std::bit_cast<std::array<u64, 2>>(g.bytes);
     const auto lo = words[0];
     const auto hi = words[1];

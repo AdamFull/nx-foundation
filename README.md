@@ -91,12 +91,12 @@ ctest --test-dir build -C Debug
 | `nx::slot_map` | `containers/slot_map.h` | A handle-keyed pool that keeps live elements densely packed for cache-friendly iteration. Handles survive moves; addresses do not. |
 | `nx::stable_pool` | `containers/stable_pool.h` | A handle-keyed pool whose element addresses stay valid until erased. Use when other systems hold raw references into the pool. |
 | `nx::sparse_set` | `containers/sparse_set.h` | A sparse set mapping handles (entity ids) to dense payloads with O(1) insert/erase/contains. The component store for an ECS; `T = void` makes a plain set. |
-| `nx::mpmc::Queue` | `containers/concurrent_queue.h` | A bounded lock-free queue for many producers and many consumers. |
-| `nx::mpsc::Queue` | `containers/concurrent_queue.h` | A bounded lock-free queue for many producers and a single consumer, with `consume_all`/`consume_batch` helpers. |
+| `nx::mpmc::queue` | `containers/concurrent_queue.h` | A bounded lock-free queue for many producers and many consumers. |
+| `nx::mpsc::queue` | `containers/concurrent_queue.h` | A bounded lock-free queue for many producers and a single consumer, with `consume_all`/`consume_batch` helpers. |
 | `nx::sort_by_key` / `nx::sort_by_key_into` | `containers/radix_sort.h` | A stable radix sort on a 32-bit key: it sorts (key, index) pairs, then gathers each element once. `coherent_sort_by_key_into` is for data re-sorted every frame with little change - it starts from the previous call's order and falls back to the radix when too much moved, with the same result either way. |
 | `nx::radix_context` / `nx::radix_sort_pairs` | `containers/radix_sort.h` | The radix sort underneath: (key, value) pairs with caller-owned scratch, serial or across a `thread_pool` past a calibrated size. |
 | `nx::compact_context` | `containers/stream_compact.h` | Keeps the elements a predicate accepts, in order, serially or across a `thread_pool`; `transform_compact` produces and filters in one pass. |
-| `nx::spsc::Ring` | `containers/ring_buffer.h` | A bounded lock-free ring for one producer and one consumer over trivially copyable data, written and read in bulk. |
+| `nx::spsc::ring` | `containers/ring_buffer.h` | A bounded lock-free ring for one producer and one consumer over trivially copyable data, written and read in bulk. |
 | `nx::bit_array` | `containers/bit_array.h` | `N` flags packed into 64-bit words, with `count`, `all`/`any`/`none` and `find_first`/`find_next` over set bits. Not thread-safe. |
 | `nx::string_map` | `containers/string_map.h` | A `flat_hash_map` keyed by `nx::string` that looks up by `string_view` without building a string. |
 | `nx::sync_slot_map` | `containers/sync_slot_map.h` | A `slot_map` two threads share, such as render resources the main thread creates and the render thread reads. A pointer from `try_get` stays valid while other entries come and go; the caller must not erase one still in use. |
@@ -407,14 +407,16 @@ non-inlined calls.
 | `nx::result` / `nx::err` | `core/result.h` | An error-or-value type for exception-free error handling, with `and_then`/`transform`/`or_else`/`transform_error` combinators. |
 | `nx::scope_guard` | `core/scope_guard.h` | Run an action on scope exit unless dismissed. Also `scoped_exit()` and the Go-style `defer { ... };` macro. |
 | `nx::scoped_value` | `core/scope_guard.h` | Temporarily replace a value and restore it on scope exit, including correctly nested scopes. |
-| `nx::Guid` | `core/random.h` | A 128-bit unique identifier (UUID): parse, format, compare, hash. Generate via `nx::Rng::guid()`. |
-| `nx::Rng` | `core/random.h` | A seedable pseudo-random generator; not for secrets, which come from `nx::os::random_bytes`. |
+| `nx::guid` | `core/random.h` | A 128-bit unique identifier (UUID): parse, format, compare, hash. Generate via `nx::rng::guid()`. |
+| `nx::rng` | `core/random.h` | A seedable pseudo-random generator; not for secrets, which come from `nx::os::random_bytes`. |
 | `nx::sha256` | `core/sha256.h` | The SHA-256 digest (FIPS 180-4) of a byte span, for identities and checks such as PKCE; not a password hash. |
 | `nx::duration` / `nx::timestamp` / `nx::stopwatch` | `core/time.h` | Signed nanosecond spans and monotonic time points, a stopwatch, and `scoped_micros` that writes a scope's length on exit. |
 | `nx::fixed` | `core/fixed.h` | Q16.16 fixed point whose overflow wraps as defined behaviour, so every peer of a rollback session computes the same bits. |
 | `nx::fixed_step` | `core/fixed_step.h` | A fixed-rate simulation clock: how many steps a frame runs, capped by measured step cost, with the remainder as an interpolation `alpha()`. |
 
 The owning callable wrappers convert implicitly from any callable invocable with their signature, a void signature discards the result, and a null function pointer or `nullptr` makes them empty (`valid()`, `== nullptr`, `reset()`).
+
+Types are snake_case, like the standard library. `Guid`, `Rng`, `mpmc::Queue`, `mpsc::Queue` and `spsc::Ring` remain as deprecated aliases of their new names.
 
 ## Core
 

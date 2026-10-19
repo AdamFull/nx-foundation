@@ -8,7 +8,7 @@
 
 namespace {
 
-usize write_seq(nx::spsc::Ring<u32> &ring, const u32 first, const usize count) {
+usize write_seq(nx::spsc::ring<u32> &ring, const u32 first, const usize count) {
   std::vector<u32> src(count);
   std::iota(src.begin(), src.end(), first);
   return ring.write(src.data(), src.size());
@@ -17,7 +17,7 @@ usize write_seq(nx::spsc::Ring<u32> &ring, const u32 first, const usize count) {
 }
 
 TEST_CASE("ring_buffer: a default-constructed ring is invalid and empty") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   CHECK_FALSE(ring.valid());
   CHECK(ring.capacity() == 0u);
   CHECK(ring.size() == 0u);
@@ -25,7 +25,7 @@ TEST_CASE("ring_buffer: a default-constructed ring is invalid and empty") {
 }
 
 TEST_CASE("ring_buffer: capacity is rounded up to a power of two") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(100));
   CHECK(ring.capacity() == 128u);
   CHECK(ring.valid());
@@ -36,13 +36,13 @@ TEST_CASE("ring_buffer: capacity is rounded up to a power of two") {
 }
 
 TEST_CASE("ring_buffer: a capacity of zero is refused") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   CHECK_FALSE(ring.reset(0));
   CHECK_FALSE(ring.valid());
 }
 
 TEST_CASE("ring_buffer: reset drops whatever was buffered") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(16));
   CHECK(write_seq(ring, 0, 8) == 8u);
   CHECK(ring.size() == 8u);
@@ -53,7 +53,7 @@ TEST_CASE("ring_buffer: reset drops whatever was buffered") {
 }
 
 TEST_CASE("ring_buffer: a write is read back in order") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(16));
   CHECK(write_seq(ring, 100, 10) == 10u);
   CHECK(ring.size() == 10u);
@@ -67,7 +67,7 @@ TEST_CASE("ring_buffer: a write is read back in order") {
 }
 
 TEST_CASE("ring_buffer: size and space always sum to the capacity") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(32));
   for (u32 n = 0; n < 32; ++n) {
     CHECK(ring.size() + ring.space() == ring.capacity());
@@ -78,7 +78,7 @@ TEST_CASE("ring_buffer: size and space always sum to the capacity") {
 }
 
 TEST_CASE("ring_buffer: a write past the end takes what fits and reports it") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(8));
   CHECK(write_seq(ring, 0, 6) == 6u);
   CHECK(write_seq(ring, 6, 4) == 2u);
@@ -92,7 +92,7 @@ TEST_CASE("ring_buffer: a write past the end takes what fits and reports it") {
 }
 
 TEST_CASE("ring_buffer: a read past the end takes what is there") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(8));
   CHECK(write_seq(ring, 0, 3) == 3u);
 
@@ -107,7 +107,7 @@ TEST_CASE("ring_buffer: a read past the end takes what is there") {
 }
 
 TEST_CASE("ring_buffer: a write that wraps the end reads back contiguous") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(8));
   CHECK(write_seq(ring, 0, 6) == 6u);
 
@@ -123,7 +123,7 @@ TEST_CASE("ring_buffer: a write that wraps the end reads back contiguous") {
 }
 
 TEST_CASE("ring_buffer: many wraps preserve order") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(8));
   u32 next_written = 0;
   u32 next_expected = 0;
@@ -144,7 +144,7 @@ TEST_CASE("ring_buffer: many wraps preserve order") {
 }
 
 TEST_CASE("ring_buffer: discard drops elements without copying them") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(16));
   CHECK(write_seq(ring, 0, 10) == 10u);
   CHECK(ring.discard(4) == 4u);
@@ -157,7 +157,7 @@ TEST_CASE("ring_buffer: discard drops elements without copying them") {
 }
 
 TEST_CASE("ring_buffer: discard is clamped to what is buffered") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(16));
   CHECK(write_seq(ring, 0, 3) == 3u);
   CHECK(ring.discard(100) == 3u);
@@ -165,7 +165,7 @@ TEST_CASE("ring_buffer: discard is clamped to what is buffered") {
 }
 
 TEST_CASE("ring_buffer: clear empties without disturbing the capacity") {
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(16));
   CHECK(write_seq(ring, 0, 12) == 12u);
   ring.clear();
@@ -180,7 +180,7 @@ TEST_CASE("ring_buffer: clear empties without disturbing the capacity") {
 }
 
 TEST_CASE("ring_buffer: carries floats and plain aggregates") {
-  nx::spsc::Ring<f32> samples;
+  nx::spsc::ring<f32> samples;
   REQUIRE(samples.reset(4));
   const f32 in[4] = {-1.f, -0.5f, 0.5f, 1.f};
   CHECK(samples.write(in, 4) == 4u);
@@ -193,7 +193,7 @@ TEST_CASE("ring_buffer: carries floats and plain aggregates") {
     f32 left;
     f32 right;
   };
-  nx::spsc::Ring<Frame> frames;
+  nx::spsc::ring<Frame> frames;
   REQUIRE(frames.reset(4));
   const Frame f[2] = {{1.f, 2.f}, {3.f, 4.f}};
   CHECK(frames.write(f, 2) == 2u);
@@ -207,7 +207,7 @@ TEST_CASE("ring_buffer: a producer and a consumer transfer a stream intact") {
   constexpr u32 TOTAL = 1u << 20;
   constexpr usize CHUNK = 64;
 
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(1024));
 
   std::thread producer([&ring] {
@@ -252,7 +252,7 @@ TEST_CASE("ring_buffer: a producer and a consumer transfer a stream intact") {
 TEST_CASE("ring_buffer: a slow consumer never loses or reorders elements") {
   constexpr u32 TOTAL = 1u << 16;
 
-  nx::spsc::Ring<u32> ring;
+  nx::spsc::ring<u32> ring;
   REQUIRE(ring.reset(16));
 
   std::thread producer([&ring] {
@@ -281,7 +281,7 @@ TEST_CASE("ring_buffer: a slow consumer never loses or reorders elements") {
 }
 
 TEST_CASE("spsc ring: a capacity whose bytes overflow is refused") {
-  nx::spsc::Ring<u64> ring;
+  nx::spsc::ring<u64> ring;
   CHECK_FALSE(ring.reset(~usize{0}));
   CHECK_FALSE(ring.valid());
   CHECK_FALSE(ring.reset(usize{1} << (sizeof(usize) * 8 - 2)));

@@ -9,22 +9,22 @@
 
 namespace nx {
 
-/// Bounded lock-free multi-producer / multi-consumer queue. Capacity is rounded up to a power of
-/// two.
+/// Bounded lock-free multi-producer / multi-consumer queue. Capacity is rounded
+/// up to a power of two.
 namespace mpmc {
-template <typename T, usize Capacity> class Queue {
+template <typename T, usize Capacity> class queue {
 public:
   static_assert(Capacity > 0);
   static constexpr usize CAPACITY =
       nx::max<usize>(next_pow2<usize>(Capacity), 2);
   static constexpr usize MASK = CAPACITY - 1;
 
-  Queue() noexcept {
+  queue() noexcept {
     for (usize i = 0; i < CAPACITY; i++)
       m_slots[i].sequence.store(i, std::memory_order_relaxed);
   }
 
-  ~Queue() noexcept {
+  ~queue() noexcept {
     if constexpr (!std::is_trivially_destructible_v<T>) {
       const usize eq = m_enqueue_pos.load(std::memory_order_relaxed);
       const usize dq = m_dequeue_pos.load(std::memory_order_relaxed);
@@ -33,10 +33,10 @@ public:
     }
   }
 
-  Queue(const Queue &) = delete;
-  Queue &operator=(const Queue &) = delete;
-  Queue(Queue &&) = delete;
-  Queue &operator=(Queue &&) = delete;
+  queue(const queue &) = delete;
+  queue &operator=(const queue &) = delete;
+  queue(queue &&) = delete;
+  queue &operator=(queue &&) = delete;
 
   template <typename... Args>
   NX_FORCE_INLINE bool try_emplace(Args &&...args) noexcept {
@@ -165,26 +165,29 @@ private:
   alignas(64) std::atomic<usize> m_dequeue_pos{0};
   Slot m_slots[CAPACITY];
 };
+
+/// Deprecated: the name before foundation types were snake_case.
+template <typename T, usize Capacity> using Queue = queue<T, Capacity>;
 }
 
 static_assert(std::atomic<usize>::is_always_lock_free);
 
-/// Bounded lock-free multi-producer / single-consumer queue. @tparam Capacity Requested capacity;
-/// rounded up to the next power of two.
+/// Bounded lock-free multi-producer / single-consumer queue. @tparam Capacity
+/// Requested capacity; rounded up to the next power of two.
 namespace mpsc {
-template <typename T, usize Capacity> class Queue {
+template <typename T, usize Capacity> class queue {
 public:
   static_assert(Capacity > 0);
   static constexpr usize CAPACITY =
       nx::max<usize>(next_pow2<usize>(Capacity), 2);
   static constexpr usize MASK = CAPACITY - 1;
 
-  Queue() noexcept {
+  queue() noexcept {
     for (usize i = 0; i < CAPACITY; ++i)
       m_slots[i].sequence.store(i, std::memory_order_relaxed);
   }
 
-  ~Queue() noexcept {
+  ~queue() noexcept {
     if constexpr (!std::is_trivially_destructible_v<T>) {
       const usize eq = m_enqueue_pos.load(std::memory_order_relaxed);
       const usize dq = m_dequeue_pos.load(std::memory_order_relaxed);
@@ -193,10 +196,10 @@ public:
     }
   }
 
-  Queue(const Queue &) = delete;
-  Queue &operator=(const Queue &) = delete;
-  Queue(Queue &&) = delete;
-  Queue &operator=(Queue &&) = delete;
+  queue(const queue &) = delete;
+  queue &operator=(const queue &) = delete;
+  queue(queue &&) = delete;
+  queue &operator=(queue &&) = delete;
 
   template <typename... Args>
   NX_FORCE_INLINE bool try_emplace(Args &&...args) noexcept {
@@ -336,6 +339,9 @@ private:
   alignas(64) std::atomic<usize> m_dequeue_pos{0};
   Slot m_slots[CAPACITY];
 };
+
+/// Deprecated: the name before foundation types were snake_case.
+template <typename T, usize Capacity> using Queue = queue<T, Capacity>;
 }
 
 }

@@ -728,7 +728,7 @@ private:
   bool m_has_main_thread = false;
   unique_ptr<fiber::Scheduler> m_scheduler;
   fiber::Counter m_unfinished;
-  mpmc::Queue<task_node *, 256> m_free_nodes;
+  mpmc::queue<task_node *, 256> m_free_nodes;
   lane_counters m_counters[static_cast<usize>(task_priority::Count)];
 
   static constexpr usize BACKGROUND_COMPACT_MIN = 256;

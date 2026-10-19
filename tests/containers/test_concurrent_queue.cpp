@@ -39,34 +39,34 @@ struct Payload {
 }
 
 TEST_CASE("concurrent_queue: capacity is rounded up to a power of two") {
-  CHECK((nx::mpmc::Queue<int, 4>::CAPACITY) == 4);
-  CHECK((nx::mpmc::Queue<int, 5>::CAPACITY) == 8);
-  CHECK((nx::mpmc::Queue<int, 100>::CAPACITY) == 128);
-  CHECK((nx::mpmc::Queue<int, 1024>::CAPACITY) == 1024);
+  CHECK((nx::mpmc::queue<int, 4>::CAPACITY) == 4);
+  CHECK((nx::mpmc::queue<int, 5>::CAPACITY) == 8);
+  CHECK((nx::mpmc::queue<int, 100>::CAPACITY) == 128);
+  CHECK((nx::mpmc::queue<int, 1024>::CAPACITY) == 1024);
 
-  CHECK((nx::mpmc::Queue<int, 8>::MASK) == 7);
-  CHECK((nx::mpsc::Queue<int, 5>::CAPACITY) == 8);
-  CHECK((nx::mpsc::Queue<int, 8>::MASK) == 7);
+  CHECK((nx::mpmc::queue<int, 8>::MASK) == 7);
+  CHECK((nx::mpsc::queue<int, 5>::CAPACITY) == 8);
+  CHECK((nx::mpsc::queue<int, 8>::MASK) == 7);
 
-  static_assert(nx::is_pow2(nx::mpmc::Queue<int, 3>::CAPACITY));
-  static_assert(nx::is_pow2(nx::mpsc::Queue<int, 7>::CAPACITY));
+  static_assert(nx::is_pow2(nx::mpmc::queue<int, 3>::CAPACITY));
+  static_assert(nx::is_pow2(nx::mpsc::queue<int, 7>::CAPACITY));
 }
 
 TEST_CASE("concurrent_queue: queues are neither copyable nor movable") {
-  using Q = nx::mpmc::Queue<int, 4>;
+  using Q = nx::mpmc::queue<int, 4>;
   static_assert(!std::is_copy_constructible_v<Q>);
   static_assert(!std::is_move_constructible_v<Q>);
   static_assert(!std::is_copy_assignable_v<Q>);
   static_assert(!std::is_move_assignable_v<Q>);
 
-  using P = nx::mpsc::Queue<int, 4>;
+  using P = nx::mpsc::queue<int, 4>;
   static_assert(!std::is_copy_constructible_v<P>);
   static_assert(!std::is_move_constructible_v<P>);
   CHECK(true);
 }
 
 TEST_CASE("mpmc: a fresh queue is empty and pops fail") {
-  nx::mpmc::Queue<int, 8> q;
+  nx::mpmc::queue<int, 8> q;
   CHECK(q.empty_approx());
   CHECK_FALSE(q.full_approx());
   CHECK(q.size_approx() == 0);
@@ -77,7 +77,7 @@ TEST_CASE("mpmc: a fresh queue is empty and pops fail") {
 }
 
 TEST_CASE("mpmc: try_push and try_pop preserve FIFO order") {
-  nx::mpmc::Queue<int, 8> q;
+  nx::mpmc::queue<int, 8> q;
 
   for (int i = 0; i < 8; ++i)
     CHECK(q.try_push(i));
@@ -93,7 +93,7 @@ TEST_CASE("mpmc: try_push and try_pop preserve FIFO order") {
 }
 
 TEST_CASE("mpmc: try_push reports failure when the queue is full") {
-  nx::mpmc::Queue<int, 4> q;
+  nx::mpmc::queue<int, 4> q;
 
   for (int i = 0; i < 4; ++i)
     REQUIRE(q.try_push(i));
@@ -112,8 +112,8 @@ TEST_CASE("mpmc: try_push reports failure when the queue is full") {
 }
 
 TEST_CASE("mpmc: a requested capacity of one is raised to two usable slots") {
-  static_assert(nx::mpmc::Queue<int, 1>::CAPACITY == 2);
-  nx::mpmc::Queue<int, 1> q;
+  static_assert(nx::mpmc::queue<int, 1>::CAPACITY == 2);
+  nx::mpmc::queue<int, 1> q;
 
   REQUIRE(q.try_push(1));
   CHECK(q.size_approx() == 1);
@@ -146,7 +146,7 @@ TEST_CASE("mpmc: a requested capacity of one is raised to two usable slots") {
 }
 
 TEST_CASE("mpmc: the ring wraps around many times") {
-  nx::mpmc::Queue<int, 4> q;
+  nx::mpmc::queue<int, 4> q;
 
   for (int round = 0; round < 1000; ++round) {
     REQUIRE(q.try_push(round));
@@ -168,7 +168,7 @@ TEST_CASE("mpmc: the ring wraps around many times") {
 }
 
 TEST_CASE("mpmc: try_emplace constructs in place") {
-  nx::mpmc::Queue<Payload, 8> q;
+  nx::mpmc::queue<Payload, 8> q;
   g_live = 0;
 
   CHECK(q.try_emplace(42));
@@ -182,7 +182,7 @@ TEST_CASE("mpmc: try_emplace constructs in place") {
 }
 
 TEST_CASE("mpmc: push copies an lvalue and moves an rvalue") {
-  nx::mpmc::Queue<Payload, 8> q;
+  nx::mpmc::queue<Payload, 8> q;
   g_live = 0;
   {
     Payload src(7);
@@ -205,7 +205,7 @@ TEST_CASE("mpmc: push copies an lvalue and moves an rvalue") {
 TEST_CASE("mpmc: the destructor releases elements still in the queue") {
   g_live = 0;
   {
-    nx::mpmc::Queue<Payload, 8> q;
+    nx::mpmc::queue<Payload, 8> q;
     for (int i = 0; i < 5; ++i)
       REQUIRE(q.try_emplace(i));
     CHECK(g_live.load() == 5);
@@ -214,7 +214,7 @@ TEST_CASE("mpmc: the destructor releases elements still in the queue") {
 
   g_live = 0;
   {
-    nx::mpmc::Queue<Payload, 4> q;
+    nx::mpmc::queue<Payload, 4> q;
     for (int round = 0; round < 10; ++round) {
       REQUIRE(q.try_emplace(round));
       Payload out;
@@ -228,7 +228,7 @@ TEST_CASE("mpmc: the destructor releases elements still in the queue") {
 }
 
 TEST_CASE("mpmc: blocking push and pop round-trip on one thread") {
-  nx::mpmc::Queue<int, 8> q;
+  nx::mpmc::queue<int, 8> q;
 
   for (int i = 0; i < 8; ++i)
     q.push(i);
@@ -253,7 +253,7 @@ TEST_CASE("mpmc: blocking push and pop round-trip on one thread") {
 }
 
 TEST_CASE("mpmc: size_approx tracks pushes and pops") {
-  nx::mpmc::Queue<int, 16> q;
+  nx::mpmc::queue<int, 16> q;
   CHECK(q.size_approx() == 0);
   CHECK(q.empty_approx());
 
@@ -294,7 +294,7 @@ struct HeldOpen {
 
 TEST_CASE("mpmc: an element still being pushed is counted but cannot be "
           "popped") {
-  nx::mpmc::Queue<HeldOpen, 16> q;
+  nx::mpmc::queue<HeldOpen, 16> q;
   CHECK_FALSE(q.can_pop_approx());
 
   std::atomic<bool> entered{false};
@@ -320,7 +320,7 @@ TEST_CASE("mpmc: an element still being pushed is counted but cannot be "
 }
 
 TEST_CASE("mpsc: a fresh queue is empty and pops fail") {
-  nx::mpsc::Queue<int, 8> q;
+  nx::mpsc::queue<int, 8> q;
   CHECK(q.empty_approx());
   CHECK(q.size_approx() == 0);
 
@@ -330,7 +330,7 @@ TEST_CASE("mpsc: a fresh queue is empty and pops fail") {
 }
 
 TEST_CASE("mpsc: try_push and try_pop preserve FIFO order") {
-  nx::mpsc::Queue<int, 8> q;
+  nx::mpsc::queue<int, 8> q;
 
   for (int i = 0; i < 8; ++i)
     CHECK(q.try_push(i));
@@ -347,8 +347,8 @@ TEST_CASE("mpsc: try_push and try_pop preserve FIFO order") {
 }
 
 TEST_CASE("mpsc: a requested capacity of one is raised to two usable slots") {
-  static_assert(nx::mpsc::Queue<int, 1>::CAPACITY == 2);
-  nx::mpsc::Queue<int, 1> q;
+  static_assert(nx::mpsc::queue<int, 1>::CAPACITY == 2);
+  nx::mpsc::queue<int, 1> q;
 
   REQUIRE(q.try_push(1));
   CHECK_FALSE(q.full_approx());
@@ -377,7 +377,7 @@ TEST_CASE("mpsc: a requested capacity of one is raised to two usable slots") {
 }
 
 TEST_CASE("mpsc: the ring wraps around many times") {
-  nx::mpsc::Queue<int, 4> q;
+  nx::mpsc::queue<int, 4> q;
   for (int round = 0; round < 1000; ++round) {
     REQUIRE(q.try_push(round));
     int out = -1;
@@ -388,7 +388,7 @@ TEST_CASE("mpsc: the ring wraps around many times") {
 }
 
 TEST_CASE("mpsc: blocking push and pop round-trip on one thread") {
-  nx::mpsc::Queue<int, 8> q;
+  nx::mpsc::queue<int, 8> q;
   for (int i = 0; i < 8; ++i)
     q.push(i);
   for (int i = 0; i < 8; ++i) {
@@ -409,7 +409,7 @@ TEST_CASE("mpsc: blocking push and pop round-trip on one thread") {
 }
 
 TEST_CASE("mpsc: consume_all drains everything and returns the count") {
-  nx::mpsc::Queue<int, 16> q;
+  nx::mpsc::queue<int, 16> q;
   for (int i = 0; i < 10; ++i)
     REQUIRE(q.try_push(i));
 
@@ -425,7 +425,7 @@ TEST_CASE("mpsc: consume_all drains everything and returns the count") {
 }
 
 TEST_CASE("mpsc: consume_batch stops at the requested limit") {
-  nx::mpsc::Queue<int, 16> q;
+  nx::mpsc::queue<int, 16> q;
   for (int i = 0; i < 10; ++i)
     REQUIRE(q.try_push(i));
 
@@ -447,7 +447,7 @@ TEST_CASE("mpsc: consume_batch stops at the requested limit") {
 TEST_CASE("mpsc: the destructor releases elements still in the queue") {
   g_live = 0;
   {
-    nx::mpsc::Queue<Payload, 8> q;
+    nx::mpsc::queue<Payload, 8> q;
     for (int i = 0; i < 5; ++i)
       REQUIRE(q.try_emplace(i));
     CHECK(g_live.load() == 5);
@@ -462,7 +462,7 @@ TEST_CASE(
   constexpr int per_producer = 4000;
   constexpr int total = producers * per_producer;
 
-  nx::mpmc::Queue<int, 1024> q;
+  nx::mpmc::queue<int, 1024> q;
   std::atomic<int> produced{0};
   std::vector<std::vector<int>> consumed(consumers);
   std::atomic<int> consumed_count{0};
@@ -512,7 +512,7 @@ TEST_CASE("mpmc: FIFO order is preserved per producer") {
   constexpr int producers = 3;
   constexpr int per_producer = 3000;
 
-  nx::mpmc::Queue<u64, 256> q;
+  nx::mpmc::queue<u64, 256> q;
   std::vector<std::thread> threads;
   for (int p = 0; p < producers; ++p) {
     threads.emplace_back([&q, p] {
@@ -550,7 +550,7 @@ TEST_CASE("mpmc: blocking push and pop deliver every element") {
   constexpr int per_producer = 2000;
   constexpr int total = producers * per_producer;
 
-  nx::mpmc::Queue<int, 256> q;
+  nx::mpmc::queue<int, 256> q;
   std::vector<std::thread> threads;
   for (int p = 0; p < producers; ++p) {
     threads.emplace_back([&q, p] {
@@ -584,7 +584,7 @@ TEST_CASE("mpsc: many producers and one consumer lose nothing") {
   constexpr int per_producer = 4000;
   constexpr int total = producers * per_producer;
 
-  nx::mpsc::Queue<int, 1024> q;
+  nx::mpsc::queue<int, 1024> q;
   std::vector<std::thread> threads;
   for (int p = 0; p < producers; ++p) {
     threads.emplace_back([&q, p] {
@@ -616,7 +616,7 @@ TEST_CASE("mpsc: FIFO order is preserved per producer") {
   constexpr int producers = 3;
   constexpr int per_producer = 3000;
 
-  nx::mpsc::Queue<u64, 256> q;
+  nx::mpsc::queue<u64, 256> q;
   std::vector<std::thread> threads;
   for (int p = 0; p < producers; ++p) {
     threads.emplace_back([&q, p] {
@@ -657,7 +657,7 @@ TEST_CASE(
 
   g_live = 0;
   {
-    nx::mpmc::Queue<Payload, 512> q;
+    nx::mpmc::queue<Payload, 512> q;
     std::vector<std::thread> threads;
     for (int p = 0; p < producers; ++p) {
       threads.emplace_back([&q, p] {
@@ -690,7 +690,7 @@ TEST_CASE(
 }
 
 TEST_CASE("mpsc: consume_all stops at what was queued when it began") {
-  nx::mpsc::Queue<int, 64> q;
+  nx::mpsc::queue<int, 64> q;
   for (int i = 0; i < 4; ++i)
     q.push(i);
   int calls = 0;
@@ -705,7 +705,7 @@ TEST_CASE("mpsc: consume_all stops at what was queued when it began") {
 }
 
 TEST_CASE("mpsc: a throwing consumer propagates instead of terminating") {
-  nx::mpsc::Queue<int, 8> q;
+  nx::mpsc::queue<int, 8> q;
   const auto quiet = [](int) noexcept {};
   const auto loud = [](int) { throw 7; };
   static_assert(noexcept(q.consume_all(quiet)));

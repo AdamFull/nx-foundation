@@ -21,7 +21,7 @@
         </Expand>
     </Type>
 
-    <Type Name="nx::mpmc::Queue&lt;*,*&gt;">
+    <Type Name="nx::mpmc::queue&lt;*,*&gt;">
         <DisplayString>{{ size~{m_enqueue_pos._Storage._Value - m_dequeue_pos._Storage._Value}, capacity={CAPACITY} }}
         </DisplayString>
         <Expand>
@@ -38,7 +38,7 @@
         </Expand>
     </Type>
 
-    <Type Name="nx::mpsc::Queue&lt;*,*&gt;">
+    <Type Name="nx::mpsc::queue&lt;*,*&gt;">
         <DisplayString>{{ size~{m_enqueue_pos._Storage._Value - m_dequeue_pos._Storage._Value}, capacity={CAPACITY} }}
         </DisplayString>
         <Expand>
@@ -56,7 +56,7 @@
     </Type>
 
 
-    <Type Name="nx::Guid">
+    <Type Name="nx::guid">
         <Intrinsic Name="hex" Expression="&quot;0123456789abcdef&quot; + n">
             <Parameter Name="n" Type="unsigned int"/>
         </Intrinsic>

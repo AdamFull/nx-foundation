@@ -254,7 +254,7 @@ public:
 private:
   nx::blob<u8> m_zip_data;
   ZipStreamFactory m_stream_factory;
-  nx::mpmc::Queue<ZipReader *, READER_POOL> m_readers;
+  nx::mpmc::queue<ZipReader *, READER_POOL> m_readers;
 };
 
 // Read-only device over a .zip (or an APK).
