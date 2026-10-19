@@ -968,3 +968,38 @@ TEST_CASE("string: survives a long mixed workload against std::string") {
   CHECK(s.view() == nx::string_view(model.data(), model.size()));
   CHECK(s.c_str()[s.size()] == '\0');
 }
+
+TEST_CASE("string: char overloads match the string_view ones") {
+  const nx::string s("a/b/c.txt");
+  CHECK(s.rfind('/') == 3);
+  CHECK(s.rfind('/', 2) == 1);
+  CHECK(s.rfind('x', 0) == nx::string::npos);
+  CHECK(s.starts_with('a'));
+  CHECK_FALSE(s.starts_with('b'));
+  CHECK(s.ends_with('t'));
+  CHECK(s.contains('.'));
+  CHECK_FALSE(s.contains('?'));
+  CHECK_FALSE(nx::string().starts_with('a'));
+  CHECK_FALSE(nx::string().ends_with('a'));
+}
+
+TEST_CASE("string: find_first_of and friends follow std::string") {
+  const nx::string s("  key = value  ");
+  const std::string std_s("  key = value  ");
+  CHECK(s.find_first_not_of(' ') == std_s.find_first_not_of(' '));
+  CHECK(s.find_last_not_of(' ') == std_s.find_last_not_of(' '));
+  CHECK(s.find_first_of("=:") == std_s.find_first_of("=:"));
+  CHECK(s.find_last_of('e') == std_s.find_last_of('e'));
+  CHECK(s.find_first_of('e', 6) == std_s.find_first_of('e', 6));
+  CHECK(s.find_last_of(" =", 4) == std_s.find_last_of(" =", 4));
+  CHECK(s.find_first_not_of(" k", 0) == std_s.find_first_not_of(" k", 0));
+  CHECK(s.find_last_not_of(" ue", 100) == std_s.find_last_not_of(" ue", 100));
+  CHECK(s.find_first_of('?') == nx::string::npos);
+}
+
+TEST_CASE("string: nx::format comes with nx::string") {
+  const nx::string name("world");
+  const nx::string out = nx::format("hello {} {}", name, 7);
+  CHECK(out == nx::string_view("hello world 7"));
+  CHECK(std::format("[{:>6}]", name) == "[ world]");
+}

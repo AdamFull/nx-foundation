@@ -104,7 +104,8 @@ ctest --test-dir build -C Debug
 | `nx::string_view` | `strings/utf8_string_view.h` | A non-owning UTF-8 view (`std::string_view` alias). |
 | `nx::id_string` | `strings/id_string.h` | An 8-byte interned string identified by a 64-bit FNV-1a hash: integer compare/order/hash, computable at compile time, with the original bytes recoverable via a process-wide intern pool. A baked asset key and constant-expression switch label (Unreal `FName` / bitsquid `idstring` in spirit). |
 | `nx::base64_encode` | `strings/base64.h` | Standard RFC 4648 base64 with padding; `base64url_encode` is the URL-safe alphabet without padding, as URLs and PKCE want it. |
-| `nx::format` / `nx::format_to` | `strings/format.h` | `std::format` returning `nx::string`, plus a bounded `format_to(char[N], ...)` for stack buffers. A `std::formatter` for `nx::string` is provided. |
+| `nx::format` | `strings/utf8_string.h` | `std::format` returning `nx::string`. It and the `std::formatter` for `nx::string` come with `nx::string`. |
+| `nx::format_to` | `strings/format.h` | A bounded `format_to(char[N], ...)` for stack buffers that never allocates. |
 
 ## ECS registry
 

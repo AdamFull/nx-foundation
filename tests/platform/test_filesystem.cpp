@@ -1147,3 +1147,15 @@ TEST_CASE("fs::file_lock: a missing folder reports why") {
   REQUIRE_FALSE(lock.has_value());
   CHECK(lock.error().kind == fs::io_error::NotFound);
 }
+
+TEST_CASE("path_view: data and size expose the viewed bytes") {
+  const nx::string full("assets/textures/tile.png");
+  const fs::path_view whole(full);
+  CHECK(whole.data() == full.data());
+  CHECK(whole.size() == full.size());
+  CHECK(whole.view() == whole.native());
+
+  const fs::path_view name = whole.filename();
+  CHECK(name.data() == full.data() + full.rfind('/') + 1);
+  CHECK(name.size() == 8);
+}

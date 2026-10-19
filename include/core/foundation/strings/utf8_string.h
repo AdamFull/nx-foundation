@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cstring>
 #include <format>
+#include <iterator>
 #include <string>
 
 namespace nx {
@@ -669,14 +670,59 @@ public:
                             const usize pos = npos) const noexcept {
     return view().rfind(sv, pos);
   }
+  [[nodiscard]] usize rfind(const char c,
+                            const usize pos = npos) const noexcept {
+    return view().rfind(c, pos);
+  }
+  [[nodiscard]] usize find_first_of(string_view chars,
+                                    const usize pos = 0) const noexcept {
+    return view().find_first_of(chars, pos);
+  }
+  [[nodiscard]] usize find_first_of(const char c,
+                                    const usize pos = 0) const noexcept {
+    return view().find_first_of(c, pos);
+  }
+  [[nodiscard]] usize find_last_of(string_view chars,
+                                   const usize pos = npos) const noexcept {
+    return view().find_last_of(chars, pos);
+  }
+  [[nodiscard]] usize find_last_of(const char c,
+                                   const usize pos = npos) const noexcept {
+    return view().find_last_of(c, pos);
+  }
+  [[nodiscard]] usize find_first_not_of(string_view chars,
+                                        const usize pos = 0) const noexcept {
+    return view().find_first_not_of(chars, pos);
+  }
+  [[nodiscard]] usize find_first_not_of(const char c,
+                                        const usize pos = 0) const noexcept {
+    return view().find_first_not_of(c, pos);
+  }
+  [[nodiscard]] usize find_last_not_of(string_view chars,
+                                       const usize pos = npos) const noexcept {
+    return view().find_last_not_of(chars, pos);
+  }
+  [[nodiscard]] usize find_last_not_of(const char c,
+                                       const usize pos = npos) const noexcept {
+    return view().find_last_not_of(c, pos);
+  }
   [[nodiscard]] bool starts_with(string_view sv) const noexcept {
     return view().starts_with(sv);
+  }
+  [[nodiscard]] bool starts_with(const char c) const noexcept {
+    return view().starts_with(c);
   }
   [[nodiscard]] bool ends_with(string_view sv) const noexcept {
     return view().ends_with(sv);
   }
+  [[nodiscard]] bool ends_with(const char c) const noexcept {
+    return view().ends_with(c);
+  }
   [[nodiscard]] bool contains(string_view sv) const noexcept {
     return view().find(sv) != npos;
+  }
+  [[nodiscard]] bool contains(const char c) const noexcept {
+    return view().find(c) != npos;
   }
 
   // Number of decoded code points. Differs from size(), which counts bytes.
@@ -964,13 +1010,45 @@ NX_FORCE_INLINE void swap(basic_string<A> &a, basic_string<A> &b) noexcept {
   a.swap(b);
 }
 
+template <class... Args>
+[[nodiscard]] string format(std::format_string<Args...> fmt, Args &&...args) {
+  string out;
+  std::vformat_to(std::back_inserter(out), fmt.get(),
+                  std::make_format_args(args...));
+  return out;
 }
 
-/// Hashes the raw UTF-8 bytes with the same function nx::id_string uses, so a string and its
-/// interned id agree on what identity means.
+} // namespace nx
+
+/// Hashes the raw UTF-8 bytes with the same function nx::id_string uses, so a
+/// string and its interned id agree on what identity means.
 template <class A> struct std::hash<nx::basic_string<A>> {
   [[nodiscard]] std::size_t
   operator()(const nx::basic_string<A> &s) const noexcept {
     return nx::cast<std::size_t>(nx::hash_fnv1a64(s.data(), s.size()));
+  }
+};
+
+template <class A, class CharT>
+struct std::formatter<nx::basic_string<A>, CharT>
+    : std::formatter<std::basic_string_view<CharT>, CharT> {
+  template <class FormatContext>
+  auto format(const nx::basic_string<A> &s, FormatContext &ctx) const {
+    using Base = std::formatter<std::basic_string_view<CharT>, CharT>;
+    if constexpr (std::is_same_v<CharT, char>)
+      return Base::format(std::string_view(s.c_str(), s.size()), ctx);
+    else if constexpr (sizeof(CharT) == 2) {
+      const std::u16string tmp = s.u16string();
+      return Base::format(
+          std::basic_string_view<CharT>(
+              reinterpret_cast<const CharT *>(tmp.data()), tmp.size()),
+          ctx);
+    } else {
+      const std::u32string tmp = s.u32string();
+      return Base::format(
+          std::basic_string_view<CharT>(
+              reinterpret_cast<const CharT *>(tmp.data()), tmp.size()),
+          ctx);
+    }
   }
 };

@@ -185,6 +185,12 @@ public:
   path_view(const basic_string<A> &s) noexcept : path_view(string_view(s)) {}
 
   [[nodiscard]] constexpr string_view native() const noexcept { return m_p; }
+  [[nodiscard]] constexpr string_view view() const noexcept { return m_p; }
+  /// Not NUL-terminated: a view may end inside a longer path.
+  [[nodiscard]] constexpr const char *data() const noexcept {
+    return m_p.data();
+  }
+  [[nodiscard]] constexpr usize size() const noexcept { return m_p.size(); }
   [[nodiscard]] std::span<const std::byte> as_bytes() const noexcept {
     return std::as_bytes(std::span{m_p.data(), m_p.size()});
   }
