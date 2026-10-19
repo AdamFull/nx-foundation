@@ -1,5 +1,7 @@
 #include "core/foundation/fibers/sync.h"
 
+#include "core/foundation/containers/small_vector.h"
+
 namespace nx::fiber {
 
 using internal::block;
@@ -8,6 +10,24 @@ using internal::Claimed;
 using internal::NO_DEADLINE;
 using internal::resume;
 using internal::WaitResult;
+
+namespace {
+
+// A woken waiter may return and destroy the primitive at once, so waiters are
+// claimed under its lock and resumed only after the lock is released.
+using Woken = small_vector<Claimed, 8>;
+
+void claim_all(internal::WaitList &list, Woken &woken) {
+  while (const Claimed waiter = claim(list))
+    woken.push_back(waiter);
+}
+
+void resume_all(const Woken &woken) noexcept {
+  for (const Claimed &waiter : woken)
+    resume(waiter);
+}
+
+} // namespace
 
 void mutex::lock_slow() noexcept {
   for (i32 spin = 0; spin < nx::detail::SYNC_SPIN_COUNT; ++spin) {
@@ -56,16 +76,19 @@ bool rw_lock::try_lock() noexcept {
 }
 
 void rw_lock::unlock() noexcept {
-  scoped_lock guard(m_lock);
+  Woken woken;
+  m_lock.lock();
   if (const Claimed writer = claim(m_waiting_writers)) {
-    resume(writer);
-    return;
+    woken.push_back(writer);
+  } else {
+    m_writer = false;
+    while (const Claimed reader = claim(m_waiting_readers)) {
+      ++m_readers;
+      woken.push_back(reader);
+    }
   }
-  m_writer = false;
-  while (const Claimed reader = claim(m_waiting_readers)) {
-    ++m_readers;
-    resume(reader);
-  }
+  m_lock.unlock();
+  resume_all(woken);
 }
 
 void rw_lock::lock_shared() noexcept {
@@ -87,27 +110,31 @@ bool rw_lock::try_lock_shared() noexcept {
 }
 
 void rw_lock::unlock_shared() noexcept {
-  scoped_lock guard(m_lock);
-  if (--m_readers != 0)
-    return;
-  if (const Claimed writer = claim(m_waiting_writers)) {
-    m_writer = true;
-    resume(writer);
+  m_lock.lock();
+  Claimed writer;
+  if (--m_readers == 0) {
+    writer = claim(m_waiting_writers);
+    if (writer)
+      m_writer = true;
   }
+  m_lock.unlock();
+  if (writer)
+    resume(writer);
 }
 
 void event::set() noexcept {
-  scoped_lock guard(m_lock);
+  Woken woken;
+  m_lock.lock();
   if (m_manual_reset) {
     m_set.store(true, std::memory_order_release);
-    while (const Claimed waiter = claim(m_waiters))
-      resume(waiter);
-    return;
-  }
-  if (const Claimed waiter = claim(m_waiters))
-    resume(waiter);
-  else
+    claim_all(m_waiters, woken);
+  } else if (const Claimed waiter = claim(m_waiters)) {
+    woken.push_back(waiter);
+  } else {
     m_set.store(true, std::memory_order_release);
+  }
+  m_lock.unlock();
+  resume_all(woken);
 }
 
 void event::reset() noexcept {
@@ -154,26 +181,33 @@ bool semaphore::acquire_until(
 }
 
 void semaphore::release(u32 n) noexcept {
-  scoped_lock guard(m_lock);
+  Woken woken;
+  m_lock.lock();
   for (; n != 0; --n) {
     const Claimed waiter = claim(m_waiters);
     if (!waiter)
       break;
-    resume(waiter);
+    woken.push_back(waiter);
   }
   m_count += n;
+  m_lock.unlock();
+  resume_all(woken);
 }
 
 void cond_var::notify_one() noexcept {
-  scoped_lock guard(m_lock);
-  if (const Claimed waiter = claim(m_waiters))
+  m_lock.lock();
+  const Claimed waiter = claim(m_waiters);
+  m_lock.unlock();
+  if (waiter)
     resume(waiter);
 }
 
 void cond_var::notify_all() noexcept {
-  scoped_lock guard(m_lock);
-  while (const Claimed waiter = claim(m_waiters))
-    resume(waiter);
+  Woken woken;
+  m_lock.lock();
+  claim_all(m_waiters, woken);
+  m_lock.unlock();
+  resume_all(woken);
 }
 
 bool cond_var::wait_until(mutex &m,
@@ -192,9 +226,10 @@ void barrier::arrive_and_wait() noexcept {
     return;
   }
   m_arrived = 0;
-  while (const Claimed waiter = claim(m_waiters))
-    resume(waiter);
+  Woken woken;
+  claim_all(m_waiters, woken);
   m_lock.unlock();
+  resume_all(woken);
 }
 
 } // namespace nx::fiber

@@ -31,9 +31,23 @@ public:
         expected, LOCKED, std::memory_order_acquire, std::memory_order_relaxed);
   }
 
+  ~mutex() {
+    while (m_unlocking.load(std::memory_order_acquire) != 0)
+      nx::detail::cpu_relax();
+  }
+
   void unlock() noexcept {
-    if (m_state.exchange(0, std::memory_order_release) == CONTENDED)
-      wake_one();
+    u32 expected = LOCKED;
+    if (m_state.compare_exchange_strong(expected, 0, std::memory_order_release,
+                                        std::memory_order_relaxed))
+      return;
+    // Waking reads the wait list after the release, when another thread may
+    // already have locked, unlocked and destroyed the mutex; the destructor
+    // waits this out.
+    m_unlocking.fetch_add(1, std::memory_order_relaxed);
+    m_state.store(0, std::memory_order_release);
+    wake_one();
+    m_unlocking.fetch_sub(1, std::memory_order_release);
   }
 
 private:
@@ -44,6 +58,7 @@ private:
   void wake_one() noexcept;
 
   std::atomic<u32> m_state{0};
+  std::atomic<u32> m_unlocking{0};
   spin_lock m_lock;
   internal::WaitList m_waiters;
 };
@@ -91,8 +106,7 @@ public:
   template <class Rep, class Period>
   [[nodiscard]] bool
   wait_for(std::chrono::duration<Rep, Period> timeout) noexcept {
-    return wait_until(internal::clock::now() +
-                      std::chrono::ceil<internal::clock::duration>(timeout));
+    return wait_until(nx::detail::deadline_after(timeout));
   }
 
 private:
@@ -115,8 +129,7 @@ public:
   template <class Rep, class Period>
   [[nodiscard]] bool
   try_acquire_for(std::chrono::duration<Rep, Period> timeout) noexcept {
-    return acquire_until(internal::clock::now() +
-                         std::chrono::ceil<internal::clock::duration>(timeout));
+    return acquire_until(nx::detail::deadline_after(timeout));
   }
   void release(u32 n = 1) noexcept;
 
@@ -163,15 +176,12 @@ public:
   /// Returns false if the timeout passed first.
   template <class Rep, class Period>
   bool wait_for(mutex &m, std::chrono::duration<Rep, Period> timeout) noexcept {
-    return wait_until(
-        m, internal::clock::now() +
-               std::chrono::ceil<internal::clock::duration>(timeout));
+    return wait_until(m, nx::detail::deadline_after(timeout));
   }
   template <class Rep, class Period, typename Pred>
   bool wait_for(mutex &m, std::chrono::duration<Rep, Period> timeout,
                 Pred pred) noexcept {
-    const auto deadline = internal::clock::now() +
-                          std::chrono::ceil<internal::clock::duration>(timeout);
+    const auto deadline = nx::detail::deadline_after(timeout);
     while (!pred())
       if (!wait_until(m, deadline))
         return pred();
@@ -212,10 +222,7 @@ private:
 /// Suspends the calling fiber, or sleeps the calling thread.
 template <class Rep, class Period>
 void sleep_for(std::chrono::duration<Rep, Period> duration) noexcept {
-  (void)internal::block(
-      nullptr, nullptr,
-      internal::clock::now() +
-          std::chrono::ceil<internal::clock::duration>(duration));
+  (void)internal::block(nullptr, nullptr, nx::detail::deadline_after(duration));
 }
 
 } // namespace nx::fiber

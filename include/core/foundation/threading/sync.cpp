@@ -49,13 +49,18 @@ Result wait(std::atomic<u32> *addr, u32 expected_value,
             const std::chrono::nanoseconds timeout) {
   if (!addr)
     return Result::Error;
+  if (timeout < std::chrono::nanoseconds::zero())
+    return Result::TimedOut;
 
 #if NX_HAS_WINDOWS_API
   DWORD timeout_ms = INFINITE;
   if (timeout != std::chrono::nanoseconds::zero()) {
-    // Round up so sub-millisecond timeouts do not degrade to a busy poll.
+    // Round up so sub-millisecond timeouts do not degrade to a busy poll, and
+    // stop short of INFINITE so a long timeout stays a timeout.
     const auto ms = std::chrono::ceil<std::chrono::milliseconds>(timeout);
-    timeout_ms = nx::cast<DWORD>(ms.count());
+    timeout_ms = ms.count() >= nx::cast<i64>(INFINITE)
+                     ? INFINITE - 1
+                     : nx::cast<DWORD>(ms.count());
   }
 
   if (const BOOL result =
@@ -107,8 +112,8 @@ Result wait(std::atomic<u32> *addr, u32 expected_value,
   if (errno == ETIMEDOUT)
     return Result::TimedOut;
 
-  if (errno == EAGAIN)
-    return Result::Success;
+  if (errno != EAGAIN && errno != EINTR)
+    return Result::Error;
 #endif
 
   return Result::Success;

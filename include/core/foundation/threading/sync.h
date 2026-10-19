@@ -47,10 +47,30 @@ NX_FORCE_INLINE void note_os_lock(const i32 delta) noexcept {
 #endif
 }
 
+/// Saturates: a duration past what nanoseconds hold, such as hours::max(),
+/// becomes nanoseconds::max() instead of overflowing. A negative one becomes
+/// zero.
 template <class Rep, class Period>
 [[nodiscard]] NX_FORCE_INLINE std::chrono::nanoseconds
 to_ns(std::chrono::duration<Rep, Period> d) noexcept {
-  return std::chrono::ceil<std::chrono::nanoseconds>(d);
+  using std::chrono::nanoseconds;
+  if (d <= d.zero())
+    return nanoseconds::zero();
+  if (std::chrono::duration<double, std::nano>(d).count() >=
+      static_cast<double>(nanoseconds::max().count()))
+    return nanoseconds::max();
+  return std::chrono::ceil<nanoseconds>(d);
+}
+
+/// now() + @p timeout, saturating at time_point::max().
+template <class Rep, class Period>
+[[nodiscard]] inline sync_clock::time_point
+deadline_after(std::chrono::duration<Rep, Period> timeout) noexcept {
+  const sync_clock::time_point now = sync_clock::now();
+  const std::chrono::nanoseconds wait = to_ns(timeout);
+  if (wait >= sync_clock::time_point::max() - now)
+    return sync_clock::time_point::max();
+  return now + std::chrono::ceil<sync_clock::duration>(wait);
 }
 
 inline bool futex_wait_until(std::atomic<u32> *addr, u32 expected,
@@ -122,7 +142,7 @@ public:
       return true;
     if (timeout <= timeout.zero())
       return false;
-    const auto deadline = detail::sync_clock::now() + detail::to_ns(timeout);
+    const auto deadline = detail::deadline_after(timeout);
     while (m_state.exchange(CONTENDED, std::memory_order_acquire) != 0) {
       if (!detail::futex_wait_until(&m_state, CONTENDED, deadline))
         return false;
@@ -446,7 +466,7 @@ public:
   template <class Rep, class Period, typename Pred>
   bool wait_for(mutex &m, std::chrono::duration<Rep, Period> timeout,
                 Pred pred) noexcept {
-    const auto deadline = detail::sync_clock::now() + detail::to_ns(timeout);
+    const auto deadline = detail::deadline_after(timeout);
     while (!pred()) {
       const u32 seq = m_seq.load(std::memory_order_acquire);
       const auto now = detail::sync_clock::now();
@@ -485,14 +505,12 @@ public:
         detail::cpu_relax();
         continue;
       }
-      const u32 gate = m_reader_gate.load(std::memory_order_acquire);
-      // Re-check after reading the gate: a release between the check and
-      // the wait bumps the gate, so the wait below returns immediately.
-      if (m_waiting_writers.load(std::memory_order_relaxed) == 0 &&
-          !(m_state.load(std::memory_order_relaxed) & WRITER))
+      u32 s = m_state.load(std::memory_order_relaxed);
+      if (!(s & WRITER) &&
+          m_waiting_writers.load(std::memory_order_relaxed) == 0)
         continue;
-      futex::wait(&m_reader_gate, gate, detail::WAIT_FOREVER);
-      spin = 0;
+      if (park(s))
+        spin = 0;
     }
   }
 
@@ -512,18 +530,24 @@ public:
 
   void unlock_shared() noexcept {
     detail::note_os_lock(-1);
-    const u32 prev = m_state.fetch_sub(1, std::memory_order_seq_cst);
-    if (prev == 1 && m_waiting_writers.load(std::memory_order_seq_cst) != 0) {
-      m_writer_gate.fetch_add(1, std::memory_order_release);
-      futex::wake(&m_writer_gate, 1);
+    u32 s = m_state.load(std::memory_order_relaxed);
+    for (;;) {
+      const u32 next = (s & READERS) == 1 ? 0u : s - 1;
+      if (m_state.compare_exchange_weak(s, next, std::memory_order_release,
+                                        std::memory_order_relaxed)) {
+        if (next == 0 && (s & PARKED))
+          futex::wake_all(&m_state);
+        return;
+      }
     }
   }
 
   void lock() noexcept {
     m_waiting_writers.fetch_add(1, std::memory_order_seq_cst);
     for (i32 spin = 0;;) {
-      u32 expected = 0;
-      if (m_state.compare_exchange_weak(expected, WRITER,
+      u32 s = m_state.load(std::memory_order_relaxed);
+      if ((s & ~PARKED) == 0 &&
+          m_state.compare_exchange_weak(s, WRITER | (s & PARKED),
                                         std::memory_order_acquire,
                                         std::memory_order_relaxed))
         break;
@@ -531,20 +555,21 @@ public:
         detail::cpu_relax();
         continue;
       }
-      const u32 gate = m_writer_gate.load(std::memory_order_acquire);
-      if (m_state.load(std::memory_order_seq_cst) == 0)
+      if ((s & ~PARKED) == 0)
         continue;
-      futex::wait(&m_writer_gate, gate, detail::WAIT_FOREVER);
-      spin = 0;
+      if (park(s))
+        spin = 0;
     }
     m_waiting_writers.fetch_sub(1, std::memory_order_relaxed);
     detail::note_os_lock(1);
   }
 
   [[nodiscard]] bool try_lock() noexcept {
-    u32 expected = 0;
-    const bool locked = m_state.compare_exchange_strong(
-        expected, WRITER, std::memory_order_acquire, std::memory_order_relaxed);
+    u32 s = m_state.load(std::memory_order_relaxed);
+    const bool locked = (s & ~PARKED) == 0 &&
+                        m_state.compare_exchange_strong(
+                            s, WRITER | (s & PARKED), std::memory_order_acquire,
+                            std::memory_order_relaxed);
     if (locked)
       detail::note_os_lock(1);
     return locked;
@@ -552,22 +577,29 @@ public:
 
   void unlock() noexcept {
     detail::note_os_lock(-1);
-    m_state.store(0, std::memory_order_seq_cst);
-    if (m_waiting_writers.load(std::memory_order_seq_cst) != 0) {
-      m_writer_gate.fetch_add(1, std::memory_order_release);
-      futex::wake(&m_writer_gate, 1);
-    } else {
-      m_reader_gate.fetch_add(1, std::memory_order_release);
-      futex::wake_all(&m_reader_gate);
-    }
+    if (m_state.exchange(0, std::memory_order_release) & PARKED)
+      futex::wake_all(&m_state);
   }
 
 private:
+  // Releasing is one atomic operation on m_state followed by nothing but a
+  // futex wake, so a waiter that takes the lock next may destroy it at once.
   static constexpr u32 WRITER = 1u << 31;
+  static constexpr u32 PARKED = 1u << 30;
+  static constexpr u32 READERS = PARKED - 1;
 
-  std::atomic<u32> m_state{0}; // WRITER bit | reader count
-  std::atomic<u32> m_reader_gate{0};
-  std::atomic<u32> m_writer_gate{0};
+  // Sleeps until m_state moves on from @p seen, marking it parked first.
+  // False when it changed before the mark landed.
+  bool park(u32 seen) noexcept {
+    if (!(seen & PARKED) && !m_state.compare_exchange_weak(
+                                seen, seen | PARKED, std::memory_order_relaxed,
+                                std::memory_order_relaxed))
+      return false;
+    futex::wait(&m_state, seen | PARKED, detail::WAIT_FOREVER);
+    return true;
+  }
+
+  std::atomic<u32> m_state{0}; // WRITER | PARKED | reader count
   std::atomic<u32> m_waiting_writers{0};
 };
 
@@ -609,7 +641,7 @@ public:
       return true;
     if (timeout <= timeout.zero())
       return false;
-    const auto deadline = detail::sync_clock::now() + detail::to_ns(timeout);
+    const auto deadline = detail::deadline_after(timeout);
     for (;;) {
       if (try_acquire())
         return true;
@@ -638,8 +670,9 @@ public:
   event &operator=(const event &) = delete;
 
   void set() noexcept {
+    const bool wake_all = m_manual_reset;
     m_state.store(1, std::memory_order_release);
-    if (m_manual_reset)
+    if (wake_all)
       futex::wake_all(&m_state);
     else
       futex::wake(&m_state, 1);
@@ -670,7 +703,7 @@ public:
   template <class Rep, class Period>
   [[nodiscard]] bool
   wait_for(std::chrono::duration<Rep, Period> timeout) noexcept {
-    const auto deadline = detail::sync_clock::now() + detail::to_ns(timeout);
+    const auto deadline = detail::deadline_after(timeout);
     for (;;) {
       if (m_manual_reset) {
         if (m_state.load(std::memory_order_acquire) != 0)
@@ -734,22 +767,34 @@ struct once_flag {
 };
 
 /// Runs @p fn exactly once across every thread sharing the flag; concurrent
-/// callers block until the winning call finishes. @p fn must not throw.
+/// callers block until the winning call finishes. If @p fn throws, the flag
+/// stays unset and the next caller runs it.
 template <typename F, typename... Args>
 void call_once(once_flag &flag, F &&fn, Args &&...args) {
   if (NX_LIKELY(flag.state.load(std::memory_order_acquire) == 2))
     return;
-  u32 expected = 0;
-  if (flag.state.compare_exchange_strong(expected, 1, std::memory_order_acquire,
-                                         std::memory_order_acquire)) {
-    std::forward<F>(fn)(std::forward<Args>(args)...);
-    flag.state.store(2, std::memory_order_release);
-    futex::wake_all(&flag.state);
-    return;
+  for (;;) {
+    u32 expected = 0;
+    if (flag.state.compare_exchange_strong(expected, 1,
+                                           std::memory_order_acquire,
+                                           std::memory_order_acquire)) {
+      try {
+        std::forward<F>(fn)(std::forward<Args>(args)...);
+      } catch (...) {
+        flag.state.store(0, std::memory_order_release);
+        futex::wake_all(&flag.state);
+        throw;
+      }
+      flag.state.store(2, std::memory_order_release);
+      futex::wake_all(&flag.state);
+      return;
+    }
+    if (expected == 2)
+      return;
+    futex::wait(&flag.state, 1, detail::WAIT_FOREVER);
+    if (flag.state.load(std::memory_order_acquire) == 2)
+      return;
   }
-  u32 s;
-  while ((s = flag.state.load(std::memory_order_acquire)) != 2)
-    futex::wait(&flag.state, s, detail::WAIT_FOREVER);
 }
 
 /// RAII exclusive lock guard for any type with lock()/unlock().

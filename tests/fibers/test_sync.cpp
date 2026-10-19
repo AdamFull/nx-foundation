@@ -440,3 +440,57 @@ TEST_CASE("fiber sync: cond_var waits on a unique_lock off the scheduler") {
   CHECK_FALSE(cv.wait_for(lock, 1ms, [] { return false; }));
   CHECK(lock.owns_lock());
 }
+
+TEST_CASE("fiber sync: a waiter may destroy what woke it") {
+  for (int round = 0; round < 200; ++round) {
+    auto *const done = new nx::fiber::event;
+    auto *const cv = new nx::fiber::cond_var;
+    auto *const m = new nx::fiber::mutex;
+    std::atomic<bool> waiting{false};
+    bool ready = false;
+
+    nx::thread waiter([&] {
+      {
+        nx::unique_lock<nx::fiber::mutex> lock(*m);
+        waiting.store(true, std::memory_order_release);
+        cv->wait(lock, [&] { return ready; });
+      }
+      done->wait();
+      delete cv;
+      delete done;
+      delete m;
+    });
+
+    while (!waiting.load(std::memory_order_acquire))
+      nx::this_thread::yield();
+    {
+      nx::unique_lock<nx::fiber::mutex> lock(*m);
+      ready = true;
+    }
+    cv->notify_all();
+    done->set();
+    waiter.join();
+  }
+  CHECK(true);
+}
+
+TEST_CASE(
+    "fiber sync: a contended unlock lets the next owner destroy the mutex") {
+  for (int round = 0; round < 200; ++round) {
+    auto *const m = new nx::fiber::mutex;
+    m->lock();
+    std::atomic<bool> started{false};
+    nx::thread taker([&] {
+      started.store(true, std::memory_order_release);
+      m->lock();
+      m->unlock();
+      delete m;
+    });
+    while (!started.load(std::memory_order_acquire))
+      nx::this_thread::yield();
+    nx::this_thread::sleep_for(std::chrono::microseconds(50));
+    m->unlock();
+    taker.join();
+  }
+  CHECK(true);
+}

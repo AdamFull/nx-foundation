@@ -912,3 +912,107 @@ TEST_CASE("cond_var: waits on a unique_lock and keeps it held") {
   CHECK_FALSE(cv.wait_for(lock, 1ms, [] { return false; }));
   CHECK(lock.owns_lock());
 }
+
+TEST_CASE("sync: durations past nanoseconds saturate instead of overflowing") {
+  using namespace std::chrono;
+  CHECK(nx::detail::to_ns(hours::max()) == nanoseconds::max());
+  CHECK(nx::detail::to_ns(nanoseconds::max()) == nanoseconds::max());
+  CHECK(nx::detail::to_ns(-1s) == nanoseconds::zero());
+  CHECK(nx::detail::to_ns(duration<double>(1.5)) == 1500ms);
+  CHECK(nx::detail::deadline_after(hours::max()) ==
+        nx::detail::sync_clock::time_point::max());
+  CHECK(nx::detail::deadline_after(1s) > nx::detail::sync_clock::now());
+}
+
+TEST_CASE("sync: an unbounded timeout waits for the signal") {
+  using namespace std::chrono;
+  nx::mutex m;
+  nx::cond_var cv;
+  nx::semaphore permits;
+  nx::event done;
+  bool ready = false;
+
+  std::thread signaller([&] {
+    std::this_thread::sleep_for(20ms);
+    {
+      nx::scoped_lock<nx::mutex> guard(m);
+      ready = true;
+    }
+    cv.notify_all();
+    permits.release();
+    done.set();
+  });
+
+  {
+    nx::unique_lock<nx::mutex> lock(m);
+    CHECK(cv.wait_for(lock, hours::max(), [&] { return ready; }));
+  }
+  CHECK(permits.try_acquire_for(nanoseconds::max()));
+  CHECK(done.wait_for(hours::max()));
+  signaller.join();
+
+  std::atomic<bool> held{false};
+  std::thread holder([&] {
+    m.lock();
+    held.store(true);
+    std::this_thread::sleep_for(20ms);
+    m.unlock();
+  });
+  REQUIRE(wait_until_true([&] { return held.load(); }));
+  CHECK(m.try_lock_for(hours::max()));
+  m.unlock();
+  holder.join();
+}
+
+TEST_CASE(
+    "call_once: a callable that throws leaves the flag for the next call") {
+  nx::once_flag flag;
+  int runs = 0;
+  CHECK_THROWS_AS(nx::call_once(flag,
+                                [&] {
+                                  ++runs;
+                                  throw 1;
+                                }),
+                  int);
+  nx::call_once(flag, [&] { ++runs; });
+  nx::call_once(flag, [&] { ++runs; });
+  CHECK(runs == 2);
+}
+
+TEST_CASE("rw_lock: a waiting writer holds back new readers") {
+  nx::rw_lock lock;
+  lock.lock_shared();
+  std::atomic<bool> writer_in{false};
+  std::thread writer([&] {
+    lock.lock();
+    writer_in.store(true);
+    lock.unlock();
+  });
+  REQUIRE(wait_until_true([&] { return !lock.try_lock(); }));
+  std::this_thread::sleep_for(20ms);
+  CHECK_FALSE(lock.try_lock_shared());
+  CHECK_FALSE(writer_in.load());
+  lock.unlock_shared();
+  writer.join();
+  CHECK(writer_in.load());
+  CHECK(lock.try_lock_shared());
+  lock.unlock_shared();
+}
+
+TEST_CASE("rw_lock: the last owner may hand it to a thread that destroys it") {
+  for (int round = 0; round < 200; ++round) {
+    auto *const lock = new nx::rw_lock;
+    lock->lock();
+    std::thread taker([lock] {
+      lock->lock_shared();
+      lock->unlock_shared();
+      lock->lock();
+      lock->unlock();
+      delete lock;
+    });
+    std::this_thread::yield();
+    lock->unlock();
+    taker.join();
+  }
+  CHECK(true);
+}
