@@ -59,47 +59,47 @@ u64 xoshiro256_next(Rng::Xoshiro256State &s) {
 }
 
 void Rng::init(const Alg algorithm, const u64 seed_value) {
-  alg = algorithm;
+  m_alg = algorithm;
   seed(seed_value);
 }
 
 void Rng::seed(const u64 seed_value) {
-  switch (alg) {
+  switch (m_alg) {
   case Alg::Pcg:
-    pcg_seed(pcg, seed_value);
+    pcg_seed(m_pcg, seed_value);
     break;
   case Alg::Xoshiro256:
-    xoshiro256_seed(xoshiro256, seed_value);
+    xoshiro256_seed(m_xoshiro256, seed_value);
     break;
   case Alg::Splitmix64:
-    splitmix64_seed(splitmix64, seed_value);
+    splitmix64_seed(m_splitmix64, seed_value);
     break;
   }
 }
 
 u32 Rng::next_u32() {
-  switch (alg) {
+  switch (m_alg) {
   case Alg::Pcg:
-    return pcg_next(pcg);
+    return pcg_next(m_pcg);
   case Alg::Xoshiro256:
-    return nx::cast<u32>(xoshiro256_next(xoshiro256));
+    return nx::cast<u32>(xoshiro256_next(m_xoshiro256));
   case Alg::Splitmix64:
-    return nx::cast<u32>(splitmix64_next(splitmix64));
+    return nx::cast<u32>(splitmix64_next(m_splitmix64));
   }
   return 0;
 }
 
 u64 Rng::next_u64() {
-  switch (alg) {
+  switch (m_alg) {
   case Alg::Pcg: {
-    const u64 hi = pcg_next(pcg);
-    const u64 lo = pcg_next(pcg);
+    const u64 hi = pcg_next(m_pcg);
+    const u64 lo = pcg_next(m_pcg);
     return (hi << 32) | lo;
   }
   case Alg::Xoshiro256:
-    return xoshiro256_next(xoshiro256);
+    return xoshiro256_next(m_xoshiro256);
   case Alg::Splitmix64:
-    return splitmix64_next(splitmix64);
+    return splitmix64_next(m_splitmix64);
   }
   return 0;
 }

@@ -161,6 +161,8 @@ concept has_flags = std::is_enum_v<E> && requires(E a, E b) {
   { a | b } -> std::same_as<flags<E>>;
 };
 
+/// The enumerators from first to last inclusive. Empty when first is past last
+/// or Count is 0; an underlying type's maximum is a valid last.
 template <typename E>
   requires std::is_enum_v<E>
 struct range {
@@ -171,32 +173,40 @@ struct range {
     using difference_type = std::ptrdiff_t;
     using iterator_category = std::bidirectional_iterator_tag;
 
-    using counter_t = std::common_type_t<underlying_t, int>;
-
-    counter_t val;
+    underlying_t val{};
+    underlying_t last{};
+    bool past = true;
 
     E operator*() const { return nx::cast<E>(val); }
 
     iterator &operator++() {
-      ++val;
+      if (val == last)
+        past = true;
+      else
+        ++val;
       return *this;
     }
     iterator operator++(int) {
       auto t = *this;
-      ++val;
+      ++*this;
       return t;
     }
     iterator &operator--() {
-      --val;
+      if (past)
+        past = false;
+      else
+        --val;
       return *this;
     }
     iterator operator--(int) {
       auto t = *this;
-      --val;
+      --*this;
       return t;
     }
 
-    bool operator==(iterator other) const { return val == other.val; }
+    bool operator==(const iterator &other) const {
+      return past == other.past && (past || val == other.val);
+    }
   };
 
   E first, last;
@@ -204,17 +214,20 @@ struct range {
   constexpr range(E first, E last) : first(first), last(last) {}
   constexpr range(E first)
     requires has_count<E>
-      : first(first), last(nx::cast<E>(nx::cast<underlying_t>(E::Count) - 1)) {}
+      : first(first), last(last_counted(first)),
+        m_empty(!(nx::cast<underlying_t>(first) <
+                  nx::cast<underlying_t>(E::Count))) {}
   constexpr range()
     requires has_count<E>
-      : first(nx::cast<E>(0)),
-        last(nx::cast<E>(nx::cast<underlying_t>(E::Count) - 1)) {}
+      : range(nx::cast<E>(0)) {}
 
   iterator begin() const {
-    return {nx::cast<typename iterator::counter_t>(first)};
+    if (m_empty || nx::cast<underlying_t>(last) < nx::cast<underlying_t>(first))
+      return end();
+    return {nx::cast<underlying_t>(first), nx::cast<underlying_t>(last), false};
   }
   iterator end() const {
-    return {nx::cast<typename iterator::counter_t>(last) + 1};
+    return {nx::cast<underlying_t>(last), nx::cast<underlying_t>(last), true};
   }
 
   std::reverse_iterator<iterator> rbegin() const {
@@ -223,6 +236,14 @@ struct range {
   std::reverse_iterator<iterator> rend() const {
     return std::reverse_iterator<iterator>(begin());
   }
+
+private:
+  static constexpr E last_counted(const E fallback) {
+    const auto count = nx::cast<underlying_t>(E::Count);
+    return count == 0 ? fallback : nx::cast<E>(count - 1);
+  }
+
+  bool m_empty = false;
 };
 
 template <typename E>

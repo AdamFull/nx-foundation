@@ -164,3 +164,11 @@ TEST_CASE("fixed step: an empty or free frame records no cost") {
   CHECK(clock.step_cost() == 0.f);
   CHECK(clock.cap() == 4u);
 }
+
+TEST_CASE("fixed step: a rate below once a second still steps") {
+  nx::fixed_step clock{{.hz = 0.5f}};
+  CHECK(clock.advance(1.f) == 0);
+  CHECK(clock.advance(1.f) == 1);
+  CHECK(clock.advance(10.f) == 1);
+  CHECK(clock.alpha() == 0.f);
+}

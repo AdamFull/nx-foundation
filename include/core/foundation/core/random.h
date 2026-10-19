@@ -8,8 +8,10 @@
 
 namespace nx {
 
-/// 128-bit globally unique identifier (UUID). Holds 16 raw bytes. Parses from and formats to the
-/// canonical 8-4-4-4-12 hex string, is comparable and hashable. Generate one with nx::Rng::guid().
+/// 128-bit globally unique identifier (UUID). Holds 16 raw bytes. Parses from
+/// and formats to the canonical 8-4-4-4-12 hex string, is comparable and
+/// hashable. Generate one with nx::Rng::guid() from an Rng seeded with
+/// os::random_bytes.
 struct Guid {
   std::array<u8, 16> bytes{};
 
@@ -83,7 +85,10 @@ struct Guid {
   auto operator<=>(const Guid &) const = default;
 };
 
-struct Rng {
+/// A deterministic generator: one algorithm and seed give the same stream on
+/// every platform. A default Rng is Pcg seeded with 0, so it repeats every run.
+class Rng {
+public:
   enum class Alg { Pcg, Xoshiro256, Splitmix64 };
 
   struct PcgState {
@@ -97,18 +102,13 @@ struct Rng {
     u64 state;
   };
 
-  Alg alg = Alg::Pcg;
-  union {
-    PcgState pcg;
-    Xoshiro256State xoshiro256;
-    Splitmix64State splitmix64;
-  };
-
   Rng() { init(Alg::Pcg, 0); }
   Rng(const Alg alg, const u64 seed) { init(alg, seed); }
 
   void init(Alg alg, u64 seed);
   void seed(u64 seed);
+
+  [[nodiscard]] Alg algorithm() const noexcept { return m_alg; }
 
   [[nodiscard]] u32 next_u32();
   [[nodiscard]] u64 next_u64();
@@ -131,6 +131,14 @@ struct Rng {
   void fill(std::span<std::byte> buffer);
 
   [[nodiscard]] Guid guid();
+
+private:
+  Alg m_alg = Alg::Pcg;
+  union {
+    PcgState m_pcg;
+    Xoshiro256State m_xoshiro256;
+    Splitmix64State m_splitmix64;
+  };
 };
 
 }

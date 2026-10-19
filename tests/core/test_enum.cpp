@@ -2,6 +2,7 @@
 
 #include "core/foundation/core/enum.h"
 
+#include <iterator>
 #include <vector>
 
 namespace {
@@ -369,4 +370,65 @@ TEST_CASE("enums: has_count concept detects the Count enumerator") {
   static_assert(nx::enums::has_count<Small>);
   static_assert(!nx::enums::has_count<Signed>);
   CHECK(true);
+}
+
+namespace {
+
+enum class NoneCounted : u8 { Count = 0 };
+enum class Full8 : u8 {};
+enum class Full32 : u32 {};
+enum class Signed8 : i8 {};
+
+template <typename E> std::vector<E> collect(const nx::enums::range<E> &r) {
+  std::vector<E> out;
+  for (const E e : r) {
+    out.push_back(e);
+    if (out.size() > 300)
+      break;
+  }
+  return out;
+}
+
+}
+
+TEST_CASE("enums::range: a Count of zero is empty") {
+  const nx::enums::range<NoneCounted> r;
+  CHECK(r.begin() == r.end());
+  CHECK(collect(r).empty());
+  CHECK(r.rbegin() == r.rend());
+}
+
+TEST_CASE("enums::range: the underlying type's maximum is a valid last") {
+  const auto bytes = collect(
+      nx::enums::range<Full8>(nx::cast<Full8>(250), nx::cast<Full8>(255)));
+  REQUIRE(bytes.size() == 6);
+  CHECK(bytes.front() == nx::cast<Full8>(250));
+  CHECK(bytes.back() == nx::cast<Full8>(255));
+
+  const auto words = collect(nx::enums::range<Full32>(
+      nx::cast<Full32>(0xffff'ffffu), nx::cast<Full32>(0xffff'ffffu)));
+  CHECK(words.size() == 1);
+  const nx::enums::range<Full32> every(nx::cast<Full32>(0u),
+                                       nx::cast<Full32>(0xffff'ffffu));
+  CHECK(every.begin() != every.end());
+  CHECK(*std::prev(every.end()) == nx::cast<Full32>(0xffff'ffffu));
+
+  const auto all = collect(
+      nx::enums::range<Full8>(nx::cast<Full8>(0), nx::cast<Full8>(255)));
+  CHECK(all.size() == 256);
+
+  const nx::enums::range<Signed8> top(nx::cast<Signed8>(126),
+                                      nx::cast<Signed8>(127));
+  std::vector<Signed8> backwards;
+  for (auto it = top.rbegin(); it != top.rend(); ++it)
+    backwards.push_back(*it);
+  REQUIRE(backwards.size() == 2);
+  CHECK(backwards[0] == nx::cast<Signed8>(127));
+  CHECK(backwards[1] == nx::cast<Signed8>(126));
+}
+
+TEST_CASE("enums::range: first past last is empty") {
+  const nx::enums::range<Full8> r(nx::cast<Full8>(5), nx::cast<Full8>(3));
+  CHECK(r.begin() == r.end());
+  CHECK(collect(r).empty());
 }

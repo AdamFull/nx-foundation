@@ -277,7 +277,7 @@ TEST_CASE("Rng: bounded next_u32 is close to uniform") {
 
 TEST_CASE("Rng: a default-constructed Rng selects a real algorithm") {
   nx::Rng a;
-  CHECK(a.alg == nx::Rng::Alg::Pcg);
+  CHECK(a.algorithm() == nx::Rng::Alg::Pcg);
 
   nx::Rng b;
   for (int i = 0; i < 100; ++i)

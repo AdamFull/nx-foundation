@@ -21,7 +21,7 @@ public:
     const u32 steps = peek(dt);
 
     if (dt > 0.f)
-      m_accumulator = min(m_accumulator + dt, MAX_BACKLOG_SECONDS);
+      m_accumulator = min(m_accumulator + dt, backlog());
     for (u32 i = 0; i < steps; ++i)
       m_accumulator -= m_step;
 
@@ -37,7 +37,7 @@ public:
       return 0;
     f32 accumulator = m_accumulator;
     if (dt > 0.f)
-      accumulator = min(accumulator + dt, MAX_BACKLOG_SECONDS);
+      accumulator = min(accumulator + dt, backlog());
 
     const u32 limit = cap();
     u32 steps = 0;
@@ -84,6 +84,10 @@ public:
 private:
   static constexpr f32 MAX_BACKLOG_SECONDS = 1.f;
   static constexpr f32 COST_SMOOTHING = 0.2f;
+
+  [[nodiscard]] f32 backlog() const noexcept {
+    return max(MAX_BACKLOG_SECONDS, m_step);
+  }
 
   f32 m_step = 1.f / 60.f;
   f32 m_accumulator = 0.f;

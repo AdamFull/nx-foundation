@@ -55,6 +55,7 @@ set(NX_FOUNDATION_TEST_SOURCES
   core/test_sha256.cpp
   core/test_time.cpp
   core/test_fixed_step.cpp
+  core/test_fixed.cpp
   core/test_function_ref.cpp
   core/test_no_alloc.cpp
 

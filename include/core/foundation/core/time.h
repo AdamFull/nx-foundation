@@ -4,11 +4,14 @@
 
 #include <chrono>
 #include <compare>
+#include <limits>
 
 namespace nx {
 
-/// A span of monotonic time, to the nanosecond. Signed, so subtracting two timestamps the wrong way
-/// round reads as a negative span rather than wrapping to three hundred years.
+/// A span of monotonic time, to the nanosecond. Signed, so subtracting two
+/// timestamps the wrong way round reads as a negative span rather than wrapping
+/// to three hundred years. The factories saturate at about 292 years either
+/// way; NaN seconds is zero.
 class duration {
 public:
   constexpr duration() noexcept = default;
@@ -17,13 +20,20 @@ public:
     return duration(n);
   }
   [[nodiscard]] static constexpr duration from_micros(const i64 n) noexcept {
-    return duration(n * 1'000);
+    return scaled(n, 1'000);
   }
   [[nodiscard]] static constexpr duration from_millis(const i64 n) noexcept {
-    return duration(n * 1'000'000);
+    return scaled(n, 1'000'000);
   }
   [[nodiscard]] static constexpr duration from_seconds(const f64 s) noexcept {
-    return duration(cast<i64>(s * 1e9));
+    const f64 ns = s * 1e9;
+    if (ns != ns)
+      return {};
+    if (ns >= 0x1p63)
+      return duration(std::numeric_limits<i64>::max());
+    if (ns <= -0x1p63)
+      return duration(std::numeric_limits<i64>::min());
+    return duration(cast<i64>(ns));
   }
 
   [[nodiscard]] constexpr i64 nanos() const noexcept { return m_ns; }
@@ -69,12 +79,24 @@ public:
 private:
   explicit constexpr duration(const i64 ns) noexcept : m_ns(ns) {}
 
+  [[nodiscard]] static constexpr duration scaled(const i64 n,
+                                                 const i64 unit) noexcept {
+    constexpr i64 MAX = std::numeric_limits<i64>::max();
+    constexpr i64 MIN = std::numeric_limits<i64>::min();
+    if (n > MAX / unit)
+      return duration(MAX);
+    if (n < MIN / unit)
+      return duration(MIN);
+    return duration(n * unit);
+  }
+
   i64 m_ns = 0;
 };
 
-/// A point on the monotonic clock. Its zero is arbitrary - it is whenever the machine decided to
-/// start counting - so only differences carry meaning. That is the whole trade a monotonic clock
-/// makes, and why one cannot be printed as a date.
+/// A point on the monotonic clock. Its zero is arbitrary - it is whenever the
+/// machine decided to start counting - so only differences carry meaning. That
+/// is the whole trade a monotonic clock makes, and why one cannot be printed as
+/// a date.
 class timestamp {
 public:
   constexpr timestamp() noexcept = default;
@@ -138,9 +160,10 @@ private:
   timestamp m_begin;
 };
 
-/// Writes its own lifetime, in microseconds, into @p out. The shape a per-stage timer wants:
-/// declare one at the top of the scope and the number lands wherever it is reported from, with no
-/// way to leave out the stop on an early return.
+/// Writes its own lifetime, in microseconds, into @p out. The shape a per-stage
+/// timer wants: declare one at the top of the scope and the number lands
+/// wherever it is reported from, with no way to leave out the stop on an early
+/// return.
 class scoped_micros {
 public:
   explicit scoped_micros(u64 &out) noexcept : m_out(out) {}

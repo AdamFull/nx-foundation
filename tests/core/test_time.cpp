@@ -1,5 +1,6 @@
 
 #include "framework/nxtest.h"
+#include <limits>
 
 #include "core/foundation/core/time.h"
 #include "core/foundation/threading/thread.h"
@@ -150,4 +151,23 @@ TEST_CASE("scoped_micros: a span under a microsecond reports zero, not wrapped")
   u64 elapsed = 0xFFFF;
   { const nx::scoped_micros timer(elapsed); }
   CHECK(elapsed < 1000u);
+}
+
+TEST_CASE("duration: out-of-range factories saturate") {
+  constexpr i64 MAX = std::numeric_limits<i64>::max();
+  constexpr i64 MIN = std::numeric_limits<i64>::min();
+  static_assert(nx::duration::from_seconds(1e300).nanos() == MAX);
+  static_assert(nx::duration::from_seconds(-1e300).nanos() == MIN);
+  static_assert(nx::duration::from_millis(MAX).nanos() == MAX);
+  static_assert(nx::duration::from_micros(MIN).nanos() == MIN);
+  static_assert(nx::duration::from_millis(-9'223'372'036'854).nanos() ==
+                -9'223'372'036'854'000'000);
+
+  CHECK(nx::duration::from_seconds(std::numeric_limits<f64>::infinity())
+            .nanos() == MAX);
+  CHECK(nx::duration::from_seconds(-std::numeric_limits<f64>::infinity())
+            .nanos() == MIN);
+  CHECK(nx::duration::from_seconds(std::numeric_limits<f64>::quiet_NaN())
+            .nanos() == 0);
+  CHECK(nx::duration::from_seconds(9.3e9).nanos() == MAX);
 }
