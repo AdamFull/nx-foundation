@@ -378,7 +378,19 @@ io_result<blob<u8>> file_read(const path_view path) {
     buf.reserve(nx::cast<usize>(sz.QuadPart));
 
   for (;;) {
-    buf.reserve(buf.len + kChunk);
+    // Full at the size the file had: one byte tells its end from growth, so
+    // the buffer is not grown, and then shrunk again, for nothing.
+    if (buf.len == buf.cap) {
+      u8 next = 0;
+      DWORD got = 0;
+      if (!::ReadFile(g.get(), &next, 1, &got, nullptr))
+        return err(map_last_error(io_error::ReadFailed));
+      if (got == 0)
+        break;
+      buf.reserve(buf.len + kChunk);
+      buf.p[buf.len++] = next;
+      continue;
+    }
     const usize room = buf.cap - buf.len;
     const DWORD want = nx::cast<DWORD>(min<usize>(room, 1u << 30));
     DWORD got = 0;
@@ -903,7 +915,22 @@ io_result<blob<u8>> file_read(const path_view path) {
     buf.reserve(nx::cast<usize>(st.st_size));
 
   for (;;) {
-    buf.reserve(buf.len + kChunk);
+    // Full at the size the file had: one byte tells its end from growth, so
+    // the buffer is not grown, and then shrunk again, for nothing.
+    if (buf.len == buf.cap) {
+      u8 next = 0;
+      const ssize_t n = ::read(g.get(), &next, 1);
+      if (n < 0) {
+        if (errno == EINTR)
+          continue;
+        return err(map_errno(io_error::ReadFailed));
+      }
+      if (n == 0)
+        break;
+      buf.reserve(buf.len + kChunk);
+      buf.p[buf.len++] = next;
+      continue;
+    }
     const ssize_t n = ::read(g.get(), buf.p + buf.len, buf.cap - buf.len);
     if (n < 0) {
       if (errno == EINTR)

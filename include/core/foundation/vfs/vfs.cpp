@@ -5,6 +5,7 @@
 #include "core/foundation/core/hash.h"
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"
+#include "core/foundation/fibers/scheduler.h"
 
 #include <algorithm>
 
@@ -32,22 +33,64 @@ bool match_mount(const nx::string_view prefix, const nx::string_view v,
   return false;
 }
 
+/// A mounted device and the calls using it. Calls do their I/O outside the
+/// mount lock, so a slow device (a remote one waits on the network) holds up
+/// neither other mounts nor mount changes; unmount waits for its own users.
+struct Mounted {
+  Device *device = nullptr;
+  fiber::Counter users;
+};
+
 struct Mount {
   i32 priority = 0;
   u32 order = 0;
   nx::string prefix;
-  Device *device = nullptr;
+  nx::unique_ptr<Mounted> mounted;
 };
 
 struct Candidate {
-  Device *device;
+  Mounted *mounted;
   nx::string rel;
   i32 priority;
   u32 order;
   usize prefix_len;
+
+  [[nodiscard]] Device *device() const noexcept { return mounted->device; }
 };
 
-using CandidateList = nx::small_vector<Candidate, 8>;
+/// Candidates best first, each counted as a user of its mount until this goes.
+class CandidateList {
+public:
+  CandidateList() = default;
+  CandidateList(const CandidateList &) = delete;
+  CandidateList &operator=(const CandidateList &) = delete;
+  ~CandidateList() {
+    for (const Candidate &c : m_list)
+      c.mounted->users.decrement();
+  }
+
+  void add(Candidate c) {
+    c.mounted->users.add(1);
+    m_list.push_back(std::move(c));
+  }
+  void sort() { std::sort(m_list.begin(), m_list.end(), better); }
+
+  [[nodiscard]] const Candidate *begin() const noexcept {
+    return m_list.begin();
+  }
+  [[nodiscard]] const Candidate *end() const noexcept { return m_list.end(); }
+
+private:
+  static bool better(const Candidate &a, const Candidate &b) noexcept {
+    if (a.priority != b.priority)
+      return a.priority > b.priority;
+    if (a.prefix_len != b.prefix_len)
+      return a.prefix_len > b.prefix_len;
+    return a.order > b.order;
+  }
+
+  nx::small_vector<Candidate, 8> m_list;
+};
 
 struct State {
   nx::rw_lock mounts_lock;
@@ -61,27 +104,26 @@ State &state() noexcept {
   return *s;
 }
 
-bool candidate_better(const Candidate &a, const Candidate &b) noexcept {
-  if (a.priority != b.priority)
-    return a.priority > b.priority;
-  if (a.prefix_len != b.prefix_len)
-    return a.prefix_len > b.prefix_len;
-  return a.order > b.order;
-}
-
-// Best first. Caller holds at least the shared mount lock; the Device pointers
-// stay valid only while it is held.
-void gather(const State &s, nx::string_view v, CandidateList &out) {
+// Best first. The mount lock is held only while the candidates are taken.
+void gather(State &s, nx::string_view v, CandidateList &out) {
+  nx::scoped_shared_lock lock(s.mounts_lock);
   nx::string rel;
   for (const Mount &m : s.mounts) {
     if (match_mount(m.prefix.view(), v, rel))
-      out.push_back(Candidate{.device = m.device,
-                              .rel = rel,
-                              .priority = m.priority,
-                              .order = m.order,
-                              .prefix_len = m.prefix.size()});
+      out.add(Candidate{.mounted = m.mounted.get(),
+                        .rel = rel,
+                        .priority = m.priority,
+                        .order = m.order,
+                        .prefix_len = m.prefix.size()});
   }
-  std::sort(out.begin(), out.end(), candidate_better);
+  out.sort();
+}
+
+/// After the mount is gone from the table: waits out the calls still using
+/// it, then frees the device.
+void retire(nx::unique_ptr<Mounted> mounted) {
+  fiber::wait(mounted->users);
+  nx::release(mounted->device);
 }
 
 template <typename Op>
@@ -90,13 +132,11 @@ io_result<void> write_route(const path_view vpath, Op &&op) {
   if (v.empty())
     return err(file_error{io_error::InvalidArgument, 0});
 
-  State &s = state();
-  nx::scoped_shared_lock lock(s.mounts_lock);
   CandidateList cands;
-  gather(s, v.view(), cands);
+  gather(state(), v.view(), cands);
   for (const Candidate &c : cands) {
-    if (c.device->writable())
-      return op(c.device, c.rel);
+    if (c.device()->writable())
+      return op(c.device(), c.rel);
   }
   return err(file_error{io_error::PermissionDenied, 0});
 }
@@ -118,11 +158,12 @@ nx::vector<MountInfo> mounts() {
   nx::vector<MountInfo> out;
   out.reserve(s.mounts.size());
   for (const Mount &mount : s.mounts) {
-    out.push_back(MountInfo{.priority = mount.priority,
-                            .prefix = mount.prefix,
-                            .provider = nx::string(mount.device->name()),
-                            .writable = mount.device->writable(),
-                            .watchable = mount.device->watchable()});
+    out.push_back(
+        MountInfo{.priority = mount.priority,
+                  .prefix = mount.prefix,
+                  .provider = nx::string(mount.mounted->device->name()),
+                  .writable = mount.mounted->device->writable(),
+                  .watchable = mount.mounted->device->watchable()});
   }
   std::sort(out.begin(), out.end(), [](const MountInfo &a, const MountInfo &b) {
     if (a.priority != b.priority)
@@ -153,11 +194,13 @@ MountId mount(const path_view virtual_prefix, Device *device, i32 priority) {
     return {};
   }
 
+  auto mounted = nx::make_unique<Mounted>();
+  mounted->device = device;
   nx::scoped_lock lock(s.mounts_lock);
   const MountId id = s.mounts.insert(Mount{.priority = priority,
                                            .order = s.mount_order++,
                                            .prefix = std::move(prefix),
-                                           .device = device});
+                                           .mounted = std::move(mounted)});
   nx::logd(log_vfs, "vfs: mounted {} at '{}' (priority {})", device->name(),
            s.mounts[id].prefix.view(), priority);
   return id;
@@ -165,30 +208,30 @@ MountId mount(const path_view virtual_prefix, Device *device, i32 priority) {
 
 void unmount(const MountId id) {
   State &s = state();
-  Device *victim = nullptr;
+  nx::unique_ptr<Mounted> victim;
   {
     nx::scoped_lock lock(s.mounts_lock);
-    if (const Mount *m = s.mounts.try_get(id)) {
-      victim = m->device;
+    if (Mount *m = s.mounts.try_get(id)) {
+      victim = std::move(m->mounted);
       s.mounts.erase(id);
     }
   }
   if (victim)
-    nx::release(victim);
+    retire(std::move(victim));
 }
 
 void unmount_all() {
   State &s = state();
-  nx::small_vector<Device *, 8> victims;
+  nx::small_vector<nx::unique_ptr<Mounted>, 8> victims;
   {
     nx::scoped_lock lock(s.mounts_lock);
     victims.reserve(s.mounts.size());
-    for (const Mount &m : s.mounts)
-      victims.push_back(m.device);
+    for (Mount &m : s.mounts)
+      victims.push_back(std::move(m.mounted));
     s.mounts.clear();
   }
-  for (Device *d : victims)
-    nx::release(d);
+  for (nx::unique_ptr<Mounted> &victim : victims)
+    retire(std::move(victim));
 }
 
 io_result<nx::blob<u8>> read(path_view vpath) {
@@ -197,14 +240,12 @@ io_result<nx::blob<u8>> read(path_view vpath) {
   if (v.empty())
     return err(file_error{io_error::InvalidArgument, 0});
 
-  State &s = state();
-  nx::scoped_shared_lock lock(s.mounts_lock);
   CandidateList cands;
-  gather(s, v.view(), cands);
+  gather(state(), v.view(), cands);
 
   file_error last{io_error::NotFound, 0};
   for (const Candidate &c : cands) {
-    auto r = c.device->read(c.rel);
+    auto r = c.device()->read(c.rel);
     if (r)
       return r;
     if (r.error().kind != io_error::NotFound)
@@ -230,14 +271,12 @@ io_result<stream_ptr> open(path_view vpath) {
   if (v.empty())
     return err(file_error{io_error::InvalidArgument, 0});
 
-  State &s = state();
-  nx::scoped_shared_lock lock(s.mounts_lock);
   CandidateList cands;
-  gather(s, v.view(), cands);
+  gather(state(), v.view(), cands);
 
   file_error last{io_error::NotFound, 0};
   for (const Candidate &c : cands) {
-    auto r = c.device->open(c.rel);
+    auto r = c.device()->open(c.rel);
     if (r)
       return r;
     if (r.error().kind != io_error::NotFound)
@@ -252,13 +291,11 @@ FileInfo stat(const path_view vpath) {
   if (v.empty())
     return {};
 
-  State &s = state();
-  nx::scoped_shared_lock lock(s.mounts_lock);
   CandidateList cands;
-  gather(s, v.view(), cands);
+  gather(state(), v.view(), cands);
 
   for (const Candidate &c : cands) {
-    const FileInfo info = c.device->stat(c.rel);
+    const FileInfo info = c.device()->stat(c.rel);
     if (info.exists)
       return info;
   }
@@ -294,17 +331,21 @@ bool detail::resolve_native_read(const path_view vpath, NativeReadFile &out) {
   if (v.empty())
     return false;
 
-  State &s = state();
-  nx::scoped_shared_lock lock(s.mounts_lock);
   CandidateList cands;
-  gather(s, v.view(), cands);
+  gather(state(), v.view(), cands);
   for (const Candidate &candidate : cands) {
-    const FileInfo info = candidate.device->stat(candidate.rel);
+    // Runs on the caller's thread, so only a device backed by native files is
+    // asked; any other may block (a remote one waits on the network), and the
+    // read goes to a worker instead.
+    nx::string native;
+    if (!candidate.device()->native_read_path(candidate.rel, native))
+      return false;
+    const FileInfo info = candidate.device()->stat(candidate.rel);
     if (!info.exists)
       continue;
-    if (info.is_directory ||
-        !candidate.device->native_read_path(candidate.rel, out.path))
+    if (info.is_directory)
       return false;
+    out.path = std::move(native);
     out.info = info;
     return true;
   }
@@ -335,10 +376,8 @@ io_result<nx::vector<DirEntry>> list(path_view vdir) {
   if (v.empty())
     return err(file_error{io_error::InvalidArgument, 0});
 
-  State &s = state();
-  nx::scoped_shared_lock lock(s.mounts_lock);
   CandidateList cands;
-  gather(s, v.view(), cands);
+  gather(state(), v.view(), cands);
 
   nx::vector<DirEntry> out;
   detail::ChildSet seen;
@@ -353,7 +392,7 @@ io_result<nx::vector<DirEntry>> list(path_view vdir) {
         return;
       out.push_back(DirEntry{.name = nx::string(nv), .info = info});
     });
-    auto r = c.device->list(c.rel, cb);
+    auto r = c.device()->list(c.rel, cb);
     if (r)
       any = true;
     else

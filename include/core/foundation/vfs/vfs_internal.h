@@ -16,6 +16,8 @@ struct NativeReadFile {
 /// Resolves the first existing provider for a virtual path. A lower-priority
 /// native mount is deliberately not selected when a higher-priority memory or
 /// archive device owns the entry; this preserves normal VFS shadowing rules.
+/// Only native devices are asked: false as soon as the next candidate is
+/// another kind, whose stat may block.
 [[nodiscard]] bool resolve_native_read(path_view vpath, NativeReadFile &out);
 
 /// A virtual path segment names an entry under its parent and nothing else: a

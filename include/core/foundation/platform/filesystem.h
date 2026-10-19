@@ -89,9 +89,36 @@ constexpr string_view stem(const string_view p) noexcept {
   return fn.substr(0, pos);
 }
 
+/// "C:", and on Windows the roots that start with two separators:
+/// "\\server\share", "\\?\C:", "\\?\UNC\server\share", "\\.\device".
 constexpr string_view root_name(const string_view p) noexcept {
   if (p.size() >= 2 && detail::is_alpha(p[0]) && p[1] == ':')
     return p.substr(0, 2);
+#if NX_PLATFORM_WINDOWS
+  if (p.size() > 2 && is_separator(p[0]) && is_separator(p[1]) &&
+      !is_separator(p[2])) {
+    const auto end_of = [p](usize at) {
+      while (at < p.size() && !is_separator(p[at]))
+        ++at;
+      return at;
+    };
+    const auto after = [&](const usize end) {
+      return end < p.size() ? end_of(end + 1) : end;
+    };
+    const usize first = end_of(2);
+    const string_view kind = p.substr(2, first - 2);
+    if (kind == "?" || kind == ".") {
+      if (first >= p.size())
+        return p;
+      const usize second = after(first);
+      const string_view name = p.substr(first + 1, second - first - 1);
+      if (kind == "?" && (name == "UNC" || name == "unc"))
+        return p.substr(0, after(after(second)));
+      return p.substr(0, second);
+    }
+    return p.substr(0, after(first));
+  }
+#endif
   return {};
 }
 
@@ -156,12 +183,15 @@ constexpr bool is_within(const string_view p, const string_view root) noexcept {
     segs.push_back(seg);
   }
 
+  // Windows takes a "\\?\" path verbatim, '/' included.
+  const char separator =
+      root.size() > 3 && root[0] == '\\' && root[2] == '?' ? '\\' : '/';
   string out(root);
   if (absolute)
-    out.push_back(u8'/');
+    out.push_back(separator);
   for (usize k = 0; k < segs.size(); ++k) {
     if (k)
-      out.push_back(u8'/');
+      out.push_back(separator);
     out.append(segs[k]);
   }
   if (out.empty())

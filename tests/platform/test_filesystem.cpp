@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -1196,3 +1197,41 @@ TEST_CASE("fs: a file open for reading can be replaced atomically") {
   REQUIRE(text.has_value());
   CHECK(*text == nx::string_view("new"));
 }
+
+TEST_CASE("fs: file_read returns every size whole") {
+  temp_dir dir("read_sizes");
+  for (const usize size : {usize{0}, usize{1}, usize{65535}, usize{65536},
+                           usize{65537}, usize{200000}}) {
+    std::string bytes(size, '\0');
+    for (usize i = 0; i < size; ++i)
+      bytes[i] = static_cast<char>('a' + i % 23);
+    const nx::string file = dir.child(nx::format("f{}.bin", size).view());
+    REQUIRE(fs::file_write(
+                fs::path_view(file),
+                std::span<const u8>(reinterpret_cast<const u8 *>(bytes.data()),
+                                    bytes.size()))
+                .has_value());
+    const auto read = fs::file_read(fs::path_view(file));
+    REQUIRE(read.has_value());
+    REQUIRE(read->size() == size);
+    CHECK(std::memcmp(read->data(), bytes.data(), size) == 0);
+  }
+}
+
+#if NX_PLATFORM_WINDOWS
+TEST_CASE("fs: normalize keeps a Windows root that starts with two "
+          "separators") {
+  CHECK(fs::path::root_name("\\\\server\\share\\a") == "\\\\server\\share");
+  CHECK(fs::path::root_name("\\\\?\\C:\\a") == "\\\\?\\C:");
+  CHECK(fs::path::root_name("\\\\?\\UNC\\srv\\shr\\a") ==
+        "\\\\?\\UNC\\srv\\shr");
+  CHECK(fs::path::root_name("\\\\.\\COM1") == "\\\\.\\COM1");
+  CHECK(fs::path::root_name("\\a\\b").empty());
+
+  CHECK(fs::path::normalize("\\\\server\\share\\a\\..\\b") ==
+        "\\\\server\\share/b");
+  CHECK(fs::path::normalize("//server/share/x/./y") == "//server/share/x/y");
+  CHECK(fs::path::normalize("\\\\?\\C:\\a\\.\\b") == "\\\\?\\C:\\a\\b");
+  CHECK(fs::path::normalize("\\\\server\\share\\..").empty());
+}
+#endif

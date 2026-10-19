@@ -471,3 +471,61 @@ TEST_CASE("async vfs: a request waiting for bytes does not keep the slot the "
     CHECK(waiter.get());
   }
 }
+
+namespace {
+
+thread_local bool t_requesting = false;
+
+/// Has nothing, and counts the stats made on the requesting thread.
+class RemoteLikeDevice final : public nx::vfs::Device {
+public:
+  explicit RemoteLikeDevice(std::atomic<u32> &on_caller)
+      : m_on_caller(on_caller) {}
+
+  nx::vfs::io_result<nx::blob<u8>> read(nx::vfs::path_view) override {
+    return nx::err(nx::vfs::file_error{nx::vfs::io_error::NotFound, 0});
+  }
+  nx::vfs::io_result<nx::vfs::stream_ptr> open(nx::vfs::path_view) override {
+    return nx::err(nx::vfs::file_error{nx::vfs::io_error::NotFound, 0});
+  }
+  nx::vfs::FileInfo stat(nx::vfs::path_view) override {
+    if (t_requesting)
+      m_on_caller.fetch_add(1);
+    return {};
+  }
+  nx::vfs::io_result<void> list(nx::vfs::path_view,
+                                const nx::vfs::ListFn &) override {
+    return nx::err(nx::vfs::file_error{nx::vfs::io_error::NotFound, 0});
+  }
+  [[nodiscard]] const char *name() const noexcept override {
+    return "remote-like";
+  }
+
+private:
+  std::atomic<u32> &m_on_caller;
+};
+
+} // namespace
+
+TEST_CASE("async vfs: a device that may block is not asked on the caller's "
+          "thread") {
+  vfs_fixture::scoped_vfs guard;
+  vfs_fixture::temp_dir dir("async_remote_first");
+  REQUIRE(nx::fs::file_write(dir.file("asset.bin").view(),
+                             vfs_fixture::bytes_of("host")));
+  REQUIRE(
+      nx::vfs::mount("/", nx::vfs::make_host_device(dir.view()), 0).valid());
+  std::atomic<u32> on_caller{0};
+  REQUIRE(nx::vfs::mount("/", nx::allocate<RemoteLikeDevice>(on_caller), 10)
+              .valid());
+
+  nx::vfs::AsyncIoService io(io_workers());
+  t_requesting = true;
+  auto read = io.read("/asset.bin");
+  t_requesting = false;
+  CHECK(on_caller.load() == 0u);
+  REQUIRE(read.valid());
+  auto result = read.get();
+  REQUIRE(result);
+  CHECK(std::memcmp(result->data(), "host", 4) == 0);
+}

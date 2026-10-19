@@ -5,8 +5,13 @@
 #include "vfs_fixture.h"
 
 #include "core/foundation/platform/filesystem.h"
+#include "core/foundation/threading/sync.h"
+#include "core/foundation/threading/thread.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 namespace vfs = nx::vfs;
 using vfs_fixture::blob_of;
@@ -435,4 +440,87 @@ TEST_CASE("vfs resolve_beside refuses backslashes, drives and streams") {
   }
   CHECK(vfs::resolve_beside("/her/doll.nxpdoll", "\\shared\\a.png") ==
         "\\shared\\a.png");
+}
+
+namespace {
+
+/// Holds every read until the gate opens.
+class GateDevice final : public vfs::Device {
+public:
+  GateDevice(std::atomic<bool> &inside, nx::event &gate,
+             std::atomic<bool> &destroyed)
+      : m_inside(inside), m_gate(gate), m_destroyed(destroyed) {}
+  ~GateDevice() override { m_destroyed = true; }
+
+  vfs::io_result<nx::blob<u8>> read(vfs::path_view) override {
+    m_inside = true;
+    m_gate.wait();
+    return blob_of("gate");
+  }
+  vfs::io_result<vfs::stream_ptr> open(vfs::path_view) override {
+    return nx::err(vfs::file_error{vfs::io_error::NotFound, 0});
+  }
+  vfs::FileInfo stat(vfs::path_view) override {
+    vfs::FileInfo info;
+    info.exists = true;
+    return info;
+  }
+  vfs::io_result<void> list(vfs::path_view, const vfs::ListFn &) override {
+    return nx::err(vfs::file_error{vfs::io_error::NotFound, 0});
+  }
+  [[nodiscard]] const char *name() const noexcept override { return "gate"; }
+
+private:
+  std::atomic<bool> &m_inside;
+  nx::event &m_gate;
+  std::atomic<bool> &m_destroyed;
+};
+
+bool settles(const std::atomic<bool> &flag, const int ms) {
+  for (int i = 0; i < ms && !flag.load(); ++i)
+    nx::this_thread::sleep_for(std::chrono::milliseconds(1));
+  return flag.load();
+}
+
+} // namespace
+
+TEST_CASE("vfs: a slow device holds up neither mounts nor its unmount's "
+          "neighbours") {
+  scoped_vfs guard;
+  std::atomic<bool> inside{false};
+  std::atomic<bool> destroyed{false};
+  nx::event gate(true);
+  const vfs::MountId slow =
+      vfs::mount("/slow", nx::allocate<GateDevice>(inside, gate, destroyed));
+  REQUIRE(slow.valid());
+
+  std::atomic<bool> read_ok{false};
+  std::thread reader([&] { read_ok = vfs::read("/slow/x").has_value(); });
+  REQUIRE(settles(inside, 2000));
+
+  std::atomic<bool> mounted{false};
+  std::thread mounter([&] {
+    vfs::MemoryDevice *memory = vfs::make_memory_device();
+    memory->add("y.txt", blob_of("Y"));
+    mounted =
+        vfs::mount("/fast", memory).valid() && read_eq("/fast/y.txt", "Y");
+  });
+  CHECK(settles(mounted, 2000));
+
+  std::atomic<bool> unmounted{false};
+  std::thread unmounter([&] {
+    vfs::unmount(slow);
+    unmounted = true;
+  });
+  nx::this_thread::sleep_for(std::chrono::milliseconds(50));
+  CHECK_FALSE(unmounted.load());
+  CHECK_FALSE(destroyed.load());
+
+  gate.set();
+  reader.join();
+  unmounter.join();
+  mounter.join();
+  CHECK(read_ok.load());
+  CHECK(unmounted.load());
+  CHECK(destroyed.load());
 }
