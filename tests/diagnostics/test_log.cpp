@@ -844,3 +844,27 @@ TEST_CASE("log: a sink shutdown destroyed may still be removed afterwards") {
   nx::log::remove_sink(sink);
   CHECK(g_counted_sinks_destroyed.load() == 1);
 }
+
+TEST_CASE("log: the file sink writes and rotates under a non-ASCII path") {
+  const nx::string path = temp_log_path("журнал_日本.log");
+  const nx::string rotated = path + ".1";
+  (void)nx::fs::remove(nx::fs::path_view(path));
+  (void)nx::fs::remove(nx::fs::path_view(rotated));
+
+  const nx::log::Level saved = nx::log::global_level();
+  nx::log::set_level(nx::log::Level::Trace);
+  nx::log::Sink *file = nx::log::make_file_sink(nx::string_view(path), 4096, 2);
+  REQUIRE(file != nullptr);
+  nx::log::add_sink(file);
+  const std::string filler(200, 'U');
+  for (int i = 0; i < 100; ++i)
+    nx::logi("{} {}", i, filler);
+  nx::log::flush();
+  nx::log::remove_sink(file);
+
+  CHECK(nx::fs::exists(nx::fs::path_view(path)));
+  CHECK(nx::fs::exists(nx::fs::path_view(rotated)));
+  for (const nx::string &p : {path, rotated, path + ".2"})
+    (void)nx::fs::remove(nx::fs::path_view(p));
+  nx::log::set_level(saved);
+}

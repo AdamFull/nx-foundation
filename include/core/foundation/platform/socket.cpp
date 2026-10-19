@@ -333,11 +333,56 @@ Connection &Connection::operator=(Connection &&other) noexcept {
   return *this;
 }
 
+namespace {
+
+// Sockets are never inherited: a child process that kept one alive held the
+// port after the program that opened it had exited.
+#if NX_HAS_WINDOWS_API
+[[nodiscard]] native open_socket(const int af, const int type,
+                                 const int protocol) {
+  return ::WSASocketW(af, type, protocol, nullptr, 0,
+                      WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+}
+[[nodiscard]] native accept_socket(const native listener) {
+  const native s = ::accept(listener, nullptr, nullptr);
+  if (!bad(s))
+    ::SetHandleInformation(reinterpret_cast<HANDLE>(s), HANDLE_FLAG_INHERIT, 0);
+  return s;
+}
+#elif NX_PLATFORM_POSIX
+[[nodiscard]] native open_socket(const int af, const int type,
+                                 const int protocol) {
+#if defined(SOCK_CLOEXEC)
+  return ::socket(af, type | SOCK_CLOEXEC, protocol);
+#else
+  const native s = ::socket(af, type, protocol);
+  if (!bad(s))
+    ::fcntl(s, F_SETFD, FD_CLOEXEC);
+  return s;
+#endif
+}
+[[nodiscard]] native accept_socket(const native listener) {
+#if defined(__linux__)
+  return ::accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
+#else
+  const native s = ::accept(listener, nullptr, nullptr);
+  if (!bad(s))
+    ::fcntl(s, F_SETFD, FD_CLOEXEC);
+  return s;
+#endif
+}
+#else
+[[nodiscard]] native open_socket(int, int, int) { return cast(NONE); }
+[[nodiscard]] native accept_socket(native) { return cast(NONE); }
+#endif
+
+} // namespace
+
 Connection Connection::connect(const u16 port) {
   if (!started())
     return {};
 
-  const native s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  const native s = open_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (bad(s))
     return {};
 
@@ -359,7 +404,7 @@ Connection Connection::connect(const Endpoint &to) {
   if (!started() || !to.valid())
     return {};
 
-  const native s = ::socket(af_of(to.family()), SOCK_STREAM, IPPROTO_TCP);
+  const native s = open_socket(af_of(to.family()), SOCK_STREAM, IPPROTO_TCP);
   if (bad(s))
     return {};
 
@@ -458,7 +503,7 @@ bool Listener::listen(const u16 port) {
     return false;
   }
 
-  const native s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  const native s = open_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (bad(s)) {
     nx::loge("net: could not open a socket");
     return false;
@@ -501,7 +546,7 @@ bool Listener::listen(const Endpoint &at) {
     return false;
   }
 
-  const native s = ::socket(af_of(at.family()), SOCK_STREAM, IPPROTO_TCP);
+  const native s = open_socket(af_of(at.family()), SOCK_STREAM, IPPROTO_TCP);
   if (bad(s)) {
     nx::loge("net: could not open a socket");
     return false;
@@ -532,7 +577,7 @@ Connection Listener::accept() {
   if (m_handle == NONE)
     return {};
 
-  const native taken = ::accept(cast(m_handle), nullptr, nullptr);
+  const native taken = accept_socket(cast(m_handle));
   if (bad(taken))
     return {};
   if (!set_non_blocking(taken)) {
@@ -584,7 +629,7 @@ bool UdpSocket::bind(const Endpoint &at) {
     return false;
   }
 
-  const native s = ::socket(af_of(at.family()), SOCK_DGRAM, IPPROTO_UDP);
+  const native s = open_socket(af_of(at.family()), SOCK_DGRAM, IPPROTO_UDP);
   if (bad(s)) {
     nx::loge("net: could not open a udp socket");
     return false;

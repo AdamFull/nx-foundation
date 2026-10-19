@@ -167,18 +167,35 @@ result<Outcome, Failure> run(const Options &options) {
   SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits,
                           sizeof(limits));
 
-  STARTUPINFOW startup{};
-  startup.cb = sizeof(startup);
-  startup.dwFlags = STARTF_USESTDHANDLES;
-  startup.hStdInput = nothing;
-  startup.hStdOutput = writer;
-  startup.hStdError = writer;
+  // Only these two reach the child. Inheriting every inheritable handle let a
+  // child keep another run's pipe writer open, so that run never saw EOF.
+  HANDLE inherited[] = {writer, nothing};
+  SIZE_T list_bytes = 0;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &list_bytes);
+  vector<std::byte> list_storage(list_bytes);
+  auto *const list =
+      reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(list_storage.data());
+  if (!InitializeProcThreadAttributeList(list, 1, 0, &list_bytes))
+    return err(Failure::Io);
+  const scope_guard delete_list([&] { DeleteProcThreadAttributeList(list); });
+  if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                 inherited, sizeof(inherited), nullptr,
+                                 nullptr))
+    return err(Failure::Io);
+
+  STARTUPINFOEXW startup{};
+  startup.StartupInfo.cb = sizeof(startup);
+  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  startup.StartupInfo.hStdInput = nothing;
+  startup.StartupInfo.hStdOutput = writer;
+  startup.StartupInfo.hStdError = writer;
+  startup.lpAttributeList = list;
   PROCESS_INFORMATION child{};
-  const DWORD flags =
-      CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
+  const DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED |
+                      CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
   if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, flags,
                       options.environment != nullptr ? block.data() : nullptr,
-                      nullptr, &startup, &child)) {
+                      nullptr, &startup.StartupInfo, &child)) {
     const DWORD error = GetLastError();
     return err(error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
                    ? Failure::NotFound
@@ -242,10 +259,17 @@ vector<string> environment() {
 
 result<Outcome, Failure> run(const Options &options) {
   int pipe_ends[2];
+#if NX_PLATFORM_APPLE
   if (pipe(pipe_ends) != 0)
     return err(Failure::Io);
   for (const int end : pipe_ends)
     fcntl(end, F_SETFD, FD_CLOEXEC);
+#else
+  // Atomic: another thread forking between pipe() and fcntl() would hand the
+  // child both ends.
+  if (pipe2(pipe_ends, O_CLOEXEC) != 0)
+    return err(Failure::Io);
+#endif
   const int reader = pipe_ends[0];
   const scope_guard close_reader([&] { close(reader); });
 
@@ -257,7 +281,14 @@ result<Outcome, Failure> run(const Options &options) {
   posix_spawnattr_t attributes;
   posix_spawnattr_init(&attributes);
   // A group of its own, so a timeout kills whatever it started as well.
+#if NX_PLATFORM_APPLE
+  // Darwin has no pipe2; this closes every descriptor the file actions do
+  // not name instead.
+  posix_spawnattr_setflags(&attributes,
+                           POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT);
+#else
   posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
+#endif
   posix_spawnattr_setpgroup(&attributes, 0);
 
   vector<string> words;

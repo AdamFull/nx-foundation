@@ -99,6 +99,11 @@ struct byte_buf {
 
 #if defined(NX_PLATFORM_WINDOWS)
 
+// A reader lets others write, and replace or delete the file, while it reads:
+// a cooker's atomic replace of a file the game has open must not fail.
+constexpr DWORD READ_SHARING =
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+
 file_error map_last_error(const io_error fallback) noexcept {
   const DWORD e = ::GetLastError();
   io_error kind = fallback;
@@ -357,7 +362,7 @@ io_result<blob<u8>> file_read(const path_view path) {
   if (!wp.ok)
     return err(file_error{io_error::InvalidArgument, 0});
 
-  handle_guard g{::CreateFileW(wp.ptr, GENERIC_READ, FILE_SHARE_READ, nullptr,
+  handle_guard g{::CreateFileW(wp.ptr, GENERIC_READ, READ_SHARING, nullptr,
                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
   if (g.get() == INVALID_HANDLE_VALUE)
     return err(map_last_error(io_error::OpenFailed));
@@ -418,14 +423,24 @@ io_result<void> create_directories(const path_view path) {
   if (!wp.ok)
     return err(file_error{io_error::InvalidArgument, 0});
 
+  // ACCESS_DENIED is also how Windows answers for a directory that exists
+  // where we may not create one, such as a drive root; only an existing
+  // directory makes either answer a success.
   const auto make = [](const wchar_t *p) -> io_result<void> {
     if (!p[0])
       return {};
     if (::CreateDirectoryW(p, nullptr))
       return {};
     const DWORD e = ::GetLastError();
-    if (e == ERROR_ALREADY_EXISTS || e == ERROR_ACCESS_DENIED)
-      return {};
+    if (e == ERROR_ALREADY_EXISTS || e == ERROR_ACCESS_DENIED) {
+      const DWORD attributes = ::GetFileAttributesW(p);
+      if (attributes != INVALID_FILE_ATTRIBUTES &&
+          (attributes & FILE_ATTRIBUTE_DIRECTORY))
+        return {};
+      if (attributes != INVALID_FILE_ATTRIBUTES)
+        return err(file_error{io_error::NotADirectory, nx::cast<i32>(e)});
+      ::SetLastError(e);
+    }
     return err(map_last_error(io_error::OpenFailed));
   };
 
@@ -759,12 +774,55 @@ io_result<void> remove_all(const path_view path) {
   return remove_node_w(p, 0);
 }
 
+namespace {
+
+// Replaces @p to even while another handle has it open (with
+// FILE_SHARE_DELETE): POSIX semantics move the name and leave readers the old
+// contents, where MoveFileExW fails until every handle is closed. Windows 10
+// 1709 and NTFS; on anything else it fails and the caller falls back.
+bool rename_posix(const wchar_t *const from, const wchar_t *const to) {
+  constexpr DWORD replace_if_exists = 0x1;
+  constexpr DWORD posix_semantics = 0x2;
+  constexpr auto file_rename_info_ex =
+      static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
+
+  const HANDLE h = ::CreateFileW(
+      from, DELETE | SYNCHRONIZE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      nullptr);
+  if (h == INVALID_HANDLE_VALUE)
+    return false;
+
+  const usize chars = std::wcslen(to);
+  vector<std::byte> storage(sizeof(FILE_RENAME_INFO) + chars * sizeof(wchar_t));
+  auto *const info = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
+  // Flags shares the union's first bytes with ReplaceIfExists; older SDK
+  // headers name only the latter.
+  const DWORD flags = replace_if_exists | posix_semantics;
+  std::memcpy(storage.data(), &flags, sizeof(flags));
+  info->RootDirectory = nullptr;
+  info->FileNameLength = nx::cast<DWORD>(chars * sizeof(wchar_t));
+  std::memcpy(info->FileName, to, chars * sizeof(wchar_t));
+
+  const BOOL ok = ::SetFileInformationByHandle(h, file_rename_info_ex, info,
+                                               nx::cast<DWORD>(storage.size()));
+  const DWORD error = ::GetLastError();
+  ::CloseHandle(h);
+  ::SetLastError(error);
+  return ok != FALSE;
+}
+
+} // namespace
+
 io_result<void> rename(const path_view from, const path_view to) {
   const wide_path wf(from);
   const wide_path wt(to);
   if (!wf.ok || !wt.ok)
     return err(file_error{io_error::InvalidArgument, 0});
 
+  if (rename_posix(wf.ptr, wt.ptr))
+    return {};
   if (::MoveFileExW(wf.ptr, wt.ptr,
                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED))
     return {};
@@ -892,8 +950,14 @@ io_result<void> create_directories(const path_view path) {
   const auto make = [](const char *dir) -> io_result<void> {
     if (!dir[0])
       return {};
-    if (::mkdir(dir, 0755) == 0 || errno == EEXIST)
+    if (::mkdir(dir, 0755) == 0)
       return {};
+    if (errno == EEXIST) {
+      struct stat st;
+      if (::stat(dir, &st) == 0 && S_ISDIR(st.st_mode))
+        return {};
+      return err(file_error{io_error::NotADirectory, EEXIST});
+    }
     return err(map_errno(io_error::OpenFailed));
   };
 
@@ -1132,6 +1196,12 @@ io_result<void> copy_file(path_view from, path_view to,
     return err(map_errno(io_error::OpenFailed));
   if (S_ISDIR(st.st_mode))
     return err(file_error{io_error::IsADirectory, 0});
+  // Opening the destination truncates it; when it is the source, through a
+  // link or by name, that would empty the file being copied.
+  if (struct stat existing; ::stat(dst.ptr, &existing) == 0 &&
+                            existing.st_dev == st.st_dev &&
+                            existing.st_ino == st.st_ino)
+    return err(file_error{io_error::AlreadyExists, EEXIST});
 
   i32 flags = O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC;
   if (!overwrite_existing)
@@ -1689,7 +1759,7 @@ io_result<stream_ptr> open_file(const path_view path) {
   if (!wp.ok)
     return err(file_error{io_error::InvalidArgument, 0});
 
-  const HANDLE h = ::CreateFileW(wp.ptr, GENERIC_READ, FILE_SHARE_READ, nullptr,
+  const HANDLE h = ::CreateFileW(wp.ptr, GENERIC_READ, READ_SHARING, nullptr,
                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE)
     return err(map_last_error(io_error::OpenFailed));

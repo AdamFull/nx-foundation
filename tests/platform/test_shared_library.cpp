@@ -1,4 +1,5 @@
 
+#include "core/foundation/platform/filesystem.h"
 #include "framework/nxtest.h"
 
 #include "core/foundation/platform/shared_library.h"
@@ -113,4 +114,27 @@ TEST_CASE("shared library: decorate spells the name this platform uses") {
   const bool known =
       name == "game.dll" || name == "libgame.so" || name == "libgame.dylib";
   CHECK(known);
+}
+
+TEST_CASE("shared library: one under a non-ASCII path opens") {
+  if (!nx::os::shared_library::supported())
+    SKIP("this platform does not load code at run time");
+  const nx::string dir = nx::fs::path::join(nx::fs::path::parent_path(LIB),
+                                            nx::string_view("библиотека_日本"));
+  (void)nx::fs::remove_all(nx::fs::path_view(dir));
+  REQUIRE(nx::fs::create_directories(nx::fs::path_view(dir)).has_value());
+  const nx::string copy =
+      nx::fs::path::join(dir.view(), nx::fs::path::filename(LIB));
+  REQUIRE(
+      nx::fs::copy_file(nx::fs::path_view(LIB), nx::fs::path_view(copy), true)
+          .has_value());
+  {
+    nx::os::shared_library lib;
+    REQUIRE(lib.open(copy));
+    const auto answer =
+        reinterpret_cast<answer_fn>(lib.symbol("nx_testlib_answer"));
+    REQUIRE(answer != nullptr);
+    CHECK(answer() == 42);
+  }
+  (void)nx::fs::remove_all(nx::fs::path_view(dir));
 }

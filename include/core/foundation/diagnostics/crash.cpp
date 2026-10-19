@@ -369,10 +369,23 @@ void write_runtime(Out &out) noexcept {
   out.text(" KiB\n");
 }
 
+#if NX_HAS_WINDOWS_API
+// The UTF-8 path as the wide CreateFileW needs, converted on the stack: this
+// runs inside the crash handler, which must not allocate.
+HANDLE create_for_writing(const char *const path) noexcept {
+  wchar_t wide[PATH_CAPACITY];
+  const int n = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                                      wide, PATH_CAPACITY);
+  if (n <= 0)
+    return INVALID_HANDLE_VALUE;
+  return ::CreateFileW(wide, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+#endif
+
 Out::handle_type open_report(const char *const path) noexcept {
 #if NX_HAS_WINDOWS_API
-  return ::CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  return create_for_writing(path);
 #else
   return ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 #endif
@@ -513,9 +526,7 @@ void write_dump(EXCEPTION_POINTERS *const pointers,
   if (!s.minidump || g_write_dump == nullptr)
     return;
 
-  const HANDLE file =
-      ::CreateFileA(s.dump_path, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  const HANDLE file = create_for_writing(s.dump_path);
   if (file == INVALID_HANDLE_VALUE)
     return;
 

@@ -1159,3 +1159,40 @@ TEST_CASE("path_view: data and size expose the viewed bytes") {
   CHECK(name.data() == full.data() + full.rfind('/') + 1);
   CHECK(name.size() == 8);
 }
+
+TEST_CASE("fs: copy_file onto itself leaves the file whole") {
+  temp_dir dir("self_copy");
+  const nx::string file = dir.child("data.txt");
+  REQUIRE(fs::file_write_text(fs::path_view(file), "keep me").has_value());
+  CHECK_FALSE(fs::copy_file(fs::path_view(file), fs::path_view(file), true)
+                  .has_value());
+  const auto text = fs::file_read_text(fs::path_view(file));
+  REQUIRE(text.has_value());
+  CHECK(*text == nx::string_view("keep me"));
+}
+
+TEST_CASE("fs: create_directories fails where a file is in the way") {
+  temp_dir dir("dirs_over_file");
+  const nx::string file = dir.child("plain");
+  REQUIRE(fs::file_write_text(fs::path_view(file), "x").has_value());
+  const auto onto = fs::create_directories(fs::path_view(file));
+  REQUIRE_FALSE(onto.has_value());
+  CHECK(onto.error().kind == fs::io_error::NotADirectory);
+  CHECK_FALSE(fs::create_directories(fs::path_view(dir.child("plain/below")))
+                  .has_value());
+  CHECK(fs::create_directories(fs::path_view(dir.child("a/b"))).has_value());
+  CHECK(fs::create_directories(fs::path_view(dir.child("a/b"))).has_value());
+}
+
+TEST_CASE("fs: a file open for reading can be replaced atomically") {
+  temp_dir dir("replace_while_read");
+  const nx::string file = dir.child("asset.bin");
+  REQUIRE(fs::file_write_text(fs::path_view(file), "old").has_value());
+  auto reader = fs::open_file(fs::path_view(file));
+  REQUIRE(reader.has_value());
+  CHECK(fs::file_write_text_atomic(fs::path_view(file), "new").has_value());
+  reader = {};
+  const auto text = fs::file_read_text(fs::path_view(file));
+  REQUIRE(text.has_value());
+  CHECK(*text == nx::string_view("new"));
+}

@@ -3,6 +3,10 @@
 #include "core/foundation/strings/format.h"
 
 #if NX_HAS_WINDOWS_API
+#include "core/foundation/platform/windows_path.h"
+#endif
+
+#if NX_HAS_WINDOWS_API
 #include <windows.h>
 #elif NX_PLATFORM_POSIX
 #include <dlfcn.h>
@@ -78,7 +82,8 @@ bool shared_library::open(const string_view path) {
   const string terminated(path);
 
 #if NX_HAS_WINDOWS_API
-  m_handle = ::LoadLibraryA(terminated.c_str());
+  const vector<wchar_t> wide = fs::detail::win32_path(terminated.view());
+  m_handle = wide.empty() ? nullptr : ::LoadLibraryW(wide.data());
   if (m_handle == nullptr)
     m_error = windows_error();
 #elif NX_PLATFORM_POSIX

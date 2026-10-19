@@ -7,6 +7,10 @@
 #include "core/foundation/threading/thread.h"
 #include "core/foundation/threading/thread_pool.h"
 
+#if NX_HAS_WINDOWS_API
+#include "core/foundation/platform/windows_path.h"
+#endif
+
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -188,14 +192,43 @@ private:
 };
 #endif
 
+// The C file functions take the ANSI code page on Windows, which cannot name
+// every path; these take UTF-8 everywhere.
+FILE *open_for_writing(const string &path) noexcept {
+#if NX_HAS_WINDOWS_API
+  const vector<wchar_t> wide = fs::detail::win32_path(path.view());
+  return wide.empty() ? nullptr : _wfopen(wide.data(), L"wb");
+#else
+  return fopen(path.c_str(), "wb");
+#endif
+}
+
+void remove_file(const string &path) noexcept {
+#if NX_HAS_WINDOWS_API
+  const vector<wchar_t> wide = fs::detail::win32_path(path.view());
+  if (!wide.empty())
+    (void)_wremove(wide.data());
+#else
+  (void)remove(path.c_str());
+#endif
+}
+
+void rename_file(const string &from, const string &to) noexcept {
+#if NX_HAS_WINDOWS_API
+  const vector<wchar_t> wide_from = fs::detail::win32_path(from.view());
+  const vector<wchar_t> wide_to = fs::detail::win32_path(to.view());
+  if (!wide_from.empty() && !wide_to.empty())
+    (void)_wrename(wide_from.data(), wide_to.data());
+#else
+  (void)rename(from.c_str(), to.c_str());
+#endif
+}
+
 class FileSink final : public Sink {
 public:
   FileSink(string_view path, u64 max_bytes, u32 max_files)
-      : m_max_bytes(max_bytes), m_max_files(max(max_files, 1u)) {
-    const usize n = min(path.size(), sizeof(m_path) - 1);
-    memcpy(m_path, path.data(), n);
-    m_path[n] = '\0';
-    m_file = fopen(m_path, "wb");
+      : m_path(path), m_max_bytes(max_bytes), m_max_files(max(max_files, 1u)) {
+    m_file = open_for_writing(m_path);
   }
 
   ~FileSink() override {
@@ -226,28 +259,21 @@ private:
       m_file = nullptr;
     }
 
-    char from[sizeof(m_path) + 16];
-    char to[sizeof(m_path) + 16];
+    remove_file(nx::format("{}.{}", m_path, m_max_files));
+    for (u32 i = m_max_files; i > 1; --i)
+      rename_file(nx::format("{}.{}", m_path, i - 1),
+                  nx::format("{}.{}", m_path, i));
+    rename_file(m_path, nx::format("{}.1", m_path));
 
-    snprintf(to, sizeof(to), "%s.%u", m_path, m_max_files);
-    remove(to);
-    for (u32 i = m_max_files; i > 1; --i) {
-      snprintf(from, sizeof(from), "%s.%u", m_path, i - 1);
-      snprintf(to, sizeof(to), "%s.%u", m_path, i);
-      rename(from, to);
-    }
-    snprintf(to, sizeof(to), "%s.1", m_path);
-    rename(m_path, to);
-
-    m_file = fopen(m_path, "wb");
+    m_file = open_for_writing(m_path);
     m_bytes = 0;
   }
 
+  string m_path;
   FILE *m_file = nullptr;
   u64 m_max_bytes = 0;
   u64 m_bytes = 0;
   u32 m_max_files = 1;
-  char m_path[248] = {};
 };
 
 struct Logger {

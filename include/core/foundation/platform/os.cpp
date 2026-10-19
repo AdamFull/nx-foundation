@@ -556,9 +556,31 @@ bool random_bytes(const std::span<u8> out) noexcept {
 
 usize executable_path(char *const out, const usize capacity) noexcept {
 #if NX_HAS_WINDOWS_API
-  char path[1024] = {};
-  const DWORD length = ::GetModuleFileNameA(nullptr, path, sizeof(path));
-  return say(out, capacity, path, nx::cast<usize>(length));
+  // UTF-8 from the wide name: the ANSI one mangles a path outside the code
+  // page, and a long install path needs more than MAX_PATH.
+  try {
+    vector<wchar_t> wide(MAX_PATH);
+    DWORD length = 0;
+    for (;;) {
+      length = ::GetModuleFileNameW(nullptr, wide.data(),
+                                    nx::cast<DWORD>(wide.size()));
+      if (length == 0)
+        return say(out, capacity, "");
+      if (length < wide.size())
+        break;
+      wide.resize(wide.size() * 2);
+    }
+    const int bytes =
+        ::WideCharToMultiByte(CP_UTF8, 0, wide.data(), nx::cast<int>(length),
+                              nullptr, 0, nullptr, nullptr);
+    string path;
+    path.resize(nx::cast<usize>(bytes));
+    ::WideCharToMultiByte(CP_UTF8, 0, wide.data(), nx::cast<int>(length),
+                          path.data(), bytes, nullptr, nullptr);
+    return say(out, capacity, path.c_str(), path.size());
+  } catch (...) {
+    return say(out, capacity, "");
+  }
 #elif NX_PLATFORM_APPLE
   char path[1024] = {};
   u32 size = sizeof(path);
