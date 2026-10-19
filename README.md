@@ -114,8 +114,10 @@ the `nx::ecs::basic_registry<Entity, Alloc>` template): an allocator-aware ECS
 over versioned entity handles with explicit component registration, O(1)
 add/get/remove, transient views and cached queries, a built-in parent-child
 hierarchy, and statistics. Built on `nx::sparse_set`. Components must be
-registered before use; see the header for the full API, invalidation rules,
-destroy policies, and thread-safety model.
+registered before use: an unregistered type throws `std::logic_error`. A
+view's or cached query's `each` callback may remove or destroy the entity it
+is given. See the header for the full API, invalidation rules, destroy
+policies, and thread-safety model.
 
 ```cpp
 #include "core/foundation/ecs/registry.h"

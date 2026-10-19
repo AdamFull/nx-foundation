@@ -1,7 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <stdexcept>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -55,8 +57,8 @@ namespace detail {
 using component_id = u32;
 
 inline component_id next_component_id() noexcept {
-  static component_id counter = 0;
-  return counter++;
+  static std::atomic<component_id> counter{0};
+  return counter.fetch_add(1, std::memory_order_relaxed);
 }
 
 template <typename T> [[nodiscard]] component_id component_id_of() noexcept {
@@ -320,8 +322,9 @@ using view_storage_ptr = std::conditional_t<
 
 }
 
-/// Transient, non-owning view over entities sharing components T... . Do not add or remove
-/// components of any T... (or excluded U...) on the matched entities while iterating.
+/// Transient, non-owning view over entities sharing components T... . While iterating, each's
+/// callback may remove or destroy the entity it is given; do not add or remove components of any
+/// T... (or excluded U...) on other matched entities.
 template <typename Reg, typename... T> class basic_view {
 public:
   using entity_type = typename Reg::entity_type;
@@ -390,13 +393,20 @@ private:
     (void)((I == lead ? (walk<I>(fn), true) : false) || ...);
   }
 
+  // In storage order, which callers rely on, over the entities there when it
+  // began, bounded at every step. fn may remove or destroy the entity it is
+  // given: the last one then moves into its place, and is visited there.
   template <usize L, typename Fn> void walk(Fn &fn) const {
     const auto &lead = std::get<L>(m_storages)->set();
-    for (usize i = 0, n = lead.size(); i < n; ++i) {
+    for (usize i = 0, n = lead.size(); i < n && i < lead.size();) {
       const entity_type e = lead.handle_at(i);
-      if (excluded(e))
+      if (!excluded(e))
+        call<L>(fn, e, i, std::index_sequence_for<T...>{});
+      if (i < lead.size() && lead.handle_at(i) != e) {
+        --n;
         continue;
-      call<L>(fn, e, i, std::index_sequence_for<T...>{});
+      }
+      ++i;
     }
   }
 
@@ -728,11 +738,18 @@ public:
     using T = std::remove_cv_t<C>;
     auto &store = assure<T>();
     assert(alive(e) && "registry::emplace: entity not alive");
+    assert(!store.contains(e) &&
+           "registry::emplace: entity already has the component");
+    // Released, a second emplace replaces the component: observers see an
+    // update, not a second construction with no destruction between.
+    if (store.contains(e))
+      return replace<C>(e, std::forward<Args>(args)...);
     T &ref = store.set().emplace(e, std::forward<Args>(args)...);
     bump_generation(detail::component_id_of<T>());
-    if (!store.m_on_construct.empty())
-      store.m_on_construct.fire(*this, e);
-    return ref;
+    if (store.m_on_construct.empty())
+      return ref;
+    store.m_on_construct.fire(*this, e);
+    return current(store, e, ref);
   }
 
   /// Add T if missing, otherwise overwrite it. Requires T move-assignable when
@@ -744,15 +761,17 @@ public:
     assert(alive(e) && "registry::emplace_or_replace: entity not alive");
     if (T *p = store.try_get(e)) {
       *p = T(std::forward<Args>(args)...);
-      if (!store.m_on_update.empty())
-        store.m_on_update.fire(*this, e);
-      return *p;
+      if (store.m_on_update.empty())
+        return *p;
+      store.m_on_update.fire(*this, e);
+      return current(store, e, *p);
     }
     T &ref = store.set().emplace(e, std::forward<Args>(args)...);
     bump_generation(detail::component_id_of<T>());
-    if (!store.m_on_construct.empty())
-      store.m_on_construct.fire(*this, e);
-    return ref;
+    if (store.m_on_construct.empty())
+      return ref;
+    store.m_on_construct.fire(*this, e);
+    return current(store, e, ref);
   }
 
   template <typename C, typename... Args>
@@ -773,9 +792,10 @@ public:
     T *p = store.try_get(e);
     assert(p && "registry::replace: entity does not have component");
     *p = T(std::forward<Args>(args)...);
-    if (!store.m_on_update.empty())
-      store.m_on_update.fire(*this, e);
-    return *p;
+    if (store.m_on_update.empty())
+      return *p;
+    store.m_on_update.fire(*this, e);
+    return current(store, e, *p);
   }
 
   template <typename C, typename Fn> C &patch(Entity e, Fn &&fn) {
@@ -784,9 +804,10 @@ public:
     T *p = store.try_get(e);
     assert(p && "registry::patch: entity does not have component");
     fn(*p);
-    if (!store.m_on_update.empty())
-      store.m_on_update.fire(*this, e);
-    return *p;
+    if (store.m_on_update.empty())
+      return *p;
+    store.m_on_update.fire(*this, e);
+    return current(store, e, *p);
   }
 
   template <typename... C> [[nodiscard]] decltype(auto) get(Entity e) {
@@ -1109,10 +1130,29 @@ private:
            "registry: component type not registered");
   }
 
+  /// Throws in every build: an unregistered type has no storage to return.
   template <typename T> detail::component_storage<T, Entity, Alloc> &assure() {
     auto *store = raw_storage<T>();
-    assert(store && "registry: component type not registered");
+    if (store == nullptr)
+      throw std::logic_error("registry: component type not registered");
     return *store;
+  }
+
+  /// The component after callbacks ran: one that added the type to another
+  /// entity may have moved the storage @p before pointed into.
+  template <typename T>
+  T &current(detail::component_storage<T, Entity, Alloc> &store, Entity e,
+             T &before) noexcept {
+    if constexpr (std::is_empty_v<T>) {
+      (void)store;
+      (void)e;
+      return before;
+    } else {
+      (void)before;
+      T *now = store.try_get(e);
+      assert(now && "registry: a callback removed the component it was given");
+      return *now;
+    }
   }
 
   template <typename T> T &get_single(Entity e) {
@@ -1350,10 +1390,15 @@ public:
     return {m_cache->entities.data(), m_cache->entities.size()};
   }
 
+  /// By index into the live cache, which fn may rebuild by changing what
+  /// matches; an entity that stopped matching is skipped.
   template <typename Fn> void each(Fn &&fn) {
     ensure_built();
-    for (entity_type e : m_cache->entities)
-      invoke(std::forward<Fn>(fn), e, std::index_sequence_for<T...>{});
+    for (usize i = 0; i < m_cache->entities.size(); ++i) {
+      const entity_type e = m_cache->entities[i];
+      if (m_reg->alive(e) && m_reg->template all_of<T...>(e))
+        invoke(fn, e, std::index_sequence_for<T...>{});
+    }
   }
 
 private:
@@ -1363,7 +1408,7 @@ private:
   }
 
   template <typename Fn, usize... I>
-  void invoke(Fn &&fn, entity_type e, std::index_sequence<I...>) {
+  void invoke(Fn &fn, entity_type e, std::index_sequence<I...>) {
     fn(e, m_reg->template get<T>(e)...);
   }
 

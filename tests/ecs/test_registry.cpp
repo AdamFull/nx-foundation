@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1643,4 +1644,64 @@ TEST_CASE("ecs: an on_destroy callback may destroy its own entity") {
   CHECK(c != d);
   CHECK(f.reg.alive(c));
   CHECK(f.reg.alive(d));
+}
+
+TEST_CASE("ecs: emplace returns the component where callbacks left it") {
+  fixture f;
+  bool adding = false;
+  f.reg.on_construct<Position>([&](reg_t &r, entity_t) {
+    if (adding)
+      return;
+    adding = true;
+    for (int i = 0; i < 1000; ++i)
+      r.emplace<Position>(r.create(), Position{});
+    adding = false;
+  });
+  const entity_t a = f.reg.create();
+  Position &p = f.reg.emplace<Position>(a, Position{3.f, 4.f});
+  CHECK(&p == &f.reg.get<Position>(a));
+  CHECK(p == Position{3.f, 4.f});
+}
+
+TEST_CASE("ecs: a view's each may destroy the entity it is given") {
+  fixture f;
+  for (int i = 0; i < 10; ++i)
+    f.reg.emplace<Position>(f.reg.create(), Position{});
+  int seen = 0;
+  f.reg.view<Position>().each([&](entity_t e, Position &) {
+    ++seen;
+    f.reg.destroy(e);
+  });
+  CHECK(seen == 10);
+  CHECK(f.reg.size() == 0);
+}
+
+TEST_CASE("ecs: a cached query skips entities its callback destroyed") {
+  fixture f;
+  nx::vector<entity_t> made;
+  for (int i = 0; i < 6; ++i) {
+    made.push_back(f.reg.create());
+    f.reg.emplace<Position>(made.back(), Position{});
+  }
+  auto q = f.reg.query<Position>();
+  REQUIRE(q.size() == 6u);
+  int seen = 0;
+  q.each([&](entity_t e, Position &) {
+    ++seen;
+    const auto at = std::find(made.begin(), made.end(), e);
+    if (at + 1 < made.end() && f.reg.alive(*(at + 1)))
+      f.reg.destroy(*(at + 1));
+  });
+  CHECK(seen == 3);
+  CHECK(q.size() == 3u);
+}
+
+TEST_CASE("ecs: an unregistered component type throws in every build") {
+  struct Unregistered {
+    int value = 0;
+  };
+  fixture f;
+  const entity_t e = f.reg.create();
+  CHECK_THROWS_AS(f.reg.emplace<Unregistered>(e, Unregistered{}),
+                  std::logic_error);
 }

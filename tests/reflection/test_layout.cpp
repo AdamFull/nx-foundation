@@ -3,6 +3,8 @@
 
 #include "core/foundation/reflection/layout.h"
 
+#include <span>
+
 struct Base {
   f32 x = 0.f;
   f32 y = 0.f;
@@ -163,4 +165,79 @@ TEST_CASE("layout: the same fields under the same name digest alike") {
 
   CHECK(nx::reflect::layout_digest(same_name_holding(one)) ==
         nx::reflect::layout_digest(same_name_holding(two)));
+}
+
+namespace {
+
+constexpr nx::reflect::type_info leaf(const nx::string_view name) {
+  nx::reflect::type_info t;
+  t.name = name;
+  t.size = 4;
+  t.align = 4;
+  t.kind = nx::reflect::type_kind::floating;
+  return t;
+}
+
+} // namespace
+
+TEST_CASE("layout: a change inside a nested aggregate changes it") {
+  static const nx::reflect::type_info f32_type = leaf("f32");
+  static const nx::reflect::type_info u32_type = [] {
+    nx::reflect::type_info t = leaf("u32");
+    t.kind = nx::reflect::type_kind::unsigned_integer;
+    return t;
+  }();
+  static const nx::reflect::field_info xy[] = {
+      {.name = "x", .offset = 0, .type = &f32_type},
+      {.name = "y", .offset = 4, .type = &u32_type}};
+  static const nx::reflect::field_info yx[] = {
+      {.name = "x", .offset = 4, .type = &f32_type},
+      {.name = "y", .offset = 0, .type = &u32_type}};
+  const auto inner = [](const std::span<const nx::reflect::field_info> f) {
+    nx::reflect::type_info t;
+    t.name = "Inner";
+    t.size = 8;
+    t.align = 4;
+    t.kind = nx::reflect::type_kind::aggregate;
+    t.fields = f;
+    return t;
+  };
+  static const nx::reflect::type_info inner_xy = inner(xy);
+  static const nx::reflect::type_info inner_yx = inner(yx);
+  static const nx::reflect::field_info holds_xy[] = {
+      {.name = "in", .offset = 0, .type = &inner_xy}};
+  static const nx::reflect::field_info holds_yx[] = {
+      {.name = "in", .offset = 0, .type = &inner_yx}};
+  const auto outer = [](const std::span<const nx::reflect::field_info> f) {
+    nx::reflect::type_info t;
+    t.name = "Outer";
+    t.size = 8;
+    t.align = 4;
+    t.kind = nx::reflect::type_kind::aggregate;
+    t.fields = f;
+    return t;
+  };
+  CHECK(nx::reflect::layout_digest(outer(holds_xy)) !=
+        nx::reflect::layout_digest(outer(holds_yx)));
+}
+
+TEST_CASE("layout: a type that holds itself digests and stops") {
+  static nx::reflect::type_info node;
+  static nx::reflect::sequence_data children;
+  static nx::reflect::type_info list;
+  static const nx::reflect::field_info fields[] = {
+      {.name = "children", .offset = 0, .type = &list}};
+  children.element = &node;
+  list.name = "vector<Node>";
+  list.size = 24;
+  list.align = 8;
+  list.kind = nx::reflect::type_kind::sequence;
+  list.sequence = &children;
+  node.name = "Node";
+  node.size = 24;
+  node.align = 8;
+  node.kind = nx::reflect::type_kind::aggregate;
+  node.fields = fields;
+  const u64 once = nx::reflect::layout_digest(node);
+  CHECK(once == nx::reflect::layout_digest(node));
 }
