@@ -415,3 +415,28 @@ TEST_CASE("fiber sync: a short sleep on an idle scheduler is precise") {
   CHECK(overshoots.front() >= steady::duration::zero());
   CHECK(overshoots[overshoots.size() / 2] < 3ms);
 }
+
+TEST_CASE("fiber sync: cond_var waits on a unique_lock off the scheduler") {
+  nx::fiber::mutex m;
+  nx::fiber::cond_var cv;
+  bool ready = false;
+  std::atomic<bool> woke{false};
+
+  nx::thread waiter([&] {
+    nx::unique_lock<nx::fiber::mutex> lock(m);
+    cv.wait(lock, [&] { return ready; });
+    woke.store(lock.owns_lock(), std::memory_order_release);
+  });
+
+  {
+    nx::unique_lock<nx::fiber::mutex> lock(m);
+    ready = true;
+  }
+  cv.notify_all();
+  waiter.join();
+  CHECK(woke.load());
+
+  nx::unique_lock<nx::fiber::mutex> lock(m);
+  CHECK_FALSE(cv.wait_for(lock, 1ms, [] { return false; }));
+  CHECK(lock.owns_lock());
+}

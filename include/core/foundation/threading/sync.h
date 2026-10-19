@@ -3,12 +3,15 @@
 #include "core/foundation/core/foundation.h"
 
 #include <atomic>
+#include <cassert>
 #include <chrono>
+#include <utility>
 
 namespace nx {
 
-/// Raw 32-bit futex: the wait/wake primitive everything here builds on. wait() blocks while @p addr
-/// still holds @p expected_value; a zero timeout means wait forever.
+/// Raw 32-bit futex: the wait/wake primitive everything here builds on. wait()
+/// blocks while @p addr still holds @p expected_value; a zero timeout means
+/// wait forever.
 namespace futex {
 enum class Result { Success = 0, TimedOut = 1, Error = 2 };
 
@@ -203,6 +206,187 @@ private:
   u32 m_depth = 0;
 };
 
+struct defer_lock_t {
+  explicit defer_lock_t() = default;
+};
+struct try_to_lock_t {
+  explicit try_to_lock_t() = default;
+};
+struct adopt_lock_t {
+  explicit adopt_lock_t() = default;
+};
+inline constexpr defer_lock_t defer_lock{};
+inline constexpr try_to_lock_t try_to_lock{};
+inline constexpr adopt_lock_t adopt_lock{};
+
+/// Movable exclusive ownership of any type with lock()/unlock(). Unlike
+/// scoped_lock it may unlock before scope exit and lock again, and condition
+/// variables wait on it.
+template <typename Mutex> class unique_lock {
+public:
+  using mutex_type = Mutex;
+
+  unique_lock() noexcept = default;
+  explicit unique_lock(Mutex &m) noexcept : m_mutex(&m) {
+    m.lock();
+    m_owns = true;
+  }
+  unique_lock(Mutex &m, defer_lock_t) noexcept : m_mutex(&m) {}
+  unique_lock(Mutex &m, try_to_lock_t) noexcept
+      : m_mutex(&m), m_owns(m.try_lock()) {}
+  unique_lock(Mutex &m, adopt_lock_t) noexcept : m_mutex(&m), m_owns(true) {}
+  template <class Rep, class Period>
+  unique_lock(Mutex &m, std::chrono::duration<Rep, Period> timeout) noexcept
+      : m_mutex(&m), m_owns(m.try_lock_for(timeout)) {}
+
+  ~unique_lock() {
+    if (m_owns)
+      m_mutex->unlock();
+  }
+
+  unique_lock(const unique_lock &) = delete;
+  unique_lock &operator=(const unique_lock &) = delete;
+
+  unique_lock(unique_lock &&other) noexcept
+      : m_mutex(other.m_mutex), m_owns(other.m_owns) {
+    other.m_mutex = nullptr;
+    other.m_owns = false;
+  }
+  unique_lock &operator=(unique_lock &&other) noexcept {
+    if (this != &other) {
+      if (m_owns)
+        m_mutex->unlock();
+      m_mutex = other.m_mutex;
+      m_owns = other.m_owns;
+      other.m_mutex = nullptr;
+      other.m_owns = false;
+    }
+    return *this;
+  }
+
+  void lock() noexcept {
+    assert(m_mutex != nullptr && !m_owns && "unique_lock: lock() misuse");
+    m_mutex->lock();
+    m_owns = true;
+  }
+  [[nodiscard]] bool try_lock() noexcept {
+    assert(m_mutex != nullptr && !m_owns && "unique_lock: try_lock() misuse");
+    m_owns = m_mutex->try_lock();
+    return m_owns;
+  }
+  template <class Rep, class Period>
+  [[nodiscard]] bool
+  try_lock_for(std::chrono::duration<Rep, Period> timeout) noexcept {
+    assert(m_mutex != nullptr && !m_owns &&
+           "unique_lock: try_lock_for() misuse");
+    m_owns = m_mutex->try_lock_for(timeout);
+    return m_owns;
+  }
+  void unlock() noexcept {
+    assert(m_owns && "unique_lock: unlock() without ownership");
+    m_mutex->unlock();
+    m_owns = false;
+  }
+
+  /// Disassociates without unlocking; the caller now owns any lock held.
+  [[nodiscard]] Mutex *release() noexcept {
+    Mutex *const held = m_mutex;
+    m_mutex = nullptr;
+    m_owns = false;
+    return held;
+  }
+
+  void swap(unique_lock &other) noexcept {
+    std::swap(m_mutex, other.m_mutex);
+    std::swap(m_owns, other.m_owns);
+  }
+
+  [[nodiscard]] bool owns_lock() const noexcept { return m_owns; }
+  [[nodiscard]] explicit operator bool() const noexcept { return m_owns; }
+  [[nodiscard]] Mutex *mutex() const noexcept { return m_mutex; }
+
+private:
+  Mutex *m_mutex = nullptr;
+  bool m_owns = false;
+};
+
+/// unique_lock's shared counterpart, over lock_shared()/unlock_shared().
+template <typename Mutex> class shared_lock {
+public:
+  using mutex_type = Mutex;
+
+  shared_lock() noexcept = default;
+  explicit shared_lock(Mutex &m) noexcept : m_mutex(&m) {
+    m.lock_shared();
+    m_owns = true;
+  }
+  shared_lock(Mutex &m, defer_lock_t) noexcept : m_mutex(&m) {}
+  shared_lock(Mutex &m, try_to_lock_t) noexcept
+      : m_mutex(&m), m_owns(m.try_lock_shared()) {}
+  shared_lock(Mutex &m, adopt_lock_t) noexcept : m_mutex(&m), m_owns(true) {}
+
+  ~shared_lock() {
+    if (m_owns)
+      m_mutex->unlock_shared();
+  }
+
+  shared_lock(const shared_lock &) = delete;
+  shared_lock &operator=(const shared_lock &) = delete;
+
+  shared_lock(shared_lock &&other) noexcept
+      : m_mutex(other.m_mutex), m_owns(other.m_owns) {
+    other.m_mutex = nullptr;
+    other.m_owns = false;
+  }
+  shared_lock &operator=(shared_lock &&other) noexcept {
+    if (this != &other) {
+      if (m_owns)
+        m_mutex->unlock_shared();
+      m_mutex = other.m_mutex;
+      m_owns = other.m_owns;
+      other.m_mutex = nullptr;
+      other.m_owns = false;
+    }
+    return *this;
+  }
+
+  void lock() noexcept {
+    assert(m_mutex != nullptr && !m_owns && "shared_lock: lock() misuse");
+    m_mutex->lock_shared();
+    m_owns = true;
+  }
+  [[nodiscard]] bool try_lock() noexcept {
+    assert(m_mutex != nullptr && !m_owns && "shared_lock: try_lock() misuse");
+    m_owns = m_mutex->try_lock_shared();
+    return m_owns;
+  }
+  void unlock() noexcept {
+    assert(m_owns && "shared_lock: unlock() without ownership");
+    m_mutex->unlock_shared();
+    m_owns = false;
+  }
+
+  [[nodiscard]] Mutex *release() noexcept {
+    Mutex *const held = m_mutex;
+    m_mutex = nullptr;
+    m_owns = false;
+    return held;
+  }
+
+  void swap(shared_lock &other) noexcept {
+    std::swap(m_mutex, other.m_mutex);
+    std::swap(m_owns, other.m_owns);
+  }
+
+  [[nodiscard]] bool owns_lock() const noexcept { return m_owns; }
+  [[nodiscard]] explicit operator bool() const noexcept { return m_owns; }
+  [[nodiscard]] Mutex *mutex() const noexcept { return m_mutex; }
+
+private:
+  Mutex *m_mutex = nullptr;
+  bool m_owns = false;
+};
+
 class cond_var {
 public:
   cond_var() = default;
@@ -229,6 +413,23 @@ public:
   template <typename Pred> void wait(mutex &m, Pred pred) noexcept {
     while (!pred())
       wait(m);
+  }
+
+  void wait(unique_lock<mutex> &lock) noexcept { wait(owned(lock)); }
+  template <typename Pred>
+  void wait(unique_lock<mutex> &lock, Pred pred) noexcept {
+    wait(owned(lock), std::move(pred));
+  }
+  template <class Rep, class Period>
+  bool wait_for(unique_lock<mutex> &lock,
+                std::chrono::duration<Rep, Period> timeout) noexcept {
+    return wait_for(owned(lock), timeout);
+  }
+  template <class Rep, class Period, typename Pred>
+  bool wait_for(unique_lock<mutex> &lock,
+                std::chrono::duration<Rep, Period> timeout,
+                Pred pred) noexcept {
+    return wait_for(owned(lock), timeout, std::move(pred));
   }
 
   template <class Rep, class Period>
@@ -259,6 +460,11 @@ public:
   }
 
 private:
+  [[nodiscard]] static mutex &owned(unique_lock<mutex> &lock) noexcept {
+    assert(lock.owns_lock() && "cond_var: waiting without holding the lock");
+    return *lock.mutex();
+  }
+
   std::atomic<u32> m_seq{0};
 };
 
@@ -550,6 +756,7 @@ void call_once(once_flag &flag, F &&fn, Args &&...args) {
 template <typename Mutex> class scoped_lock {
 public:
   explicit scoped_lock(Mutex &m) noexcept : m_mutex(m) { m_mutex.lock(); }
+  scoped_lock(Mutex &m, adopt_lock_t) noexcept : m_mutex(m) {}
   ~scoped_lock() { m_mutex.unlock(); }
   scoped_lock(const scoped_lock &) = delete;
   scoped_lock &operator=(const scoped_lock &) = delete;
@@ -563,6 +770,7 @@ public:
   explicit scoped_shared_lock(Mutex &m) noexcept : m_mutex(m) {
     m_mutex.lock_shared();
   }
+  scoped_shared_lock(Mutex &m, adopt_lock_t) noexcept : m_mutex(m) {}
   ~scoped_shared_lock() { m_mutex.unlock_shared(); }
   scoped_shared_lock(const scoped_shared_lock &) = delete;
   scoped_shared_lock &operator=(const scoped_shared_lock &) = delete;

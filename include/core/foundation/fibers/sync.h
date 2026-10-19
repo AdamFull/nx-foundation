@@ -143,6 +143,23 @@ public:
       wait(m);
   }
 
+  void wait(unique_lock<mutex> &lock) noexcept { wait(owned(lock)); }
+  template <typename Pred>
+  void wait(unique_lock<mutex> &lock, Pred pred) noexcept {
+    wait(owned(lock), std::move(pred));
+  }
+  template <class Rep, class Period>
+  bool wait_for(unique_lock<mutex> &lock,
+                std::chrono::duration<Rep, Period> timeout) noexcept {
+    return wait_for(owned(lock), timeout);
+  }
+  template <class Rep, class Period, typename Pred>
+  bool wait_for(unique_lock<mutex> &lock,
+                std::chrono::duration<Rep, Period> timeout,
+                Pred pred) noexcept {
+    return wait_for(owned(lock), timeout, std::move(pred));
+  }
+
   /// Returns false if the timeout passed first.
   template <class Rep, class Period>
   bool wait_for(mutex &m, std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -162,6 +179,11 @@ public:
   }
 
 private:
+  [[nodiscard]] static mutex &owned(unique_lock<mutex> &lock) noexcept {
+    assert(lock.owns_lock() && "cond_var: waiting without holding the lock");
+    return *lock.mutex();
+  }
+
   bool wait_until(mutex &m, internal::clock::time_point deadline) noexcept;
 
   spin_lock m_lock;

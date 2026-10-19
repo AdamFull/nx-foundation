@@ -818,3 +818,97 @@ TEST_CASE("sync: the primitives are neither copyable nor assignable") {
   static_assert(!std::is_copy_constructible_v<nx::once_flag>);
   CHECK(true);
 }
+
+TEST_CASE("unique_lock: unlocks early and locks again") {
+  nx::mutex m;
+  nx::unique_lock<nx::mutex> lock(m);
+  CHECK(lock.owns_lock());
+  CHECK(lock.mutex() == &m);
+  lock.unlock();
+  CHECK_FALSE(lock.owns_lock());
+  CHECK(m.try_lock());
+  m.unlock();
+  lock.lock();
+  CHECK(lock.owns_lock());
+  CHECK_FALSE(m.try_lock());
+}
+
+TEST_CASE("unique_lock: defer, try and adopt tags") {
+  nx::mutex m;
+  {
+    nx::unique_lock<nx::mutex> deferred(m, nx::defer_lock);
+    CHECK_FALSE(deferred.owns_lock());
+    CHECK(deferred.try_lock());
+  }
+  CHECK(m.try_lock());
+  {
+    nx::unique_lock<nx::mutex> tried(m, nx::try_to_lock);
+    CHECK_FALSE(tried.owns_lock());
+  }
+  {
+    nx::unique_lock<nx::mutex> adopted(m, nx::adopt_lock);
+    CHECK(adopted.owns_lock());
+  }
+  CHECK(m.try_lock());
+  m.unlock();
+  {
+    nx::unique_lock<nx::mutex> timed(m, 1ms);
+    CHECK(timed.owns_lock());
+  }
+}
+
+TEST_CASE("unique_lock: moves ownership and releases without unlocking") {
+  nx::mutex m;
+  nx::unique_lock<nx::mutex> first(m);
+  nx::unique_lock<nx::mutex> second(std::move(first));
+  CHECK_FALSE(first.owns_lock());
+  CHECK(first.mutex() == nullptr);
+  CHECK(second.owns_lock());
+
+  nx::mutex *const held = second.release();
+  CHECK(held == &m);
+  CHECK_FALSE(second.owns_lock());
+  CHECK_FALSE(m.try_lock());
+  m.unlock();
+}
+
+TEST_CASE("shared_lock: readers share and exclude a writer") {
+  nx::rw_lock lock;
+  {
+    nx::shared_lock<nx::rw_lock> a(lock);
+    nx::shared_lock<nx::rw_lock> b(lock, nx::try_to_lock);
+    CHECK(a.owns_lock());
+    CHECK(b.owns_lock());
+    CHECK_FALSE(lock.try_lock());
+    b.unlock();
+    CHECK_FALSE(b.owns_lock());
+  }
+  CHECK(lock.try_lock());
+  lock.unlock();
+}
+
+TEST_CASE("cond_var: waits on a unique_lock and keeps it held") {
+  nx::mutex m;
+  nx::cond_var cv;
+  bool ready = false;
+  std::atomic<bool> saw_lock{false};
+
+  std::thread waiter([&] {
+    nx::unique_lock<nx::mutex> lock(m);
+    cv.wait(lock, [&] { return ready; });
+    saw_lock.store(lock.owns_lock(), std::memory_order_release);
+  });
+
+  std::this_thread::sleep_for(20ms);
+  {
+    nx::unique_lock<nx::mutex> lock(m);
+    ready = true;
+  }
+  cv.notify_one();
+  waiter.join();
+  CHECK(saw_lock.load());
+
+  nx::unique_lock<nx::mutex> lock(m);
+  CHECK_FALSE(cv.wait_for(lock, 1ms, [] { return false; }));
+  CHECK(lock.owns_lock());
+}
