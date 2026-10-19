@@ -104,7 +104,7 @@ TEST_CASE(
 
 TEST_CASE("json binary: nesting has a finite decode depth") {
   nx::nva::Writer w;
-  for (u32 i = 0; i < 130; ++i) {
+  for (u32 i = 0; i < 260; ++i) {
     w.u8v(nx::cast<u8>(nx::json::type::array));
     w.u32v(1);
   }
@@ -213,4 +213,20 @@ TEST_CASE(
   CHECK_FALSE(nx::json::load_document_file("/config.nxdoc", loaded));
   CHECK(loaded["from"].get_string() == "source");
   CHECK(nx::json::document_cooked_path("/config.nxdoc") == "/config.nxdoc.nxb");
+}
+
+TEST_CASE("json binary: reads back every depth the text parser accepts") {
+  nx::string text;
+  for (int i = 0; i < 250; ++i)
+    text.push_back('[');
+  for (int i = 0; i < 250; ++i)
+    text.push_back(']');
+  const auto doc = nx::json::parse(text);
+  REQUIRE(doc);
+  nx::nva::Writer w;
+  nx::json::write_binary(doc.value(), w);
+  nx::nva::Reader r(w.span());
+  const nx::json::value decoded = nx::json::read_binary(r);
+  CHECK(r.ok());
+  CHECK(decoded == doc.value());
 }

@@ -64,61 +64,42 @@ constexpr usize char_byte_count(const char fb) {
   return 0;
 }
 
+/// Decodes one well-formed sequence (Unicode table 3-7): no overlong forms, no
+/// surrogates, nothing past U+10FFFF. On failure @p cp is U+FFFD and @p readed
+/// is 1, so a caller that skips the bad byte resynchronises.
 inline bool decode_char(const char *utf8, const usize remaining, char32_t &cp,
                         usize &readed) {
   if (remaining == 0)
     return false;
 
-  const char uc0 = utf8[0];
-
-  switch (char_byte_count(uc0)) {
-  case 1: {
-    readed = 1;
-    cp = nx::cast<char32_t>(uc0);
-    return true;
-  }
-  case 2: {
-    if (remaining < 2)
-      return false;
-    const char uc1 = utf8[1];
-    if (!is_continuation_byte(uc1))
-      return false;
-    readed = 2;
-    cp = nx::cast<char32_t>(((uc0 & 0x1F) << 6) | (uc1 & 0x3F));
-    return true;
-  }
-  case 3: {
-    if (remaining < 3)
-      return false;
-    const char uc1 = utf8[1];
-    const char uc2 = utf8[2];
-    if (!is_continuation_byte(uc1) || !is_continuation_byte(uc2))
-      return false;
-    readed = 3;
-    cp = nx::cast<char32_t>(((uc0 & 0x0F) << 12) | ((uc1 & 0x3F) << 6) |
-                            (uc2 & 0x3F));
-    return true;
-  }
-  case 4: {
-    if (remaining < 4)
-      return false;
-    const char uc1 = utf8[1];
-    const char uc2 = utf8[2];
-    const char uc3 = utf8[3];
-    if (!is_continuation_byte(uc1) || !is_continuation_byte(uc2) ||
-        !is_continuation_byte(uc3))
-      return false;
-    readed = 4;
-    cp = nx::cast<char32_t>(((uc0 & 0x07) << 18) | ((uc1 & 0x3F) << 12) |
-                            ((uc2 & 0x3F) << 6) | (uc3 & 0x3F));
-    return true;
-  }
-  default: {
-    readed = 1;
+  const auto uc0 = nx::cast<u8>(utf8[0]);
+  const usize n = char_byte_count(utf8[0]);
+  const auto fail = [&] {
     cp = 0xFFFD;
+    readed = 1;
     return false;
+  };
+  if (n == 0 || n > remaining)
+    return fail();
+  if (n == 1) {
+    cp = uc0;
+    readed = 1;
+    return true;
   }
+
+  constexpr u8 lead_bits[] = {0, 0, 0x1F, 0x0F, 0x07};
+  constexpr char32_t shortest[] = {0, 0, 0x80, 0x800, 0x10000};
+  auto value = nx::cast<char32_t>(uc0 & lead_bits[n]);
+  for (usize i = 1; i < n; ++i) {
+    if (!is_continuation_byte(utf8[i]))
+      return fail();
+    value = nx::cast<char32_t>((value << 6) | (nx::cast<u8>(utf8[i]) & 0x3Fu));
   }
+  if (value < shortest[n] || !is_valid_codepoint(value))
+    return fail();
+  cp = value;
+  readed = n;
+  return true;
 }
 
 inline bool encode_char(const char32_t cp, char *out, usize &len) {
@@ -748,23 +729,8 @@ public:
     return count;
   }
 
-  // Structurally well-formed UTF-8 (matches the bundled decoder, which does
-  // not reject overlong forms or surrogate-range code points).
   [[nodiscard]] bool is_valid_utf8() const noexcept {
-    const char *p = data();
-    usize remaining = size();
-    while (remaining) {
-      const usize need = utf8::char_byte_count(*p);
-      if (need == 0 || need > remaining)
-        return false;
-      char32_t cp = 0;
-      usize r = 1;
-      if (!utf8::decode_char(p, remaining, cp, r))
-        return false;
-      p += r;
-      remaining -= r;
-    }
-    return true;
+    return utf8::validate_utf8(data(), size());
   }
 
   friend bool operator==(const basic_string &a,

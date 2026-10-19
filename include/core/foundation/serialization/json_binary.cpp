@@ -7,7 +7,8 @@
 namespace nx::json {
 namespace {
 
-inline constexpr u32 MAX_READ_DEPTH = 128;
+// What the text parser accepts by default, so a cooked document reads back.
+inline constexpr u32 MAX_READ_DEPTH = parse_options{}.max_depth;
 
 [[nodiscard]] value read_binary_impl(nx::nva::Reader &r, u32 depth);
 

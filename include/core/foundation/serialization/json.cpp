@@ -1075,9 +1075,8 @@ const value &value::operator[](string_view key) const noexcept {
 }
 
 value &value::operator[](string_view key) {
-  if (is_null())
+  if (!is_object())
     *this = make_object();
-  assert(is_object() && "json::value: keyed access on a non-object");
   if (value *m = find(key))
     return *m;
   m_u.m_object.push_back(member{nx::string(key), value{}});
@@ -1085,9 +1084,8 @@ value &value::operator[](string_view key) {
 }
 
 void value::push_back(value v) {
-  if (is_null())
+  if (!is_array())
     *this = make_array();
-  assert(is_array() && "json::value::push_back on a non-array");
   m_u.m_array.push_back(std::move(v));
 }
 
@@ -1097,9 +1095,8 @@ value &value::emplace_back(value v) {
 }
 
 value &value::insert(string_view key, value v) {
-  if (is_null())
+  if (!is_object())
     *this = make_object();
-  assert(is_object() && "json::value::insert on a non-object");
   if (value *m = find(key)) {
     *m = std::move(v);
     return *m;

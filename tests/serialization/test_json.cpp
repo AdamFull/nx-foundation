@@ -1055,3 +1055,35 @@ TEST_CASE("json: parsing never leaves a document half-built on failure") {
     REQUIRE(r.error().code != js::error_code::none);
   }
 }
+
+TEST_CASE("json: mutators turn a value of the wrong kind into the right one") {
+  nx::json::value number = nx::json::parse("5").value();
+  number["key"] = nx::json::parse("1").value();
+  REQUIRE(number.is_object());
+  CHECK(number.size() == 1);
+
+  nx::json::value text = nx::json::parse(R"("words")").value();
+  text.push_back(nx::json::parse("2").value());
+  REQUIRE(text.is_array());
+  CHECK(text.size() == 1);
+
+  nx::json::value list = nx::json::parse("[1, 2]").value();
+  list.insert("k", nx::json::parse("true").value());
+  REQUIRE(list.is_object());
+  CHECK(list.contains("k"));
+}
+
+TEST_CASE("json: escaped output of invalid UTF-8 parses back") {
+  nx::json::value v = nx::json::parse(R"({"s": ""})").value();
+  v["s"] = nx::json::value(nx::string("a\xED\xA0\x80\xF4\x90\x80\x80z"));
+  const nx::string written = nx::json::write(v, {.escape_non_ascii = true});
+  CHECK(nx::json::parse(written).has_value());
+}
+
+TEST_CASE("json: validate_utf8 rejects overlong forms and surrogates") {
+  for (const char *bad :
+       {"\"\xC0\xAE\"", "\"\xED\xA0\x80\"", "\"\xF4\x90\x80\x80\""})
+    CHECK_FALSE(nx::json::parse(bad, {.validate_utf8 = true}).has_value());
+  CHECK(nx::json::parse("\"\xF0\x9F\x98\x80\"", {.validate_utf8 = true})
+            .has_value());
+}

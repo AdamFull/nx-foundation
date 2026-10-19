@@ -1,4 +1,5 @@
 #include "framework/nxtest.h"
+#include <cstring>
 
 #include "core/foundation/strings/utf8_string.h"
 
@@ -1002,4 +1003,38 @@ TEST_CASE("string: nx::format comes with nx::string") {
   const nx::string out = nx::format("hello {} {}", name, 7);
   CHECK(out == nx::string_view("hello world 7"));
   CHECK(std::format("[{:>6}]", name) == "[ world]");
+}
+
+TEST_CASE("utf8: only well-formed sequences decode") {
+  const auto valid = [](const char *bytes) {
+    return nx::utf8::validate_utf8(bytes, std::strlen(bytes));
+  };
+  for (const char *good :
+       {"\x7F", "\xC2\x80", "\xDF\xBF", "\xE0\xA0\x80", "\xED\x9F\xBF",
+        "\xEE\x80\x80", "\xEF\xBF\xBF", "\xF0\x90\x80\x80", "\xF4\x8F\xBF\xBF"})
+    CHECK(valid(good));
+  for (const char *bad :
+       {"\xC0\x80", "\xC1\xBF", "\xE0\x80\x80", "\xE0\x9F\xBF", "\xED\xA0\x80",
+        "\xED\xBF\xBF", "\xF0\x80\x80\x80", "\xF0\x8F\xBF\xBF",
+        "\xF4\x90\x80\x80", "\xF5\x80\x80\x80", "\xF7\xBF\xBF\xBF", "\xF8",
+        "\x80", "\xE0\xA0"})
+    CHECK_FALSE(valid(bad));
+
+  char32_t cp = 0;
+  usize read = 0;
+  CHECK_FALSE(nx::utf8::decode_char("\xED\xA0\x80", 3, cp, read));
+  CHECK(cp == U'\uFFFD');
+  CHECK(read == 1);
+  CHECK_FALSE(nx::string("\xC0\x80").is_valid_utf8());
+}
+
+TEST_CASE("utf8: UTF-16 and UTF-32 output never holds a surrogate") {
+  const nx::string encoded_surrogate("a\xED\xA0\x80z");
+  const std::u16string wide = encoded_surrogate.u16string();
+  for (const char16_t unit : wide)
+    CHECK_FALSE(nx::utf8::is_surrogate(unit));
+  CHECK(wide.front() == u'a');
+  CHECK(wide.back() == u'z');
+  for (const char32_t c : nx::string("\xF4\x90\x80\x80").u32string())
+    CHECK(nx::utf8::is_valid_codepoint(c));
 }

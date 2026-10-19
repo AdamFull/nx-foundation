@@ -182,6 +182,9 @@ public:
 
   [[nodiscard]] const value &operator[](string_view key) const noexcept;
 
+  /// The member @p key, added as null when missing. A value that is not an
+  /// object becomes an empty one first, as null does; push_back, emplace_back
+  /// and insert treat a non-array or non-object the same way.
   [[nodiscard]] value &operator[](string_view key);
 
   [[nodiscard]] bool contains(string_view key) const noexcept;
