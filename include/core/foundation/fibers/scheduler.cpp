@@ -53,7 +53,7 @@ struct Fiber {
   Stack stack;
   SchedulerState *owner = nullptr;
   Fiber *next_parked = nullptr;
-  void *local = nullptr;
+  void *local[nx::cast<usize>(LocalSlot::Count)] = {};
 #if NX_PROFILE_ENABLED
   const char *profile_name = nullptr;
 #endif
@@ -509,9 +509,13 @@ void SchedulerState::push_fiber_work(Fiber *fiber) noexcept {
   NX_ASSERT(fiber->affinity != Affinity::Main,
             "the main thread runs no fibers");
   // Behind everything already queued, or a yield loop would starve the work
-  // it is waiting for.
-  while (!global[nx::cast<usize>(fiber->priority)].try_push(work))
-    detail::cpu_relax();
+  // it is waiting for. A full lane may have no other worker to drain it, so
+  // the fiber goes to the ready queue, which holds every fiber, rather than
+  // spinning here.
+  if (!global[nx::cast<usize>(fiber->priority)].try_push(work)) {
+    make_ready(fiber);
+    return;
+  }
   wake_workers(1);
 }
 
@@ -676,7 +680,8 @@ void SchedulerState::loop(Fiber *self) noexcept {
     }
     self->priority = work.priority;
     self->affinity = work.affinity;
-    self->local = nullptr;
+    for (void *&slot : self->local)
+      slot = nullptr;
     execute(work);
   }
 }
@@ -904,7 +909,10 @@ void SchedulerState::assert_may_suspend() const noexcept {
 internal::WaitResult
 SchedulerState::block(Worker *worker, spin_lock *lock, internal::WaitList *list,
                       const clock::time_point deadline) noexcept {
+  // The lock handed over is released once this fiber has switched out.
+  nx::detail::note_os_lock(lock ? -1 : 0);
   assert_may_suspend();
+  nx::detail::note_os_lock(lock ? 1 : 0);
   if (worker->role == Role::Main)
     return block_on_main(worker, lock, list, deadline);
   Fiber *self = worker->current;
@@ -1262,17 +1270,20 @@ void Scheduler::pump_main(const std::chrono::nanoseconds budget) {
 }
 
 namespace {
-thread_local void *t_local = nullptr;
+thread_local void *t_local[nx::cast<usize>(LocalSlot::Count)] = {};
 
-NX_NO_INLINE void **local_slot() noexcept {
+NX_NO_INLINE void **local_slot(const LocalSlot slot) noexcept {
+  const auto index = nx::cast<usize>(slot);
   Worker *worker = current_worker();
-  return worker ? &worker->current->local : &t_local;
+  return worker ? &worker->current->local[index] : &t_local[index];
 }
 } // namespace
 
-void *fiber_local() noexcept { return *local_slot(); }
+void *fiber_local(const LocalSlot slot) noexcept { return *local_slot(slot); }
 
-void set_fiber_local(void *value) noexcept { *local_slot() = value; }
+void set_fiber_local(void *value, const LocalSlot slot) noexcept {
+  *local_slot(slot) = value;
+}
 
 bool in_fiber() noexcept {
   const Worker *const worker = current_worker();

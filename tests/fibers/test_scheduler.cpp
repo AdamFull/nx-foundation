@@ -677,3 +677,68 @@ TEST_CASE("fiber scheduler: run_blocking runs in place without a service "
   scheduler.wait(counter);
   CHECK(during == before);
 }
+
+TEST_CASE("fiber scheduler: a yield with its lane full does not spin forever") {
+  Scheduler scheduler({.worker_count = 1});
+  std::atomic<u32> ran{0};
+  struct Flooder {
+    Scheduler *scheduler;
+    std::atomic<u32> *ran;
+    Job leaf;
+    bool yielded = false;
+  } flooder{&scheduler, &ran, {}};
+  flooder.leaf =
+      Job{[](void *arg) { static_cast<Flooder *>(arg)->ran->fetch_add(1); },
+          &flooder};
+  // The worker's own queue, then its lane of the global queue, then a few
+  // more that run in place: the lane is full when the root yields.
+  constexpr u32 JOBS = 256 + 4096 + 16;
+  const Job root{[](void *arg) {
+                   auto &f = *static_cast<Flooder *>(arg);
+                   const std::vector<Job> jobs(JOBS, f.leaf);
+                   Counter inner;
+                   f.scheduler->run(jobs, &inner);
+                   f.scheduler->yield();
+                   f.yielded = true;
+                   f.scheduler->wait(inner);
+                 },
+                 &flooder};
+  Counter done;
+  scheduler.run({&root, 1}, &done);
+  scheduler.wait(done);
+  CHECK(flooder.yielded);
+  CHECK(ran.load() == JOBS);
+}
+
+TEST_CASE("fiber scheduler: the pool's fiber_local slot is apart from the "
+          "caller's") {
+  Scheduler scheduler({.worker_count = 2});
+  struct Seen {
+    void *user_at_start = reinterpret_cast<void *>(1);
+    void *pool_after = nullptr;
+    void *user_after = nullptr;
+  } seen;
+  const Job job{
+      [](void *arg) {
+        auto &s = *static_cast<Seen *>(arg);
+        s.user_at_start = nx::fiber::fiber_local();
+        u32 pool_marker = 0;
+        u32 user_marker = 0;
+        nx::fiber::set_fiber_local(&pool_marker, nx::fiber::LocalSlot::Pool);
+        nx::fiber::set_fiber_local(&user_marker);
+        s.pool_after =
+            nx::fiber::fiber_local(nx::fiber::LocalSlot::Pool) == &pool_marker
+                ? &pool_marker
+                : nullptr;
+        s.user_after =
+            nx::fiber::fiber_local() == &user_marker ? &user_marker : nullptr;
+        nx::fiber::set_fiber_local(nullptr, nx::fiber::LocalSlot::Pool);
+      },
+      &seen};
+  Counter done;
+  scheduler.run({&job, 1}, &done);
+  scheduler.wait(done);
+  CHECK(seen.user_at_start == nullptr);
+  CHECK(seen.pool_after != nullptr);
+  CHECK(seen.user_after != nullptr);
+}

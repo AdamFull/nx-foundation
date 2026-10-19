@@ -52,11 +52,15 @@ private:
 /// blocks.
 void wait(Counter &counter, u32 target = 0) noexcept;
 
+/// Which of the running fiber's pointers: User is the caller's own, and Pool
+/// belongs to nx::thread_pool, so a task's own value cannot displace it.
+enum class LocalSlot : u8 { User, Pool, Count };
+
 /// A pointer that belongs to the running fiber and follows it across threads,
 /// for what a thread_local cannot hold. Cleared when a fiber starts a job; on
 /// a thread no scheduler owns it is per thread.
-[[nodiscard]] void *fiber_local() noexcept;
-void set_fiber_local(void *value) noexcept;
+[[nodiscard]] void *fiber_local(LocalSlot slot = LocalSlot::User) noexcept;
+void set_fiber_local(void *value, LocalSlot slot = LocalSlot::User) noexcept;
 
 /// Whether the caller runs on a pooled fiber's stack rather than its thread's.
 [[nodiscard]] bool in_fiber() noexcept;
@@ -67,8 +71,9 @@ void set_fiber_local(void *value) noexcept;
 /// or on a scheduler without any, fn runs in place. fn must not throw.
 void run_blocking(function_ref<void()> fn) noexcept;
 
-/// False while the caller holds an nx::mutex or nx::rw_lock, is inside
-/// scoped_no_alloc or a no_suspend_scope; suspending a fiber then asserts.
+/// False while the caller holds an nx::mutex, nx::rw_lock or nx::spin_lock, is
+/// inside scoped_no_alloc or a no_suspend_scope; suspending a fiber then
+/// asserts.
 /// Always true in release builds.
 [[nodiscard]] bool may_suspend() noexcept;
 

@@ -355,6 +355,19 @@ TEST_CASE("fiber sync: may_suspend reports OS locks and no_suspend scopes") {
     CHECK_FALSE(nx::fiber::may_suspend());
 #endif
   }
+  nx::spin_lock spin;
+  spin.lock();
+#if NX_DEBUG
+  CHECK_FALSE(nx::fiber::may_suspend());
+#endif
+  spin.unlock();
+  CHECK(nx::fiber::may_suspend());
+  REQUIRE(spin.try_lock());
+#if NX_DEBUG
+  CHECK_FALSE(nx::fiber::may_suspend());
+#endif
+  spin.unlock();
+  CHECK(nx::fiber::may_suspend());
   nx::fiber::mutex fiber_lock;
   {
     nx::scoped_lock guard(fiber_lock);

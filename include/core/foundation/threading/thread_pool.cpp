@@ -148,7 +148,8 @@ bool thread_pool::is_worker_thread() const noexcept {
 }
 
 bool thread_pool::is_execution_context() const noexcept {
-  const auto *node = static_cast<const task_node *>(fiber::fiber_local());
+  const auto *node = static_cast<const task_node *>(
+      fiber::fiber_local(fiber::LocalSlot::Pool));
   return node && node->pool == this;
 }
 
@@ -281,7 +282,8 @@ void thread_pool::enqueue(detail::pool_task &&t) {
   }
   // Background work nested in background work skips the limit: the outer task
   // holds a slot while it waits on the inner one.
-  const auto *current = static_cast<const task_node *>(fiber::fiber_local());
+  const auto *current = static_cast<const task_node *>(
+      fiber::fiber_local(fiber::LocalSlot::Pool));
   if (current && current->pool == this &&
       current->task.priority == task_priority::Background) {
     dispatch(node);
@@ -388,8 +390,8 @@ void thread_pool::run_node(void *arg) noexcept {
   thread_pool &pool = *node->pool;
   detail::pool_task &t = node->task;
 
-  void *const outer = fiber::fiber_local();
-  fiber::set_fiber_local(node);
+  void *const outer = fiber::fiber_local(fiber::LocalSlot::Pool);
+  fiber::set_fiber_local(node, fiber::LocalSlot::Pool);
   pool.record_started(t.priority);
   const u64 started_ns = pool.m_collect_timings ? os::ticks_ns() : 0;
   if (t.fn) {
@@ -423,7 +425,7 @@ void thread_pool::run_node(void *arg) noexcept {
       pool.m_collect_timings ? os::ticks_ns() - started_ns : 0;
   t.fn = {};
   pool.record_completed(t.priority, execution_ns);
-  fiber::set_fiber_local(outer);
+  fiber::set_fiber_local(outer, fiber::LocalSlot::Pool);
 
   task_group *const group = t.group;
   const bool held_slot = t.holds_background_slot;

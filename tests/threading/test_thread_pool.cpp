@@ -1324,3 +1324,28 @@ TEST_CASE("parallel_region: a participant that throws does not strand the "
       std::logic_error);
   CHECK(finished.load() == expected - 2);
 }
+
+TEST_CASE(
+    "thread_pool: a task's own fiber_local does not displace its pool's") {
+  nx::thread_pool::config cfg = small_config();
+  cfg.max_background_concurrency = 1;
+  nx::thread_pool pool(cfg);
+  std::atomic<bool> started_clean{false};
+  std::atomic<bool> inner_ran{false};
+  nx::task_group outer;
+  pool.submit(outer, nx::task_priority::Background, [&] {
+    started_clean = nx::fiber::fiber_local() == nullptr;
+    u32 marker = 0;
+    nx::fiber::set_fiber_local(&marker);
+    // Nested background work skips the limit only if the pool still finds
+    // its own task in its slot; otherwise this waits on itself.
+    nx::task_group inner;
+    pool.submit(inner, nx::task_priority::Background,
+                [&] { inner_ran = true; });
+    inner.wait();
+    nx::fiber::set_fiber_local(nullptr);
+  });
+  outer.wait();
+  CHECK(started_clean.load());
+  CHECK(inner_ran.load());
+}

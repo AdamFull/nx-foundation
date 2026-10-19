@@ -91,18 +91,26 @@ public:
 
   void lock() noexcept {
     for (;;) {
-      if (!m_locked.exchange(1, std::memory_order_acquire))
+      if (!m_locked.exchange(1, std::memory_order_acquire)) {
+        detail::note_os_lock(1);
         return;
+      }
       while (m_locked.load(std::memory_order_relaxed))
         detail::cpu_relax();
     }
   }
 
   [[nodiscard]] bool try_lock() noexcept {
-    return !m_locked.exchange(1, std::memory_order_acquire);
+    if (m_locked.exchange(1, std::memory_order_acquire))
+      return false;
+    detail::note_os_lock(1);
+    return true;
   }
 
-  void unlock() noexcept { m_locked.store(0, std::memory_order_release); }
+  void unlock() noexcept {
+    detail::note_os_lock(-1);
+    m_locked.store(0, std::memory_order_release);
+  }
 
 private:
   std::atomic<u32> m_locked{0};
