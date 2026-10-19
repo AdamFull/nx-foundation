@@ -17,14 +17,22 @@ concept plain_aggregate =
 
 namespace detail {
 
+// Binds by reference where a field can be copied from one, and builds the
+// field outright where it cannot, so move-only and immovable fields count too.
 struct any_ref {
-  template <class T> constexpr operator T &() const noexcept;
+  template <class T>
+    requires std::is_copy_constructible_v<T>
+  constexpr operator T &() const noexcept;
+  template <class T>
+    requires(!std::is_copy_constructible_v<T>)
+  constexpr operator T() const noexcept;
 };
 
 template <usize> using slot = any_ref;
 
-/// An array cannot be initialised from a reference, so the compiler elides its braces and `i32
-/// slots[4]` reads as four slots - under clang and gcc, at least;
+/// An array cannot be initialised from a reference, so the compiler elides its
+/// braces and `i32 slots[4]` reads as four slots - under clang and gcc, at
+/// least;
 template <class T, class... Probe> consteval usize count_slots() {
   if constexpr (requires { T{Probe{}..., any_ref{}}; })
     return count_slots<T, Probe..., any_ref>();
@@ -838,11 +846,19 @@ namespace detail {
       name.remove_prefix(prefix.size());
   return name;
 #else
-  const usize first = sig.find("[T = ");
-  const usize last = sig.rfind(']');
-  if (first == string_view::npos || last == string_view::npos)
+  // Clang: "...type_signature() [T = X]". GCC: "...type_signature() [with T =
+  // X; nx::string_view = ...]", where the alias list follows a ';'.
+  const usize open = sig.find('[');
+  const usize marker = sig.find("T = ", open);
+  if (open == string_view::npos || marker == string_view::npos)
     return {};
-  return sig.substr(first + 5, last - first - 5);
+  const usize first = marker + 4;
+  usize last = sig.find(';', first);
+  if (last == string_view::npos)
+    last = sig.rfind(']');
+  if (last == string_view::npos || last < first)
+    return {};
+  return sig.substr(first, last - first);
 #endif
 }
 

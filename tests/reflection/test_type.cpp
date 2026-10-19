@@ -1,5 +1,7 @@
 
 #include "framework/nxtest.h"
+#include <atomic>
+#include <memory>
 
 #include "core/foundation/reflection/type.h"
 #include "core/foundation/strings/utf8_string.h"
@@ -198,3 +200,38 @@ TEST_CASE("type: a description can make, copy and unmake an instance") {
   CHECK(made->weight == 1.f);
   t.ops->destroy(storage);
 }
+
+namespace {
+
+struct MoveOnlyFirst {
+  std::unique_ptr<int> owned;
+  int count;
+};
+
+struct ImmovableFirst {
+  std::atomic<int> counter;
+  float scale;
+};
+
+} // namespace
+
+TEST_CASE("reflection: move-only and immovable fields are counted") {
+  static_assert(nx::reflect::field_count<MoveOnlyFirst> == 2);
+  static_assert(nx::reflect::field_count<ImmovableFirst> == 2);
+  static_assert(nx::reflect::field_name<MoveOnlyFirst, 0>() == "owned");
+  static_assert(nx::reflect::field_name<MoveOnlyFirst, 1>() == "count");
+  CHECK(true);
+}
+
+#if !(defined(_MSC_VER) && !defined(__clang__))
+TEST_CASE("reflection: type names parse from GCC and Clang signatures") {
+  using nx::reflect::detail::type_name_from;
+  static_assert(
+      type_name_from("auto f() [with T = game::Thing; "
+                     "nx::string_view = std::basic_string_view<char>]") ==
+      "game::Thing");
+  static_assert(type_name_from("auto f() [T = game::Thing]") == "game::Thing");
+  static_assert(type_name_from("auto f() [T = int[3]]") == "int[3]");
+  CHECK(true);
+}
+#endif

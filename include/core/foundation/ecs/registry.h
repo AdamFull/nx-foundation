@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstring>
 #include <tuple>
 #include <type_traits>
@@ -196,20 +197,36 @@ public:
     return m_set.contains(e);
   }
 
+  // A destroy callback may remove or destroy the entity it is told about; the
+  // nested call finds it already being removed and leaves it to this one.
   bool remove(registry_type &reg, Entity e) override {
-    if (!m_set.contains(e))
+    if (!m_set.contains(e) ||
+        std::find(m_removing.begin(), m_removing.end(), e) != m_removing.end())
       return false;
-    if (!m_on_destroy.empty())
-      m_on_destroy.fire(reg, e);
-    return m_set.erase(e);
+    if (!m_on_destroy.empty()) {
+      m_removing.push_back(e);
+      try {
+        m_on_destroy.fire(reg, e);
+      } catch (...) {
+        m_removing.pop_back();
+        throw;
+      }
+      m_removing.pop_back();
+    }
+    if (!m_set.erase(e))
+      return false;
+    reg.bump_generation(component_id_of<T>());
+    return true;
   }
 
   void clear(registry_type &reg) override {
     if (!m_on_destroy.empty()) {
-      for (Entity e : m_set.entities())
-        m_on_destroy.fire(reg, e);
+      for (usize i = m_set.size(); i-- > 0;)
+        if (i < m_set.size())
+          m_on_destroy.fire(reg, m_set.entities()[i]);
     }
     m_set.clear();
+    reg.bump_generation(component_id_of<T>());
   }
 
   void reserve(usize n) override { m_set.reserve(n); }
@@ -253,16 +270,18 @@ public:
     } else {
       if (m_set.contains(e))
         return element(e);
-      T &ref = m_set.emplace(e);
+      m_set.emplace(e);
+      reg.bump_generation(component_id_of<T>());
       if (!m_on_construct.empty())
         m_on_construct.fire(reg, e);
+      T *const ref = m_set.try_get(e);
       // An empty type has a slot and no bytes; null is the honest answer and
       // means "there is nothing to write", not "it is not there".
       if constexpr (std::is_empty_v<T>) {
         (void)ref;
         return nullptr;
       } else {
-        return &ref;
+        return ref;
       }
     }
   }
@@ -283,10 +302,11 @@ public:
 
 private:
   set_type m_set;
+  small_vector<Entity, 2> m_removing;
   NX_NO_UNIQUE_ADDRESS self_alloc m_alloc;
 };
 
-}
+} // namespace detail
 
 namespace detail {
 
@@ -568,6 +588,8 @@ public:
     resolve_children_on_destroy(e, policy);
     detach_from_parent(e);
     remove_all_components(e);
+    if (!alive(e))
+      return;
     if (m_hierarchy.contains(e))
       m_hierarchy.erase(e);
 
@@ -810,11 +832,7 @@ public:
     auto *store = raw_storage<T>();
     if (!store)
       return false;
-    if (store->remove(*this, e)) {
-      bump_generation(detail::component_id_of<T>());
-      return true;
-    }
-    return false;
+    return store->remove(*this, e);
   }
 
   template <typename C> void erase(Entity e) {
@@ -831,7 +849,6 @@ public:
     if (!store)
       return;
     store->clear(*this);
-    bump_generation(detail::component_id_of<T>());
   }
 
   template <typename C> [[nodiscard]] size_type count() const noexcept {
@@ -1062,6 +1079,8 @@ public:
 
 private:
   template <typename Reg, typename... T> friend class basic_view;
+  template <typename, typename, typename>
+  friend class detail::component_storage;
 
   template <typename C>
   [[nodiscard]] detail::component_storage<std::remove_cv_t<C>, Entity, Alloc> *
@@ -1124,10 +1143,8 @@ private:
   void remove_all_components(Entity e) {
     for (usize id = 0; id < m_storages.size(); ++id) {
       base_storage *s = m_storages[id];
-      if (s && s->contains(e)) {
+      if (s && s->contains(e))
         s->remove(*this, e);
-        ++m_generations[id];
-      }
     }
   }
 

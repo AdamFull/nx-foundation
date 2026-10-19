@@ -1600,3 +1600,47 @@ TEST_CASE("ecs: a simulation-style workload keeps every invariant") {
   CHECK(remaining == static_cast<usize>(n / 2));
   CHECK(q.size() == 0);
 }
+
+TEST_CASE("ecs: a cached query sees type-erased adds and removes") {
+  fixture f;
+  auto q = f.reg.query<Position>();
+  const entity_t a = f.reg.create();
+  CHECK(q.size() == 0);
+
+  auto *const storage =
+      static_cast<ecs::detail::storage_base<entity_t, reg_t::allocator_type> *>(
+          f.reg.component_metadata_of<Position>().storage);
+  REQUIRE(storage != nullptr);
+  REQUIRE(storage->emplace_default(f.reg, a) != nullptr);
+  CHECK(q.size() == 1);
+  CHECK(storage->remove(f.reg, a));
+  CHECK(q.size() == 0);
+}
+
+TEST_CASE("ecs: an on_destroy callback may destroy its own entity") {
+  fixture f;
+  int fired = 0;
+  f.reg.on_destroy<Position>([&](reg_t &r, entity_t e) {
+    ++fired;
+    r.destroy(e);
+  });
+  const entity_t a = f.reg.create();
+  f.reg.emplace<Position>(a, Position{});
+  f.reg.emplace<Velocity>(a, Velocity{});
+  f.reg.remove<Position>(a);
+  CHECK(fired == 1);
+  CHECK_FALSE(f.reg.alive(a));
+
+  const entity_t b = f.reg.create();
+  f.reg.emplace<Position>(b, Position{});
+  f.reg.destroy(b);
+  CHECK(fired == 2);
+  CHECK_FALSE(f.reg.alive(b));
+  CHECK(f.reg.size() == 0);
+
+  const entity_t c = f.reg.create();
+  const entity_t d = f.reg.create();
+  CHECK(c != d);
+  CHECK(f.reg.alive(c));
+  CHECK(f.reg.alive(d));
+}
