@@ -124,7 +124,12 @@ public:
       : m_alloc(
             alloc_traits::select_on_container_copy_construction(other.m_alloc)),
         m_salloc(m_alloc), m_pages(page_ptr_alloc(m_alloc)) {
-    copy_from(other);
+    try {
+      copy_from(other);
+    } catch (...) {
+      destroy_all();
+      throw;
+    }
   }
 
   stable_pool(stable_pool &&other) noexcept
@@ -371,15 +376,26 @@ private:
     m_capacity = 0;
   }
 
+  // A slot turns occupied only once its copy exists, so a throwing copy
+  // leaves a pool that holds what was copied before it.
   void copy_from(const stable_pool &other) {
     reserve(other.m_capacity);
-    for (usize idx = 0; idx < other.m_capacity; ++idx) {
-      const slot &src = other.slot_at(idx);
-      slot &dst = slot_at(idx);
-      dst.version = src.version;
-      dst.st = src.st;
-      if (src.st == state::occupied)
-        ::new (static_cast<void *>(dst.storage)) T(*other.value_ptr(idx));
+    usize copied = 0;
+    try {
+      for (usize idx = 0; idx < other.m_capacity; ++idx) {
+        const slot &src = other.slot_at(idx);
+        slot &dst = slot_at(idx);
+        dst.version = src.version;
+        if (src.st == state::occupied) {
+          ::new (static_cast<void *>(dst.storage)) T(*other.value_ptr(idx));
+          ++copied;
+        }
+        dst.st = src.st;
+      }
+    } catch (...) {
+      rebuild_free_list();
+      m_size = copied;
+      throw;
     }
     rebuild_free_list();
     m_size = other.m_size;

@@ -571,3 +571,60 @@ TEST_CASE("stable_pool: survives a long insert/erase workload") {
   p.clear();
   CHECK(g_live == 0);
 }
+
+namespace {
+
+// Throws from the copy or move that brings the shared countdown to zero.
+struct Brittle {
+  static inline int countdown = -1;
+  static inline int alive = 0;
+  int value = 0;
+
+  explicit Brittle(const int v) : value(v) { ++alive; }
+  Brittle(const Brittle &o) : value(o.value) {
+    tick();
+    ++alive;
+  }
+  Brittle(Brittle &&o) : value(o.value) {
+    tick();
+    ++alive;
+  }
+  Brittle &operator=(const Brittle &) = default;
+  Brittle &operator=(Brittle &&) = default;
+  ~Brittle() { --alive; }
+
+  static void tick() {
+    if (countdown > 0 && --countdown == 0)
+      throw std::runtime_error("brittle");
+  }
+};
+
+} // namespace
+
+TEST_CASE(
+    "stable_pool: a throwing copy leaves a valid pool and leaks nothing") {
+  Brittle::alive = 0;
+  {
+    nx::stable_pool<Brittle> source;
+    for (int i = 0; i < 5; ++i)
+      (void)source.emplace(i);
+    Brittle::countdown = 3;
+    CHECK_THROWS_AS((nx::stable_pool<Brittle>(source)), std::runtime_error);
+    Brittle::countdown = -1;
+    CHECK(Brittle::alive == 5);
+
+    nx::stable_pool<Brittle> target;
+    (void)target.emplace(42);
+    Brittle::countdown = 2;
+    CHECK_THROWS_AS(target = source, std::runtime_error);
+    Brittle::countdown = -1;
+    usize seen = 0;
+    for (const Brittle &b : target) {
+      (void)b;
+      ++seen;
+    }
+    CHECK(seen == target.size());
+    CHECK(Brittle::alive == 5 + nx::cast<int>(target.size()));
+  }
+  CHECK(Brittle::alive == 0);
+}

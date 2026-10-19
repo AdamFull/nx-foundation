@@ -65,22 +65,18 @@ public:
 private:
   template <typename K, typename... Args>
   std::pair<iterator, bool> try_emplace_impl(K &&k, Args &&...args) {
-    auto [idx, inserted] = this->find_or_prepare_insert(k);
-    if (inserted)
-      this->construct(this->slot_at(idx), std::piecewise_construct,
-                      std::forward_as_tuple(std::forward<K>(k)),
-                      std::forward_as_tuple(std::forward<Args>(args)...));
+    const auto [idx, inserted] = this->find_or_emplace(
+        k, std::piecewise_construct, std::forward_as_tuple(std::forward<K>(k)),
+        std::forward_as_tuple(std::forward<Args>(args)...));
     return {this->iterator_at(idx), inserted};
   }
 
   template <typename K, typename M>
   std::pair<iterator, bool> insert_or_assign_impl(K &&k, M &&obj) {
-    auto [idx, inserted] = this->find_or_prepare_insert(k);
-    if (inserted)
-      this->construct(this->slot_at(idx), std::piecewise_construct,
-                      std::forward_as_tuple(std::forward<K>(k)),
-                      std::forward_as_tuple(std::forward<M>(obj)));
-    else
+    const auto [idx, inserted] = this->find_or_emplace(
+        k, std::piecewise_construct, std::forward_as_tuple(std::forward<K>(k)),
+        std::forward_as_tuple(std::forward<M>(obj)));
+    if (!inserted)
       policy::element(*this->slot_at(idx)).second = std::forward<M>(obj);
     return {this->iterator_at(idx), inserted};
   }

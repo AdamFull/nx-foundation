@@ -682,3 +682,26 @@ TEST_CASE("sparse_set: mirrors a reference map under a long mixed workload") {
     CHECK(s.values()[i] == it->second);
   }
 }
+
+TEST_CASE("sparse_set: a newer version of an index replaces the stored one") {
+  set_t s;
+  s.emplace(h(1, 0), 10);
+  s.emplace(h(2, 0), 20);
+  auto [ref, inserted] = s.insert(h(1, 1), 77);
+  CHECK(inserted);
+  CHECK(ref == 77);
+  CHECK(s.size() == 2);
+  CHECK(s.contains(h(1, 1)));
+  CHECK_FALSE(s.contains(h(1, 0)));
+  CHECK_FALSE(s.erase(h(1, 0)));
+  int sum = 0;
+  for (const int v : s.values())
+    sum += v;
+  CHECK(sum == 97);
+
+  bare_t keys;
+  CHECK(keys.insert(h(5, 0)));
+  CHECK(keys.insert(h(5, 3)));
+  CHECK(keys.size() == 1);
+  CHECK(keys.contains(h(5, 3)));
+}

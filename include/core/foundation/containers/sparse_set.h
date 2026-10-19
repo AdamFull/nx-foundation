@@ -125,12 +125,15 @@ public:
     return m_dense[dense_index];
   }
 
+  /// The index is the key: a handle with another version of a stored index
+  /// supersedes the stored one, which is erased first.
   template <typename... Args>
   reference emplace(Handle h, Args &&...args)
     requires has_value
   {
     assert(h.valid() && "sparse_set::emplace: null handle");
     assert(!contains(h) && "sparse_set::emplace: handle already present");
+    drop_other_version(h);
     const repr pos = nx::cast<repr>(m_dense.size());
     m_dense.push_back(h);
     try {
@@ -186,6 +189,7 @@ public:
     assert(h.valid() && "sparse_set::insert: null handle");
     if (contains(h))
       return false;
+    drop_other_version(h);
     const repr pos = nx::cast<repr>(m_dense.size());
     m_dense.push_back(h);
     try {
@@ -440,6 +444,11 @@ private:
       return m_values.data();
     else
       return m_dense.data();
+  }
+
+  void drop_other_version(const Handle h) {
+    if (const repr pos = sparse_lookup(h.index()); pos != sentinel)
+      erase(m_dense[pos]);
   }
 
   [[nodiscard]] repr sparse_lookup(repr index) const noexcept {

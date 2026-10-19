@@ -832,3 +832,100 @@ TEST_CASE("hash_map: mirrors std::unordered_map under a long mixed workload") {
   }
   CHECK(seen == model.size());
 }
+
+namespace {
+
+// Throws from the copy or move that brings the shared countdown to zero.
+struct Brittle {
+  static inline int countdown = -1;
+  static inline int alive = 0;
+  int value = 0;
+
+  explicit Brittle(const int v) : value(v) { ++alive; }
+  Brittle(const Brittle &o) : value(o.value) {
+    tick();
+    ++alive;
+  }
+  Brittle(Brittle &&o) : value(o.value) {
+    tick();
+    ++alive;
+  }
+  Brittle &operator=(const Brittle &) = default;
+  Brittle &operator=(Brittle &&) = default;
+  ~Brittle() { --alive; }
+
+  static void tick() {
+    if (countdown > 0 && --countdown == 0)
+      throw std::runtime_error("brittle");
+  }
+};
+
+} // namespace
+
+TEST_CASE("hash_map: try_emplace may copy another element while growing") {
+  nx::hash_map<int, std::string> m;
+  m.try_emplace(0, "a value long enough to live outside the small buffer");
+  for (int k = 1; k < 300; ++k) {
+    m.try_emplace(k, m.at(0));
+    m.insert_or_assign(k + 1000, m.at(k / 2));
+  }
+  for (int k = 1; k < 300; ++k) {
+    CHECK(m.at(k) == m.at(0));
+    CHECK(m.at(k + 1000) == m.at(0));
+  }
+}
+
+TEST_CASE("hash_map: a throwing insert leaves no half-built entry") {
+  Brittle::alive = 0;
+  {
+    nx::hash_map<int, Brittle> m;
+    for (int k = 0; k < 4; ++k)
+      m.try_emplace(k, k);
+    const std::pair<const int, Brittle> entry{7, Brittle(99)};
+    Brittle::countdown = 1;
+    CHECK_THROWS_AS(m.insert(entry), std::runtime_error);
+    Brittle::countdown = -1;
+    CHECK(m.size() == 4);
+    CHECK_FALSE(m.contains(7));
+    usize seen = 0;
+    for (const auto &entry : m) {
+      CHECK(entry.second.value == entry.first);
+      ++seen;
+    }
+    CHECK(seen == 4);
+    CHECK(Brittle::alive == 5);
+    m.try_emplace(7, 7);
+    CHECK(m.at(7).value == 7);
+  }
+  CHECK(Brittle::alive == 0);
+}
+
+TEST_CASE("hash_map: a move that throws while growing keeps a valid table") {
+  Brittle::alive = 0;
+  {
+    nx::hash_map<int, Brittle> m;
+    int k = 0;
+    for (; k < 7; ++k)
+      m.try_emplace(k, k);
+    Brittle::countdown = 4;
+    bool threw = false;
+    for (; k < 200 && !threw; ++k) {
+      try {
+        m.try_emplace(k, k);
+      } catch (const std::runtime_error &) {
+        threw = true;
+      }
+    }
+    Brittle::countdown = -1;
+    REQUIRE(threw);
+    usize seen = 0;
+    for (const auto &entry : m) {
+      CHECK(entry.second.value == entry.first);
+      CHECK(m.find(entry.first) != m.end());
+      ++seen;
+    }
+    CHECK(seen == m.size());
+    CHECK(Brittle::alive == nx::cast<int>(m.size()));
+  }
+  CHECK(Brittle::alive == 0);
+}

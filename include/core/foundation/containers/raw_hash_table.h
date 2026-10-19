@@ -175,7 +175,7 @@ struct group {
   u32 count_leading_empty_or_deleted() const noexcept {
     constexpr u64 gaps = 0x00FEFEFEFEFEFEFEull;
     return (static_cast<u32>(
-                std::countr_zero((ctrl | ~(ctrl >> 7)) & MSBS & gaps)) +
+                std::countr_zero(((~ctrl & (ctrl >> 7)) | gaps) + 1)) +
             7) >>
            3;
   }
@@ -329,24 +329,24 @@ public:
   template <typename It>
   raw_hash_table(It first, It last, const Alloc &alloc = Alloc())
       : m_alloc(alloc) {
-    insert(first, last);
+    guarded([&] { insert(first, last); });
   }
 
   raw_hash_table(std::initializer_list<value_type> il,
                  const Alloc &alloc = Alloc())
       : m_alloc(alloc) {
-    insert(il.begin(), il.end());
+    guarded([&] { insert(il.begin(), il.end()); });
   }
 
   raw_hash_table(const raw_hash_table &o)
       : m_alloc(alloc_traits::select_on_container_copy_construction(o.m_alloc)),
         m_hash_fn(o.m_hash_fn), m_eq(o.m_eq) {
-    copy_elements_from(o);
+    guarded([&] { copy_elements_from(o); });
   }
 
   raw_hash_table(const raw_hash_table &o, const Alloc &alloc)
       : m_alloc(alloc), m_hash_fn(o.m_hash_fn), m_eq(o.m_eq) {
-    copy_elements_from(o);
+    guarded([&] { copy_elements_from(o); });
   }
 
   raw_hash_table(raw_hash_table &&o) noexcept
@@ -367,7 +367,7 @@ public:
     if (m_alloc == o.m_alloc)
       steal_storage_from(o);
     else
-      move_elements_from(o);
+      guarded([&] { move_elements_from(o); });
   }
 
   raw_hash_table &operator=(const raw_hash_table &o) {
@@ -462,13 +462,13 @@ public:
   std::pair<iterator, bool> insert(const value_type &v) {
     auto [idx, inserted] = find_or_prepare_insert(Policy::key_of(v));
     if (inserted)
-      construct(m_slots + idx, v);
+      construct_or_abandon(idx, v);
     return {iterator_at(idx), inserted};
   }
   std::pair<iterator, bool> insert(value_type &&v) {
     auto [idx, inserted] = find_or_prepare_insert(Policy::key_of(v));
     if (inserted)
-      construct(m_slots + idx, std::move(v));
+      construct_or_abandon(idx, std::move(v));
     return {iterator_at(idx), inserted};
   }
   template <typename P,
@@ -498,8 +498,14 @@ public:
     } guard{this, tmp};
 
     auto [idx, inserted] = find_or_prepare_insert(key_of_slot(*tmp));
-    if (inserted)
-      move_construct(m_slots + idx, tmp);
+    if (inserted) {
+      try {
+        move_construct(m_slots + idx, tmp);
+      } catch (...) {
+        erase_meta_only(idx);
+        throw;
+      }
+    }
     return {iterator_at(idx), inserted};
   }
 
@@ -627,7 +633,10 @@ protected:
   usize find_index(const auto &key) const {
     if (m_capacity == 0)
       return NPOS;
-    const usize hash = hash_key(key);
+    return find_index_hashed(key, hash_key(key));
+  }
+
+  usize find_index_hashed(const auto &key, const usize hash) const {
     auto seq = probe(hash);
     const u8 tag = h2(hash);
     while (true) {
@@ -666,6 +675,38 @@ protected:
 
   template <typename... Args> void construct(slot_type *s, Args &&...args) {
     Policy::construct(m_alloc, s, std::forward<Args>(args)...);
+  }
+
+  // A slot prepare_insert claimed is marked full before its element exists;
+  // if constructing it throws, the slot is given back.
+  template <typename... Args>
+  void construct_or_abandon(const usize idx, Args &&...args) {
+    try {
+      construct(m_slots + idx, std::forward<Args>(args)...);
+    } catch (...) {
+      erase_meta_only(idx);
+      throw;
+    }
+  }
+
+  /// Finds @p key, or inserts value_type(args...) whose key equals it. The
+  /// arguments may refer to elements of this table: when the insert would
+  /// grow it, the element is built before anything moves.
+  template <typename K, typename... Args>
+  std::pair<usize, bool> find_or_emplace(const K &key, Args &&...args) {
+    if (m_capacity != 0) {
+      const usize hash = hash_key(key);
+      const usize found = find_index_hashed(key, hash);
+      if (found != NPOS)
+        return {found, false};
+      if (m_growth_left != 0) {
+        const usize idx = prepare_insert(hash);
+        construct_or_abandon(idx, std::forward<Args>(args)...);
+        return {idx, true};
+      }
+    }
+    const iterator it = emplace(std::forward<Args>(args)...).first;
+    return {static_cast<usize>(it.m_ctrl - m_ctrl), true};
   }
 
   [[nodiscard]] slot_type *slot_at(const usize i) noexcept {
@@ -849,6 +890,8 @@ private:
     }
   }
 
+  // A slot is marked full only once its element is moved in. If a move throws,
+  // the table keeps what it moved, the rest is destroyed, and nothing leaks.
   void resize(const usize new_capacity) {
     ctrl_t *old_ctrl = m_ctrl;
     slot_type *old_slots = m_slots;
@@ -856,18 +899,40 @@ private:
     const bool had_alloc = old_capacity != 0;
 
     initialize(new_capacity);
+    if (!had_alloc)
+      return;
 
-    if (had_alloc) {
-      for (usize i = 0; i != old_capacity; ++i) {
-        if (ctrl_is_full(old_ctrl[i])) {
-          const usize hash = hash_key(key_of_slot(old_slots[i]));
-          const FindInfo t = find_first_non_full(hash);
-          set_ctrl(t.offset, static_cast<ctrl_t>(h2(hash)));
-          move_construct(m_slots + t.offset, old_slots + i);
-          destroy(old_slots + i);
-        }
+    usize i = 0;
+    usize moved = 0;
+    try {
+      for (; i != old_capacity; ++i) {
+        if (!ctrl_is_full(old_ctrl[i]))
+          continue;
+        const usize hash = hash_key(key_of_slot(old_slots[i]));
+        const FindInfo t = find_first_non_full(hash);
+        move_construct(m_slots + t.offset, old_slots + i);
+        set_ctrl(t.offset, static_cast<ctrl_t>(h2(hash)));
+        ++moved;
+        destroy(old_slots + i);
       }
+    } catch (...) {
+      for (; i != old_capacity; ++i)
+        if (ctrl_is_full(old_ctrl[i]))
+          destroy(old_slots + i);
       deallocate_storage(old_ctrl, old_slots, old_capacity);
+      m_size = moved;
+      m_growth_left = capacity_to_growth(m_capacity) - moved;
+      throw;
+    }
+    deallocate_storage(old_ctrl, old_slots, old_capacity);
+  }
+
+  template <typename F> void guarded(F &&build) {
+    try {
+      build();
+    } catch (...) {
+      destroy_and_free();
+      throw;
     }
   }
 
@@ -894,7 +959,7 @@ private:
     for (const value_type &v : o) {
       auto [idx, inserted] = find_or_prepare_insert(Policy::key_of(v));
       (void)inserted;
-      construct(m_slots + idx, v);
+      construct_or_abandon(idx, v);
     }
   }
 
@@ -920,8 +985,15 @@ private:
         slot_type *src = o.m_slots + i;
         auto [idx, inserted] = find_or_prepare_insert(key_of_slot(*src));
         (void)inserted;
-        move_construct(m_slots + idx, src);
+        try {
+          move_construct(m_slots + idx, src);
+        } catch (...) {
+          erase_meta_only(idx);
+          throw;
+        }
         o.destroy(src);
+        o.set_ctrl(i, ctrl_t::deleted);
+        --o.m_size;
       }
     }
     o.reset_ctrl();
