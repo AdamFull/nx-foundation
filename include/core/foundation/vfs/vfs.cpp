@@ -269,12 +269,13 @@ bool exists(const path_view vpath) { return stat(vpath).exists; }
 
 std::optional<nx::string> resolve_beside(const nx::string_view file,
                                          const nx::string_view reference) {
-  if (reference.empty() || reference.front() == '/')
+  if (reference.empty() || nx::fs::path::is_separator(reference.front()))
     return nx::string(reference);
   for (nx::string_view rest = reference;;) {
-    const usize slash = rest.find('/');
+    const usize slash = rest.find_first_of("/\\");
     const nx::string_view part = rest.substr(0, slash);
-    if (part.empty() || part == "." || part == "..")
+    if (part.empty() || part == "." || part == ".." ||
+        !detail::valid_vsegment(part))
       return std::nullopt;
     if (slash == nx::string_view::npos)
       break;

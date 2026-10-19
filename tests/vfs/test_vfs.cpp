@@ -1,6 +1,7 @@
 
 #include "framework/nxtest.h"
 
+#include "core/foundation/vfs/vfs_internal.h"
 #include "vfs_fixture.h"
 
 #include "core/foundation/platform/filesystem.h"
@@ -382,4 +383,56 @@ TEST_CASE("vfs resolves a path a file names beside that file") {
     CHECK_FALSE(vfs::resolve_beside("/her/doll.nxpdoll", bad).has_value());
     CHECK_FALSE(vfs::resolve_beside("", bad).has_value());
   }
+}
+
+TEST_CASE("vfs canonical paths refuse what could leave a mount") {
+  using nx::vfs::detail::canon_vpath;
+  CHECK(canon_vpath("") == nx::string_view("/"));
+  CHECK(canon_vpath("a\\b/./c//") == nx::string_view("/a/b/c"));
+  CHECK(canon_vpath("/a/../b") == nx::string_view("/b"));
+  for (const nx::string_view bad :
+       {"..", "/../a", "a\\..\\..\\b", "/C:/Windows/win.ini", "C:\\x",
+        "/a.txt:hidden", "/a/b:c/d"})
+    CHECK(canon_vpath(bad).empty());
+}
+
+TEST_CASE("vfs a host mount cannot be left through a drive or a parent") {
+  temp_dir jail("jail");
+  temp_dir outside("outside");
+  REQUIRE(nx::fs::file_write_text(outside.file("secret.txt"), "secret")
+              .has_value());
+  scoped_vfs guard;
+  vfs::Device *const host = vfs::make_host_device(jail.str());
+  vfs::mount("/", host, 0);
+
+  const nx::string secret = outside.file("secret.txt");
+  const nx::string through_root = nx::string("/") + secret.view();
+  CHECK_FALSE(vfs::read(through_root).has_value());
+  CHECK_FALSE(vfs::exists(through_root));
+  CHECK_FALSE(host->read(secret).has_value());
+  CHECK_FALSE(host->stat(secret).exists);
+
+  const nx::string planted_path = outside.file("planted.txt");
+  CHECK_FALSE(vfs::write(nx::string("/") + planted_path.view(), bytes_of("x"))
+                  .has_value());
+  CHECK_FALSE(host->write(planted_path, bytes_of("x")).has_value());
+  CHECK_FALSE(nx::fs::exists(planted_path));
+
+  CHECK_FALSE(vfs::read("/..\\outside\\secret.txt").has_value());
+  CHECK_FALSE(host->read("..\\outside\\secret.txt").has_value());
+  CHECK_FALSE(vfs::write("/notes.txt:hidden", bytes_of("x")).has_value());
+
+  REQUIRE(vfs::write("/inside.txt", bytes_of("in")).has_value());
+  CHECK(read_eq("/inside.txt", "in"));
+}
+
+TEST_CASE("vfs resolve_beside refuses backslashes, drives and streams") {
+  for (const nx::string_view bad :
+       {"..\\..\\x", "parts\\..\\a.png", "parts\\.\\a.png", "C:/x",
+        "a.png:stream"}) {
+    CHECK_FALSE(vfs::resolve_beside("/her/doll.nxpdoll", bad).has_value());
+    CHECK_FALSE(vfs::resolve_beside("", bad).has_value());
+  }
+  CHECK(vfs::resolve_beside("/her/doll.nxpdoll", "\\shared\\a.png") ==
+        "\\shared\\a.png");
 }
