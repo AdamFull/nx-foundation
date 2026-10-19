@@ -626,3 +626,142 @@ TEST_CASE("function: survives being stored and reallocated in a vector") {
   for (int i = 0; i < 100; ++i)
     CHECK(copy[static_cast<usize>(i)](2) == i + 2);
 }
+
+namespace {
+
+int take_unique(nx::unique_function<int(int)> fn) { return fn(1); }
+int take_function(const nx::function<int(int)> &fn) { return fn(2); }
+int take_inplace(const nx::inplace_function<int(int), 32> &fn) { return fn(3); }
+
+int overload(nx::unique_function<int(int)> fn) { return fn(0); }
+int overload(nx::unique_function<int(const char *)> fn) { return fn("") + 100; }
+
+struct Counter {
+  int calls = 0;
+  int bump() { return ++calls; }
+};
+
+} // namespace
+
+TEST_CASE("callables: lambdas convert implicitly at call sites") {
+  CHECK(take_unique([](int x) { return x + 10; }) == 11);
+  CHECK(take_function([](int x) { return x + 10; }) == 12);
+  CHECK(take_inplace([](int x) { return x + 10; }) == 13);
+
+  nx::unique_function<int(int)> assigned = [](int x) { return x * 2; };
+  CHECK(assigned(4) == 8);
+  assigned = [](int x) { return x * 3; };
+  CHECK(assigned(4) == 12);
+}
+
+TEST_CASE("callables: the converting constructor checks invocability") {
+  static_assert(!std::is_constructible_v<nx::unique_function<void()>, int>);
+  static_assert(!std::is_constructible_v<nx::function<void()>, int>);
+  static_assert(!std::is_constructible_v<nx::inplace_function<void()>, int>);
+  static_assert(!std::is_convertible_v<int (*)(const char *),
+                                       nx::unique_function<int(int)>>);
+  CHECK(overload([](int x) { return x + 5; }) == 5);
+  CHECK(overload([](const char *) { return 1; }) == 101);
+}
+
+TEST_CASE("callables: a void signature discards the target's result") {
+  int calls = 0;
+  nx::unique_function<void()> u = [&calls] { return ++calls; };
+  nx::function<void()> f = [&calls] { return ++calls; };
+  nx::inplace_function<void(), 32> i = [&calls] { return ++calls; };
+  const auto counting = [&calls] { return ++calls; };
+  nx::function_ref<void()> r = counting;
+  u();
+  f();
+  i();
+  r();
+  CHECK(calls == 4);
+}
+
+TEST_CASE("callables: a null function pointer makes an empty wrapper") {
+  int (*null_fn)(int, int) = nullptr;
+  const nx::unique_function<int(int, int)> u = null_fn;
+  const nx::function<int(int, int)> f = null_fn;
+  const nx::inplace_function<int(int, int)> i = null_fn;
+  const nx::function_ref<int(int, int)> r = null_fn;
+  CHECK_FALSE(u.valid());
+  CHECK_FALSE(f.valid());
+  CHECK_FALSE(i.valid());
+  CHECK_FALSE(static_cast<bool>(r));
+  CHECK(u == nullptr);
+  CHECK(f == nullptr);
+  CHECK(i == nullptr);
+}
+
+TEST_CASE("callables: nullptr resets every owning wrapper") {
+  nx::unique_function<int(int)> u = [](int x) { return x; };
+  nx::function<int(int)> f = [](int x) { return x; };
+  nx::inplace_function<int(int)> i = [](int x) { return x; };
+  u = nullptr;
+  f = nullptr;
+  i = nullptr;
+  CHECK(u == nullptr);
+  CHECK(f == nullptr);
+  CHECK(i == nullptr);
+
+  f = [](int x) { return x; };
+  f.reset();
+  i = [](int x) { return x; };
+  i.reset();
+  CHECK_FALSE(f.valid());
+  CHECK_FALSE(i.valid());
+}
+
+TEST_CASE("callables: member function pointers are invoked") {
+  Counter counter;
+  const nx::unique_function<int(Counter &)> u = &Counter::bump;
+  const nx::function<int(Counter &)> f = &Counter::bump;
+  CHECK(u(counter) == 1);
+  CHECK(f(counter) == 2);
+}
+
+TEST_CASE("callables: inplace_function has one default size everywhere") {
+  static_assert(nx::inplace_function<void()>::buffer_size ==
+                2 * sizeof(void *));
+  int a = 1;
+  int b = 2;
+  const nx::inplace_function<int()> two_refs = [&a, &b] { return a + b; };
+  CHECK(two_refs() == 3);
+}
+
+TEST_CASE("function_ref: calls a const callable through a const path") {
+  struct OnlyConst {
+    int operator()() const { return 7; }
+    int operator()() = delete;
+  };
+  const OnlyConst target;
+  const nx::function_ref<int()> ref = target;
+  CHECK(ref() == 7);
+}
+
+TEST_CASE("function: copy assignment keeps the target when the copy throws") {
+  struct ThrowsOnCopy {
+    bool armed = false;
+    ThrowsOnCopy() = default;
+    ThrowsOnCopy(const ThrowsOnCopy &other) : armed(other.armed) {
+      if (armed)
+        throw 1;
+    }
+    ThrowsOnCopy(ThrowsOnCopy &&) noexcept = default;
+    int operator()() const { return 5; }
+  };
+  ThrowsOnCopy armed;
+  armed.armed = true;
+  nx::function<int()> source{std::move(armed)};
+  nx::function<int()> target = [] { return 9; };
+  CHECK_THROWS(target = source);
+  REQUIRE(target.valid());
+  CHECK(target() == 9);
+}
+
+TEST_CASE("function: make_function accepts a mutable lambda") {
+  auto f = nx::make_function([n = 0]() mutable { return ++n; });
+  static_assert(std::is_same_v<decltype(f), nx::function<int()>>);
+  CHECK(f() == 1);
+  CHECK(f() == 2);
+}

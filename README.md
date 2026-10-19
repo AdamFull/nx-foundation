@@ -390,7 +390,11 @@ non-inlined calls.
 | `nx::unique_ptr` / `nx::make_unique` | `core/foundation.h` | Sole ownership of an object on the nx heap. There is no constructor from a raw pointer: `make_unique` creates (honouring `alignof(T)`, and reaching a private constructor that befriends it), and `adopt_unique` takes back a pointer from `release()` or `nx::allocate`. Converts to a base with a virtual destructor, so it owns interfaces too. With a custom deleter it accepts raw pointers like `std::unique_ptr`. |
 | `nx::shared_ptr` / `nx::make_shared` | `core/foundation.h` | Shared ownership, one pointer wide: the count sits in front of the object. No weak half; `nx::life_token` / `life_watch` answer "is it still alive". |
 | `nx::function` | `core/callable.h` | A type-erased, heap-backed callable wrapper, like `std::function`. |
-| `nx::inplace_function` | `core/callable.h` | A type-erased callable stored in a fixed inline buffer; never allocates. |
+| `nx::unique_function` | `core/callable.h` | A move-only callable, like `std::move_only_function`: small targets live inline, larger ones on the nx heap. The shape for queued work. |
+| `nx::inplace_function` | `core/callable.h` | A type-erased callable stored in a fixed inline buffer (16 bytes by default on 64-bit); never allocates. |
+| `nx::function_ref` | `core/callable.h` | A non-owning reference to a callable, for parameters that only call it. |
+
+The owning wrappers convert implicitly from any callable invocable with their signature, a void signature discards the result, and a null function pointer or `nullptr` makes them empty (`valid()`, `== nullptr`, `reset()`).
 | `nx::enums::map` | `core/enum.h` | A fixed array indexed directly by enum value, sized from the enum's `Count`. Zero-overhead enum-to-value lookup. |
 | `nx::enums::flags` | `core/enum.h` | A type-safe bitset over a scoped enum's enumerators, with bit operators. |
 | `nx::result` / `nx::err` | `core/result.h` | An error-or-value type for exception-free error handling, with `and_then`/`transform`/`or_else`/`transform_error` combinators. |

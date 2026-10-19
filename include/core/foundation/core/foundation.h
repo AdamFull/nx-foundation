@@ -464,8 +464,16 @@ allocate(Args &&...args) noexcept(std::is_nothrow_constructible_v<T, Args...>) {
   if constexpr (std::is_trivially_constructible_v<T, Args...> &&
                 sizeof...(Args) == 0)
     return static_cast<T *>(raw);
-  else
+  else if constexpr (std::is_nothrow_constructible_v<T, Args...>)
     return ::new (raw) T(std::forward<Args>(args)...);
+  else {
+    try {
+      return ::new (raw) T(std::forward<Args>(args)...);
+    } catch (...) {
+      mem_free(raw);
+      throw;
+    }
+  }
 }
 
 // Typed release: destructs T then frees its memory.
