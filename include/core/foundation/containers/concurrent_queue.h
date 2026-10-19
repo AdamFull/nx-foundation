@@ -282,19 +282,19 @@ public:
     m_dequeue_pos.store(pos + 1, std::memory_order_relaxed);
   }
 
+  /// Consumes what was queued on entry, so producers that keep up cannot hold
+  /// the consumer here.
   template <typename Func>
-  NX_FORCE_INLINE usize consume_all(Func &&fn) noexcept {
-    usize count = 0;
-    T item;
-    while (try_pop(item)) {
-      fn(std::move(item));
-      ++count;
-    }
-    return count;
+  NX_FORCE_INLINE usize
+  consume_all(Func &&fn) noexcept(std::is_nothrow_invocable_v<Func &, T &&>) {
+    const usize queued = m_enqueue_pos.load(std::memory_order_acquire) -
+                         m_dequeue_pos.load(std::memory_order_relaxed);
+    return consume_batch(fn, queued);
   }
 
   template <typename Func>
-  NX_FORCE_INLINE usize consume_batch(Func &&fn, usize max) noexcept {
+  NX_FORCE_INLINE usize consume_batch(Func &&fn, usize max) noexcept(
+      std::is_nothrow_invocable_v<Func &, T &&>) {
     usize count = 0;
     T item;
     while (count < max && try_pop(item)) {

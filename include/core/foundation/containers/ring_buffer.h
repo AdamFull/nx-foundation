@@ -3,6 +3,7 @@
 #include "core/foundation/core/foundation.h"
 
 #include <atomic>
+#include <bit>
 #include <cstring>
 #include <type_traits>
 
@@ -29,7 +30,7 @@ public:
   /// whatever was buffered. No other thread may be touching the ring.
   [[nodiscard]] bool reset(const usize capacity) noexcept {
     release_storage();
-    if (capacity == 0)
+    if (capacity == 0 || capacity > MAX_CAPACITY)
       return false;
 
     const usize cap = nx::max<usize>(next_pow2<usize>(capacity), 2);
@@ -106,6 +107,7 @@ public:
 
 private:
   static constexpr usize CACHE_LINE = 64;
+  static constexpr usize MAX_CAPACITY = std::bit_floor(~usize{0} / sizeof(T));
 
   void release_storage() noexcept {
     if (m_data != nullptr) {

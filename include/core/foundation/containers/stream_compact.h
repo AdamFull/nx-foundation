@@ -4,6 +4,7 @@
 #include "core/foundation/core/time.h"
 #include "core/foundation/threading/thread_pool.h"
 
+#include <cassert>
 #include <chrono>
 #include <span>
 #include <type_traits>
@@ -25,6 +26,7 @@ public:
   template <class T, class Keep>
   static usize compact_serial(std::span<const T> in, std::span<T> out,
                               Keep keep) {
+    assert(out.size() >= in.size() && "compact: out is shorter than in");
     if (out.size() < in.size())
       return 0;
     usize j = 0;
@@ -46,6 +48,7 @@ public:
   usize compact_parallel(std::span<const T> in, std::span<T> out, Keep keep,
                          thread_pool &pool) {
     const usize n = in.size();
+    assert(out.size() >= n && "compact: out is shorter than in");
     if (out.size() < n)
       return 0;
     const u32 workers = pool.worker_count();
@@ -57,7 +60,7 @@ public:
     m_flags.resize(n);
     m_counts.resize(chunks);
     u8 *const flags = m_flags.data();
-    u32 *const counts = m_counts.data();
+    usize *const counts = m_counts.data();
     const T *const src = in.data();
     T *const dst = out.data();
 
@@ -67,7 +70,7 @@ public:
     };
     pool.parallel_for(0, chunks, 1, [&](const usize c) {
       const auto [begin, end] = slice(c);
-      u32 kept = 0;
+      usize kept = 0;
       for (usize i = begin; i < end; ++i) {
         const bool k = keep(src[i]);
         flags[i] = k ? u8{1} : u8{0};
@@ -90,6 +93,7 @@ public:
   template <class T, class Produce>
   static usize transform_compact_serial(usize count, std::span<T> out,
                                         Produce produce) {
+    assert(out.size() >= count && "compact: out is shorter than count");
     if (out.size() < count)
       return 0;
     usize j = 0;
@@ -111,6 +115,8 @@ public:
   usize transform_compact_parallel(usize count, std::span<T> scratch,
                                    std::span<T> out, Produce produce,
                                    thread_pool &pool) {
+    assert(scratch.size() >= count && out.size() >= count &&
+           "compact: scratch or out is shorter than count");
     if (scratch.size() < count || out.size() < count)
       return 0;
     const u32 workers = pool.worker_count();
@@ -122,7 +128,7 @@ public:
     m_flags.resize(count);
     m_counts.resize(chunks);
     u8 *const flags = m_flags.data();
-    u32 *const counts = m_counts.data();
+    usize *const counts = m_counts.data();
     T *const scr = scratch.data();
     T *const dst = out.data();
 
@@ -132,7 +138,7 @@ public:
     };
     pool.parallel_for(0, chunks, 1, [&](const usize c) {
       const auto [begin, end] = slice(c);
-      u32 kept = 0;
+      usize kept = 0;
       for (usize i = begin; i < end; ++i) {
         const bool k = produce(i, scr[i]);
         flags[i] = k ? u8{1} : u8{0};
@@ -196,11 +202,11 @@ public:
 
 private:
   /// Turns per-chunk counts into each chunk's first output slot.
-  static usize exclusive_scan(u32 *const counts, const u32 chunks) noexcept {
+  static usize exclusive_scan(usize *const counts, const u32 chunks) noexcept {
     usize total = 0;
     for (u32 c = 0; c < chunks; ++c) {
-      const u32 kept = counts[c];
-      counts[c] = nx::cast<u32>(total);
+      const usize kept = counts[c];
+      counts[c] = total;
       total += kept;
     }
     return total;
@@ -208,7 +214,7 @@ private:
 
   usize m_crossover = DEFAULT_CROSSOVER;
   nx::vector<u8> m_flags;
-  nx::vector<u32> m_counts;
+  nx::vector<usize> m_counts;
 };
 
 }

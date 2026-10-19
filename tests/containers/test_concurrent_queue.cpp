@@ -688,3 +688,32 @@ TEST_CASE(
   }
   CHECK(g_live.load() == 0);
 }
+
+TEST_CASE("mpsc: consume_all stops at what was queued when it began") {
+  nx::mpsc::Queue<int, 64> q;
+  for (int i = 0; i < 4; ++i)
+    q.push(i);
+  int calls = 0;
+  const usize n = q.consume_all([&](int v) {
+    ++calls;
+    if (calls < 100)
+      q.push(v + 100);
+  });
+  CHECK(n == 4u);
+  CHECK(calls == 4);
+  CHECK(q.size_approx() == 4);
+}
+
+TEST_CASE("mpsc: a throwing consumer propagates instead of terminating") {
+  nx::mpsc::Queue<int, 8> q;
+  const auto quiet = [](int) noexcept {};
+  const auto loud = [](int) { throw 7; };
+  static_assert(noexcept(q.consume_all(quiet)));
+  static_assert(!noexcept(q.consume_all(loud)));
+  static_assert(!noexcept(q.consume_batch(loud, 1)));
+
+  q.push(1);
+  q.push(2);
+  CHECK_THROWS(q.consume_all(loud));
+  CHECK(q.size_approx() == 1);
+}

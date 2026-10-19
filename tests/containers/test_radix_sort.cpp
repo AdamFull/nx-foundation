@@ -115,11 +115,6 @@ TEST_CASE("radix: degenerate inputs are left alone") {
   std::vector<u32> one_key{7}, one_value{1};
   sort_pairs(one_key, one_value);
   CHECK(one_key[0] == 7u);
-
-  std::vector<u32> keys{3, 1, 2}, values{0, 1, 2}, small(1);
-  nx::radix_sort_pairs(std::span<u32>(keys), std::span<u32>(values),
-                       std::span<u32>(small), std::span<u32>(small));
-  CHECK(keys[0] == 3u);
 }
 
 TEST_CASE("radix: 64-bit keys sort across the full range") {
@@ -686,4 +681,43 @@ TEST_CASE("coherent sort: far jumps both ways are set aside and merged back") {
                                 scratch, item_key);
   CHECK(scratch.reused);
   CHECK(matches_fresh_sort(frame, out));
+}
+
+TEST_CASE("sort_by_key_into: dst holds exactly the sorted elements") {
+  const std::vector<Item> src{{3, 0}, {1, 1}, {2, 2}};
+  nx::vector<Item> dst(10, Item{99, 99});
+  nx::sort_scratch<Item> scratch;
+  nx::sort_by_key_into(std::span<const Item>(src), dst, scratch, item_key);
+  REQUIRE(dst.size() == 3u);
+  CHECK(dst[0].key == 1u);
+  CHECK(dst[2].key == 3u);
+
+  nx::vector<Item> coherent(10, Item{99, 99});
+  nx::coherent_sort_by_key_into(std::span<const Item>(src), coherent, scratch,
+                                item_key);
+  CHECK(coherent.size() == 3u);
+  nx::coherent_sort_by_key_into(std::span<const Item>(src), coherent, scratch,
+                                item_key);
+  CHECK(scratch.reused);
+  CHECK(coherent.size() == 3u);
+
+  nx::sort_by_key_into(std::span<const Item>(), dst, scratch, item_key);
+  CHECK(dst.empty());
+}
+
+TEST_CASE("radix: values must copy as bytes and keys fit 32 unsigned bits") {
+  static_assert(nx::radix_value<u32>);
+  static_assert(nx::radix_value<Item>);
+  static_assert(!nx::radix_value<std::vector<u32>>);
+
+  const auto narrow = [](const Item &i) -> u16 { return u16(i.key); };
+  const auto wide = [](const Item &i) -> u64 { return i.key; };
+  const auto sign = [](const Item &i) -> i32 { return i32(i.key); };
+  const auto real = [](const Item &i) -> f32 { return f32(i.key); };
+  static_assert(nx::sort_key_fn<decltype(&item_key), Item>);
+  static_assert(nx::sort_key_fn<decltype(narrow), Item>);
+  static_assert(!nx::sort_key_fn<decltype(wide), Item>);
+  static_assert(!nx::sort_key_fn<decltype(sign), Item>);
+  static_assert(!nx::sort_key_fn<decltype(real), Item>);
+  CHECK(true);
 }

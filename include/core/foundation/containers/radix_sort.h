@@ -4,10 +4,13 @@
 #include "core/foundation/core/time.h"
 #include "core/foundation/threading/thread_pool.h"
 
+#include <cassert>
 #include <chrono>
 #include <concepts>
 #include <cstring>
+#include <limits>
 #include <span>
+#include <type_traits>
 #include <utility>
 
 namespace nx {
@@ -31,16 +34,44 @@ template <typename T>
 concept radix_key =
     std::unsigned_integral<T> && (sizeof(T) == 4 || sizeof(T) == 8);
 
+/// Values travel with their keys by copy and memcpy.
+template <typename T>
+concept radix_value = std::is_trivially_copyable_v<T>;
+
+/// sort_by_key sorts 32-bit keys; a wider or signed key would be cut or
+/// reordered on the way in.
+template <typename F, typename T>
+concept sort_key_fn =
+    std::invocable<F &, const T &> &&
+    std::unsigned_integral<std::invoke_result_t<F &, const T &>> &&
+    sizeof(std::invoke_result_t<F &, const T &>) <= sizeof(u32);
+
+namespace detail {
+
+[[nodiscard]] inline bool
+radix_buffers_fit(const usize count, const usize values,
+                  const usize key_scratch, const usize value_scratch) noexcept {
+  const bool fit = values >= count && key_scratch >= count &&
+                   value_scratch >= count &&
+                   count <= std::numeric_limits<u32>::max();
+  assert(fit && "radix sort: a buffer is shorter than the keys, or there are "
+                "more than 2^32 keys");
+  return fit;
+}
+
+}
+
 /// Sorts @p keys ascending, permuting @p values alongside. Scratch buffers must each be at least
 /// keys.size(). The payload is normally a 4-byte index gathered once at the end, not the elements
 /// themselves.
-template <radix_key Key, typename Value>
+template <radix_key Key, radix_value Value>
 void radix_sort_pairs(const std::span<Key> keys, const std::span<Value> values,
                       const std::span<Key> key_scratch,
                       const std::span<Value> value_scratch) {
   const usize count = keys.size();
-  if (count < 2 || values.size() < count || key_scratch.size() < count ||
-      value_scratch.size() < count)
+  if (count < 2 ||
+      !detail::radix_buffers_fit(count, values.size(), key_scratch.size(),
+                                 value_scratch.size()))
     return;
 
   constexpr u32 PASSES =
@@ -119,7 +150,7 @@ public:
   [[nodiscard]] usize crossover() const noexcept { return m_crossover; }
   void set_crossover(usize n) noexcept { m_crossover = n; }
 
-  template <radix_key Key, typename Value>
+  template <radix_key Key, radix_value Value>
   void sort(std::span<Key> keys, std::span<Value> values,
             std::span<Key> key_scratch, std::span<Value> value_scratch,
             thread_pool &pool) {
@@ -191,13 +222,14 @@ public:
     m_crossover = nx::min(nx::max(cross, MIN_CROSSOVER), MAX_CROSSOVER);
   }
 
-  template <radix_key Key, typename Value>
+  template <radix_key Key, radix_value Value>
   void sort_parallel(std::span<Key> keys, std::span<Value> values,
                      std::span<Key> key_scratch, std::span<Value> value_scratch,
                      thread_pool &pool) {
     const usize count = keys.size();
-    if (count < 2 || values.size() < count || key_scratch.size() < count ||
-        value_scratch.size() < count)
+    if (count < 2 ||
+        !detail::radix_buffers_fit(count, values.size(), key_scratch.size(),
+                                   value_scratch.size()))
       return;
 
     constexpr u32 PASSES =
@@ -518,7 +550,7 @@ template <typename T, typename KeyFn>
 
 /// The radix runs on (key, index) pairs and one gather applies the permutation, so an element is
 /// copied once rather than once per pass.
-template <typename T, typename KeyFn>
+template <typename T, sort_key_fn<T> KeyFn>
 void sort_by_key(nx::vector<T> &items, sort_scratch<T> &scratch, KeyFn key) {
   const usize count = items.size();
   scratch.ordered = 0;
@@ -537,12 +569,12 @@ void sort_by_key(nx::vector<T> &items, sort_scratch<T> &scratch, KeyFn key) {
   items.swap(scratch.gathered);
 }
 
-template <typename T, typename KeyFn>
+/// Leaves @p dst holding exactly src's elements, in key order.
+template <typename T, sort_key_fn<T> KeyFn>
 void sort_by_key_into(const std::span<const T> src, nx::vector<T> &dst,
                       sort_scratch<T> &scratch, KeyFn key) {
   const usize count = src.size();
-  if (dst.size() < count)
-    dst.resize(count);
+  dst.resize(count);
   scratch.ordered = 0;
   if (count < 2) {
     if (count == 1)
@@ -569,7 +601,7 @@ void sort_by_key_into(const std::span<const T> src, nx::vector<T> &dst,
 /// to the radix when that order is too far off. Element i should be the same
 /// thing from call to call for the start to help; the result is the same
 /// either way.
-template <typename T, typename KeyFn>
+template <typename T, sort_key_fn<T> KeyFn>
 void coherent_sort_by_key_into(const std::span<const T> src, nx::vector<T> &dst,
                                sort_scratch<T> &scratch, KeyFn key) {
   scratch.reused =
@@ -580,8 +612,7 @@ void coherent_sort_by_key_into(const std::span<const T> src, nx::vector<T> &dst,
   }
 
   const usize count = src.size();
-  if (dst.size() < count)
-    dst.resize(count);
+  dst.resize(count);
   T *const out = dst.data();
   const u32 *const indices = scratch.indices.data();
   detail::for_each_index(scratch.pool, count,

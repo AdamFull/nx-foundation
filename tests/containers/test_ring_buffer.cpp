@@ -279,3 +279,14 @@ TEST_CASE("ring_buffer: a slow consumer never loses or reorders elements") {
   CHECK(ordered);
   CHECK(expected == TOTAL);
 }
+
+TEST_CASE("spsc ring: a capacity whose bytes overflow is refused") {
+  nx::spsc::Ring<u64> ring;
+  CHECK_FALSE(ring.reset(~usize{0}));
+  CHECK_FALSE(ring.valid());
+  CHECK_FALSE(ring.reset(usize{1} << (sizeof(usize) * 8 - 2)));
+  CHECK_FALSE(ring.valid());
+  CHECK(ring.capacity() == 0u);
+  REQUIRE(ring.reset(5));
+  CHECK(ring.capacity() == 8u);
+}
