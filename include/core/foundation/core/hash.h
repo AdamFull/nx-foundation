@@ -71,6 +71,14 @@ hash_fnv1a64(const std::span<const std::byte> data) noexcept {
   return hash_fnv1a64(reinterpret_cast<const char *>(data.data()), data.size());
 }
 
+[[nodiscard]] inline u32 hash_fnv1a32(const std::span<const u8> data) noexcept {
+  return hash_fnv1a32(std::as_bytes(data));
+}
+
+[[nodiscard]] inline u64 hash_fnv1a64(const std::span<const u8> data) noexcept {
+  return hash_fnv1a64(std::as_bytes(data));
+}
+
 [[nodiscard]] constexpr u32 hash_fnv1a32(const std::string_view s) noexcept {
   return hash_fnv1a32(s.data(), s.size());
 }

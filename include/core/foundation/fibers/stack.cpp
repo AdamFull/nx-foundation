@@ -15,7 +15,7 @@ namespace {
 
 u8 *bytes(void *p) noexcept { return nx::cast<u8 *>(p); }
 
-void release_reservation(const Stack &stack) noexcept {
+void release_reservation(const fiber::stack &stack) noexcept {
   vmem::release(stack.reservation, stack.reservation_size);
 }
 
@@ -28,7 +28,7 @@ bool arm_guard_page(void *committed, usize page_size) noexcept {
 
 } // namespace
 
-usize resident_bytes(const Stack &stack) noexcept {
+usize resident_bytes(const fiber::stack &stack) noexcept {
   if (!stack)
     return 0;
   usize total = 0;
@@ -69,7 +69,7 @@ usize resident_bytes(const Stack &stack) noexcept {
   return total;
 }
 
-StackPool::StackPool(const Config &config) noexcept {
+stack_pool::stack_pool(const config &config) noexcept {
   NX_ASSERT(config.stack_size > 0);
   m_page_size = vmem::get_page_size();
   m_guard_size = m_page_size;
@@ -84,18 +84,18 @@ StackPool::StackPool(const Config &config) noexcept {
                            m_page_size, m_stack_size - m_page_size);
 }
 
-StackPool::~StackPool() noexcept {
+stack_pool::~stack_pool() noexcept {
   NX_ASSERT(m_stats.live == 0, "{} fiber stacks outlive their pool",
             m_stats.live);
-  for (const Stack &stack : m_cached)
+  for (const fiber::stack &stack : m_cached)
     release_reservation(stack);
 }
 
-result<Stack, StackError> StackPool::acquire() noexcept {
+result<stack, stack_error> stack_pool::acquire() noexcept {
   {
     scoped_lock guard(m_lock);
     if (!m_cached.empty()) {
-      Stack stack = m_cached.back();
+      fiber::stack stack = m_cached.back();
       m_cached.pop_back();
       m_stats.cached = nx::cast<u32>(m_cached.size());
       m_stats.peak_live = max(m_stats.peak_live, ++m_stats.live);
@@ -103,9 +103,9 @@ result<Stack, StackError> StackPool::acquire() noexcept {
     }
   }
 
-  Stack stack;
+  fiber::stack stack;
   if (!vmem::reserve(&stack.reservation, m_reservation_size))
-    return err(StackError::OutOfMemory);
+    return err(stack_error::OutOfMemory);
   stack.reservation_size = m_reservation_size;
   stack.limit = bytes(stack.reservation) + m_guard_size;
   stack.base = bytes(stack.reservation) + m_reservation_size;
@@ -120,7 +120,7 @@ result<Stack, StackError> StackPool::acquire() noexcept {
 #endif
   if (!ready) {
     release_reservation(stack);
-    return err(StackError::OutOfMemory);
+    return err(stack_error::OutOfMemory);
   }
 
   scoped_lock guard(m_lock);
@@ -129,7 +129,7 @@ result<Stack, StackError> StackPool::acquire() noexcept {
   return stack;
 }
 
-void StackPool::release(const Stack &stack) noexcept {
+void stack_pool::release(const fiber::stack &stack) noexcept {
   if (!stack)
     return;
   NX_ASSERT(stack.reservation_size == m_reservation_size,
@@ -148,9 +148,9 @@ void StackPool::release(const Stack &stack) noexcept {
   release_reservation(stack);
 }
 
-void StackPool::trim() noexcept {
+void stack_pool::trim() noexcept {
   scoped_lock guard(m_lock);
-  for (const Stack &stack : m_cached) {
+  for (const fiber::stack &stack : m_cached) {
     const usize grown = nx::cast<usize>(bytes(stack.base) - m_initial_commit -
                                         bytes(stack.limit));
 #if NX_HAS_WINDOWS_API
@@ -166,7 +166,7 @@ void StackPool::trim() noexcept {
   }
 }
 
-StackPool::Stats StackPool::stats() const noexcept {
+stack_pool_stats stack_pool::stats() const noexcept {
   scoped_lock guard(m_lock);
   return m_stats;
 }

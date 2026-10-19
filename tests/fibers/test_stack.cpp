@@ -35,7 +35,8 @@ NX_NO_INLINE u32 one_large_frame() {
 
 TEST_CASE("fiber stack pool: stacks are page aligned, guarded and at least "
           "the configured size") {
-  StackPool pool({.stack_size = 100 * KIB, .initial_commit = 8 * KIB});
+  nx::fiber::stack_pool pool(
+      {.stack_size = 100 * KIB, .initial_commit = 8 * KIB});
   auto stack = pool.acquire();
   REQUIRE(stack.has_value());
 
@@ -59,7 +60,7 @@ TEST_CASE("fiber stack pool: stacks are page aligned, guarded and at least "
 }
 
 TEST_CASE("fiber stack pool: released stacks are reused most recent first") {
-  StackPool pool;
+  nx::fiber::stack_pool pool;
   auto a = pool.acquire();
   auto b = pool.acquire();
   REQUIRE((a.has_value() && b.has_value()));
@@ -74,19 +75,19 @@ TEST_CASE("fiber stack pool: released stacks are reused most recent first") {
 }
 
 TEST_CASE("fiber stack pool: the cache is bounded and stats track stacks") {
-  StackPool pool({.max_cached = 1});
-  Stack stacks[3];
-  for (Stack &stack : stacks) {
+  nx::fiber::stack_pool pool({.max_cached = 1});
+  nx::fiber::stack stacks[3];
+  for (nx::fiber::stack &stack : stacks) {
     auto acquired = pool.acquire();
     REQUIRE(acquired.has_value());
     stack = *acquired;
   }
-  StackPool::Stats stats = pool.stats();
+  nx::fiber::stack_pool_stats stats = pool.stats();
   CHECK(stats.live == 3);
   CHECK(stats.peak_live == 3);
   CHECK(stats.reserved_bytes == 3 * stacks[0].reservation_size);
 
-  for (const Stack &stack : stacks)
+  for (const nx::fiber::stack &stack : stacks)
     pool.release(stack);
   stats = pool.stats();
   CHECK(stats.live == 0);
@@ -97,7 +98,8 @@ TEST_CASE("fiber stack pool: the cache is bounded and stats track stacks") {
 
 TEST_CASE("fiber stack pool: a fiber can use its whole stack, growing it on "
           "demand") {
-  StackPool pool({.stack_size = 512 * KIB, .initial_commit = 16 * KIB});
+  nx::fiber::stack_pool pool(
+      {.stack_size = 512 * KIB, .initial_commit = 16 * KIB});
   u32 deep = 0;
   u32 large = 0;
   fiber_test::run_on_fiber(pool, [&] {
@@ -111,7 +113,8 @@ TEST_CASE("fiber stack pool: a fiber can use its whole stack, growing it on "
 TEST_CASE("fiber stack pool: only touched pages are resident and trim "
           "returns grown ones") {
   constexpr usize initial = 16 * KIB;
-  StackPool pool({.stack_size = 512 * KIB, .initial_commit = initial});
+  nx::fiber::stack_pool pool(
+      {.stack_size = 512 * KIB, .initial_commit = initial});
 
   {
     auto fresh = pool.acquire();
@@ -120,7 +123,7 @@ TEST_CASE("fiber stack pool: only touched pages are resident and trim "
     pool.release(*fresh);
   }
 
-  Stack used;
+  nx::fiber::stack used;
   fiber_test::run_on_fiber(pool, [] { descend(200); }, &used);
   // ASan moves these frames to its heap-allocated fake stack.
 #if !NX_ASAN_ENABLED

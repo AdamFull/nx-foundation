@@ -202,7 +202,7 @@ MemStats mem_get_stats() noexcept {
   s.peak_rss = nx::cast<u64>(ru.ru_maxrss); // bytes on macOS
 #elif defined(NX_PLATFORM_LINUX) || defined(NX_PLATFORM_ANDROID)
   if (FILE *f = fopen("/proc/self/status", "r")) {
-    defer { fclose(f); };
+    NX_DEFER { fclose(f); };
     char line[128];
     while (fgets(line, sizeof(line), f)) {
       u64 kb = 0;

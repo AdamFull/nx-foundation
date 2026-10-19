@@ -107,7 +107,7 @@ TEST_CASE("scope_guard: scoped_exit accepts a function pointer") {
 TEST_CASE("scope_guard: defer runs the block at scope exit") {
   int calls = 0;
   {
-    defer { ++calls; };
+    NX_DEFER { ++calls; };
     CHECK(calls == 0);
   }
   CHECK(calls == 1);
@@ -116,9 +116,9 @@ TEST_CASE("scope_guard: defer runs the block at scope exit") {
 TEST_CASE("scope_guard: several defers in one scope unwind in reverse order") {
   std::vector<int> order;
   {
-    defer { order.push_back(1); };
-    defer { order.push_back(2); };
-    defer { order.push_back(3); };
+    NX_DEFER { order.push_back(1); };
+    NX_DEFER { order.push_back(2); };
+    NX_DEFER { order.push_back(3); };
   }
   REQUIRE(order.size() == 3);
   CHECK(order[0] == 3);
@@ -130,7 +130,7 @@ TEST_CASE("scope_guard: defer captures by reference and sees the final value") {
   int value = 0;
   int captured = -1;
   {
-    defer { captured = value; };
+    NX_DEFER { captured = value; };
     value = 99;
   }
   CHECK(captured == 99);
@@ -139,7 +139,7 @@ TEST_CASE("scope_guard: defer captures by reference and sees the final value") {
 TEST_CASE("scope_guard: defer fires during exception unwinding") {
   bool ran = false;
   try {
-    defer { ran = true; };
+    NX_DEFER { ran = true; };
     throw 42;
   } catch (int e) {
     CHECK(e == 42);
@@ -150,7 +150,7 @@ TEST_CASE("scope_guard: defer fires during exception unwinding") {
 TEST_CASE("scope_guard: guards inside a loop fire once per iteration") {
   int calls = 0;
   for (int i = 0; i < 5; ++i) {
-    defer { ++calls; };
+    NX_DEFER { ++calls; };
     CHECK(calls == i);
   }
   CHECK(calls == 5);
@@ -160,7 +160,7 @@ TEST_CASE("scope_guard: releases a resource on the early-return path") {
   bool freed = false;
   const auto body = [&freed](bool bail) {
     void *resource = nx::mem_alloc(64);
-    defer {
+    NX_DEFER {
       nx::mem_free(resource);
       freed = true;
     };

@@ -274,7 +274,7 @@ public:
     void *r = reader ? reader->handle : nullptr;
     if (!r)
       return false;
-    defer { m_archive->release_reader(reader); };
+    NX_DEFER { m_archive->release_reader(reader); };
     i32 e = mz_zip_reader_goto_first_entry(r);
     while (e == MZ_OK) {
       mz_zip_file *info = nullptr;
@@ -302,7 +302,7 @@ public:
     void *r = reader ? reader->handle : nullptr;
     if (!r)
       return err(file_error{io_error::OpenFailed, 0});
-    defer { m_archive->release_reader(reader); };
+    NX_DEFER { m_archive->release_reader(reader); };
 
     if (mz_zip_reader_locate_entry(r, full.c_str(), 0) != MZ_OK ||
         mz_zip_reader_entry_open(r) != MZ_OK)

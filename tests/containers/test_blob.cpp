@@ -54,7 +54,7 @@ TEST_CASE("blob: default-constructed is empty and owns nothing") {
   const nx::blob<int> b;
   CHECK(b.empty());
   CHECK(b.size() == 0);
-  CHECK(b.bytes_size() == 0);
+  CHECK(b.size_bytes() == 0);
   CHECK(b.data() == nullptr);
   CHECK(b.begin() == b.end());
   CHECK(b.cbegin() == b.cend());
@@ -64,7 +64,7 @@ TEST_CASE("blob: sized construction value-initializes every element") {
   const nx::blob<int> b(10);
   CHECK(b.size() == 10);
   CHECK_FALSE(b.empty());
-  CHECK(b.bytes_size() == 10 * sizeof(int));
+  CHECK(b.size_bytes() == 10 * sizeof(int));
   REQUIRE(b.data() != nullptr);
   for (const int v : b)
     CHECK(v == 0);
@@ -493,7 +493,7 @@ TEST_CASE("blob: a large allocation is contiguous and fully writable") {
     CHECK_FALSE(b[i] != static_cast<u32>(i));
 
   CHECK(&b[n - 1] - &b[0] == static_cast<isize>(n) - 1);
-  CHECK(b.bytes_size() == n * sizeof(u32));
+  CHECK(b.size_bytes() == n * sizeof(u32));
 }
 
 TEST_CASE("blob: get_allocator returns an equal allocator") {

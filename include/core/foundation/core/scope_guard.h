@@ -85,6 +85,9 @@ scope_guard<std::decay_t<F>> operator+(scope_guard_tag, F &&fn) {
 #define NX_SCOPE_ANON(prefix) NX_SCOPE_CONCAT(prefix, __LINE__)
 #endif
 
-#define defer                                                                  \
+#define NX_DEFER                                                               \
   const auto NX_SCOPE_ANON(nx_defer_) =                                        \
       ::nx::detail::scope_guard_tag{} + [&]() -> void
+
+/// Deprecated: the unprefixed name of NX_DEFER.
+#define defer NX_DEFER

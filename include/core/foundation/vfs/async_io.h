@@ -310,9 +310,9 @@ private:
   u32 m_fallback_limit = 1;
   /// Requests whose native read has finished, waiting to take a slot back.
   /// They go before any request not yet started.
-  nx::vector<fiber::Counter *> m_readmit;
+  nx::vector<fiber::counter *> m_readmit;
   /// Fallback requests submitted and not yet finished; shutdown waits on it.
-  fiber::Counter m_outstanding;
+  fiber::counter m_outstanding;
 };
 
 } // namespace nx::vfs

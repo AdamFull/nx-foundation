@@ -97,7 +97,7 @@ struct future_state_base {
   thread_pool *pool = nullptr;
   std::exception_ptr error;
   std::atomic<future_continuation *> continuations{nullptr};
-  fiber::Counter done{1};
+  fiber::counter done{1};
 };
 
 template <typename T> struct future_state : future_state_base {
@@ -194,7 +194,7 @@ public:
 private:
   friend class thread_pool;
 
-  fiber::Counter m_pending;
+  fiber::counter m_pending;
 };
 
 /// Move-only. get() waits (suspending a waiting fiber) and moves the result
@@ -369,7 +369,7 @@ private:
   bool m_future_taken = false;
 };
 
-/// A task pool on an nx::fiber::Scheduler of its own. Tasks run on fibers, so
+/// A task pool on an nx::fiber::scheduler of its own. Tasks run on fibers, so
 /// a task that waits on a group, a future or a fiber primitive suspends
 /// instead of occupying its worker.
 class thread_pool {
@@ -415,7 +415,7 @@ public:
   }
 
   /// Kernel ids of the threads that run tasks; see
-  /// fiber::Scheduler::worker_os_ids.
+  /// fiber::scheduler::worker_os_ids.
   [[nodiscard]] usize worker_os_ids(std::span<u64> out) const noexcept {
     return m_scheduler->worker_os_ids(out);
   }
@@ -688,7 +688,7 @@ public:
   /// Runs @p job on the low-priority lane, counted on @p counter, outside the
   /// background limit and wait_idle(). It does not allocate, so any thread
   /// may call it, including one inside scoped_no_alloc.
-  void run_low(fiber::Job job, fiber::Counter &counter) noexcept;
+  void run_low(fiber::job job, fiber::counter &counter) noexcept;
 
   /// Waits until the pool has no queued or running tasks. Must not be called
   /// from inside a pool task (the calling task itself would never count as
@@ -726,8 +726,8 @@ private:
   [[nodiscard]] bool is_execution_context() const noexcept;
 
   bool m_has_main_thread = false;
-  unique_ptr<fiber::Scheduler> m_scheduler;
-  fiber::Counter m_unfinished;
+  unique_ptr<fiber::scheduler> m_scheduler;
+  fiber::counter m_unfinished;
   mpmc::queue<task_node *, 256> m_free_nodes;
   lane_counters m_counters[static_cast<usize>(task_priority::Count)];
 

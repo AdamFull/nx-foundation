@@ -80,14 +80,14 @@ namespace {
 
 constexpr u32 PRESEEDED_NODES = 128;
 
-fiber::Priority lane(const task_priority priority) noexcept {
+fiber::priority lane(const task_priority priority) noexcept {
   switch (priority) {
   case task_priority::Critical:
-    return fiber::Priority::High;
+    return fiber::priority::High;
   case task_priority::Background:
-    return fiber::Priority::Low;
+    return fiber::priority::Low;
   default:
-    return fiber::Priority::Normal;
+    return fiber::priority::Normal;
   }
 }
 
@@ -115,7 +115,7 @@ thread_pool::thread_pool(const config &cfg) {
 
   // Tasks used to run on 1 MiB OS thread stacks; fiber stacks only commit
   // what they touch, so matching that costs address space, not memory.
-  m_scheduler = make_unique<fiber::Scheduler>(fiber::Scheduler::Config{
+  m_scheduler = make_unique<fiber::scheduler>(fiber::scheduler::config{
       .worker_count = count,
       .stack_size = 1024 * 1024,
       .name = cfg.name ? cfg.name : "nx-worker",
@@ -149,7 +149,7 @@ bool thread_pool::is_worker_thread() const noexcept {
 
 bool thread_pool::is_execution_context() const noexcept {
   const auto *node = static_cast<const task_node *>(
-      fiber::fiber_local(fiber::LocalSlot::Pool));
+      fiber::fiber_local(fiber::local_slot::Pool));
   return node && node->pool == this;
 }
 
@@ -283,7 +283,7 @@ void thread_pool::enqueue(detail::pool_task &&t) {
   // Background work nested in background work skips the limit: the outer task
   // holds a slot while it waits on the inner one.
   const auto *current = static_cast<const task_node *>(
-      fiber::fiber_local(fiber::LocalSlot::Pool));
+      fiber::fiber_local(fiber::local_slot::Pool));
   if (current && current->pool == this &&
       current->task.priority == task_priority::Background) {
     dispatch(node);
@@ -313,7 +313,7 @@ void thread_pool::run_on_main(const function_ref<void()> fn) {
     function_ref<void()> fn;
     std::exception_ptr *error;
   } call{fn, &error};
-  const fiber::Job job{[](void *arg) noexcept {
+  const fiber::job job{[](void *arg) noexcept {
                          auto &c = *static_cast<Call *>(arg);
                          try {
                            c.fn();
@@ -322,7 +322,7 @@ void thread_pool::run_on_main(const function_ref<void()> fn) {
                          }
                        },
                        &call};
-  fiber::Counter done;
+  fiber::counter done;
   m_scheduler->run_on_main({&job, 1}, &done);
   fiber::wait(done);
   if (error)
@@ -333,13 +333,13 @@ void thread_pool::pump_main(const std::chrono::nanoseconds budget) {
   m_scheduler->pump_main(budget);
 }
 
-void thread_pool::run_low(const fiber::Job job,
-                          fiber::Counter &counter) noexcept {
-  m_scheduler->run({&job, 1}, &counter, fiber::Priority::Low);
+void thread_pool::run_low(const fiber::job job,
+                          fiber::counter &counter) noexcept {
+  m_scheduler->run({&job, 1}, &counter, fiber::priority::Low);
 }
 
 void thread_pool::dispatch(task_node *node) noexcept {
-  const fiber::Job job{&thread_pool::run_node, node};
+  const fiber::job job{&thread_pool::run_node, node};
   m_scheduler->run({&job, 1}, nullptr, lane(node->task.priority));
 }
 
@@ -390,8 +390,8 @@ void thread_pool::run_node(void *arg) noexcept {
   thread_pool &pool = *node->pool;
   detail::pool_task &t = node->task;
 
-  void *const outer = fiber::fiber_local(fiber::LocalSlot::Pool);
-  fiber::set_fiber_local(node, fiber::LocalSlot::Pool);
+  void *const outer = fiber::fiber_local(fiber::local_slot::Pool);
+  fiber::set_fiber_local(node, fiber::local_slot::Pool);
   pool.record_started(t.priority);
   const u64 started_ns = pool.m_collect_timings ? os::ticks_ns() : 0;
   if (t.fn) {
@@ -425,7 +425,7 @@ void thread_pool::run_node(void *arg) noexcept {
       pool.m_collect_timings ? os::ticks_ns() - started_ns : 0;
   t.fn = {};
   pool.record_completed(t.priority, execution_ns);
-  fiber::set_fiber_local(outer, fiber::LocalSlot::Pool);
+  fiber::set_fiber_local(outer, fiber::local_slot::Pool);
 
   task_group *const group = t.group;
   const bool held_slot = t.holds_background_slot;

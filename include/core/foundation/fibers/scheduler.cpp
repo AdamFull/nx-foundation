@@ -49,26 +49,26 @@ enum class Role : u8 { Main, General, Blocking };
 enum class After : u8 { Nothing, Release, Ready, Yield, Park, Enqueue };
 
 struct Fiber {
-  Context context;
-  Stack stack;
+  fiber::context context;
+  fiber::stack stack;
   SchedulerState *owner = nullptr;
   Fiber *next_parked = nullptr;
-  void *local[nx::cast<usize>(LocalSlot::Count)] = {};
+  void *local[nx::cast<usize>(local_slot::Count)] = {};
 #if NX_PROFILE_ENABLED
   const char *profile_name = nullptr;
 #endif
   internal::Waiter waiter;
   u32 target = 0;
-  Priority priority = Priority::Normal;
+  fiber::priority priority = fiber::priority::Normal;
   Affinity affinity = Affinity::Any;
 };
 
 // Either a job to start or a yielded fiber to resume.
 struct Work {
-  Job job;
-  Counter *counter = nullptr;
+  fiber::job job;
+  fiber::counter *counter = nullptr;
   Fiber *fiber = nullptr;
-  Priority priority = Priority::Normal;
+  fiber::priority priority = fiber::priority::Normal;
   Affinity affinity = Affinity::Any;
 };
 
@@ -76,7 +76,7 @@ struct Handoff {
   After after = After::Nothing;
   Fiber *subject = nullptr;
   Fiber *to = nullptr;
-  Counter *counter = nullptr;
+  fiber::counter *counter = nullptr;
   spin_lock *lock = nullptr;
   internal::WaitList *list = nullptr;
 };
@@ -112,10 +112,10 @@ NX_NO_INLINE void set_current_worker(Worker *worker) noexcept {
 } // namespace
 
 struct SchedulerState {
-  explicit SchedulerState(const Scheduler::Config &requested) noexcept;
+  explicit SchedulerState(const scheduler::config &requested) noexcept;
   ~SchedulerState() noexcept;
 
-  static void settle(const Counter &counter) noexcept;
+  static void settle(const fiber::counter &counter) noexcept;
 
   Worker *this_worker() const noexcept {
     Worker *worker = current_worker();
@@ -129,26 +129,27 @@ struct SchedulerState {
   bool pop_any_work(Worker *worker, Work &work) noexcept;
   bool has_general_work() const noexcept;
 
-  void submit(std::span<const Job> jobs, Counter *counter, Priority priority,
-              Affinity affinity) noexcept;
+  void submit(std::span<const job> jobs, fiber::counter *counter,
+              fiber::priority priority, Affinity affinity) noexcept;
   void push_fiber_work(Fiber *fiber) noexcept;
   void make_ready(Fiber *fiber) noexcept;
-  void park(Fiber *fiber, Counter &counter) noexcept;
+  void park(Fiber *fiber, fiber::counter &counter) noexcept;
   void execute(const Work &work) noexcept;
 
   void switch_fiber(Fiber *from, Fiber *to, After after,
-                    Counter *counter = nullptr) noexcept;
+                    fiber::counter *counter = nullptr) noexcept;
   void switch_with(Handoff out) noexcept;
   void complete(Handoff handoff) noexcept;
   void suspend(After after) noexcept;
-  void suspend_until(Worker *worker, Counter &counter, u32 target) noexcept;
+  void suspend_until(Worker *worker, fiber::counter &counter,
+                     u32 target) noexcept;
   bool serve_main(function_ref<bool()> done,
                   clock::time_point deadline) noexcept;
-  void wait_on_main(Counter &counter, u32 target) noexcept;
+  void wait_on_main(fiber::counter &counter, u32 target) noexcept;
   internal::WaitResult block_on_main(Worker *main, spin_lock *lock,
                                      internal::WaitList *list,
                                      clock::time_point deadline) noexcept;
-  void help_until(Counter &counter, u32 target) noexcept;
+  void help_until(fiber::counter &counter, u32 target) noexcept;
   [[noreturn]] void loop(Fiber *self) noexcept;
   Fiber *next_work(Worker *worker, Work &work) noexcept;
 
@@ -174,8 +175,8 @@ struct SchedulerState {
   void park_blocking() noexcept;
   void worker_main(Worker *worker) noexcept;
 
-  Scheduler::Config config;
-  StackPool stacks;
+  scheduler::config config;
+  stack_pool stacks;
   small_vector<Worker *, 32> workers;
   Fiber **fibers = nullptr;
   std::atomic<u32> fiber_count{0};
@@ -209,7 +210,7 @@ struct SchedulerState {
 
 namespace {
 
-[[noreturn]] void fiber_entry(Transfer transfer) {
+[[noreturn]] void fiber_entry(fiber::transfer transfer) {
   const Handoff handoff = *static_cast<const Handoff *>(transfer.data);
   SchedulerState *state = handoff.to->owner;
   state->complete(handoff);
@@ -266,17 +267,17 @@ u32 resolve_worker_count(u32 requested) noexcept {
 
 // A decrement may still be touching the counter after its waiter has been
 // released; the waiter must not return, and possibly destroy it, before then.
-void SchedulerState::settle(const Counter &counter) noexcept {
+void SchedulerState::settle(const fiber::counter &counter) noexcept {
   while (counter.m_decrementing.load(std::memory_order_acquire) != 0)
     detail::cpu_relax();
 }
 
-Counter::~Counter() noexcept {
+counter::~counter() noexcept {
   NX_ASSERT(m_parked == nullptr, "a counter was destroyed with fibers waiting");
   SchedulerState::settle(*this);
 }
 
-void Counter::decrement() noexcept {
+void counter::decrement() noexcept {
   m_decrementing.fetch_add(1, std::memory_order_seq_cst);
   const u32 previous = m_value.fetch_sub(1, std::memory_order_seq_cst);
   NX_ASSERT(previous > 0, "a counter was decremented below zero");
@@ -307,7 +308,7 @@ void Counter::decrement() noexcept {
   m_decrementing.fetch_sub(1, std::memory_order_release);
 }
 
-SchedulerState::SchedulerState(const Scheduler::Config &requested) noexcept
+SchedulerState::SchedulerState(const scheduler::config &requested) noexcept
     : config(requested), stacks({.stack_size = requested.stack_size,
                                  .initial_commit = requested.stack_commit,
                                  .max_cached = requested.max_fibers}) {
@@ -455,8 +456,8 @@ bool SchedulerState::has_general_work() const noexcept {
   return false;
 }
 
-void SchedulerState::submit(std::span<const Job> jobs, Counter *counter,
-                            const Priority priority,
+void SchedulerState::submit(std::span<const job> jobs, fiber::counter *counter,
+                            const fiber::priority priority,
                             const Affinity affinity) noexcept {
   if (jobs.empty())
     return;
@@ -466,7 +467,7 @@ void SchedulerState::submit(std::span<const Job> jobs, Counter *counter,
 
   const auto lane = nx::cast<usize>(priority);
   usize queued = 0;
-  for (const Job &job : jobs) {
+  for (const fiber::job &job : jobs) {
     const Work work{job, counter, nullptr, priority, affinity};
     if (affinity == Affinity::Main) {
       while (!main_work.try_push(work)) {
@@ -537,7 +538,7 @@ void SchedulerState::make_ready(Fiber *fiber) noexcept {
   wake_workers(1);
 }
 
-void SchedulerState::park(Fiber *fiber, Counter &counter) noexcept {
+void SchedulerState::park(Fiber *fiber, fiber::counter &counter) noexcept {
   {
     scoped_lock guard(counter.m_lock);
     counter.m_waiters.fetch_add(1, std::memory_order_seq_cst);
@@ -560,12 +561,12 @@ void SchedulerState::execute(const Work &work) noexcept {
 }
 
 void SchedulerState::switch_fiber(Fiber *from, Fiber *to, const After after,
-                                  Counter *counter) noexcept {
+                                  fiber::counter *counter) noexcept {
   switch_with(Handoff{after, from, to, counter});
 }
 
 void SchedulerState::switch_with(Handoff out) noexcept {
-  const Transfer in = switch_to(out.subject->context, out.to->context, &out);
+  const transfer in = switch_to(out.subject->context, out.to->context, &out);
   complete(*static_cast<const Handoff *>(in.data));
 }
 
@@ -627,7 +628,7 @@ void SchedulerState::suspend(const After after) noexcept {
   }
 }
 
-void SchedulerState::suspend_until(Worker *worker, Counter &counter,
+void SchedulerState::suspend_until(Worker *worker, fiber::counter &counter,
                                    const u32 target) noexcept {
   assert_may_suspend();
   if (worker->role == Role::Main) {
@@ -646,7 +647,8 @@ void SchedulerState::suspend_until(Worker *worker, Counter &counter,
 
 // Only reached when every fiber is in use: rather than deadlock, the waiting
 // fiber runs queued jobs on its own stack.
-void SchedulerState::help_until(Counter &counter, const u32 target) noexcept {
+void SchedulerState::help_until(fiber::counter &counter,
+                                const u32 target) noexcept {
   if (limit_hits.fetch_add(1, std::memory_order_relaxed) == 0)
     logw(log_fiber,
          "fiber: all {} fibers are in use; waits now run jobs "
@@ -810,9 +812,10 @@ bool SchedulerState::serve_main(const function_ref<bool()> done,
 }
 
 // A token on this stack rather than the thread's own fiber, so a job that
-// waits inside another wait parks separately. Counter::decrement releases it
+// waits inside another wait parks separately. counter::decrement releases it
 // before settle() lets this frame end.
-void SchedulerState::wait_on_main(Counter &counter, const u32 target) noexcept {
+void SchedulerState::wait_on_main(fiber::counter &counter,
+                                  const u32 target) noexcept {
   Fiber token;
   token.owner = this;
   token.affinity = Affinity::Main;
@@ -1140,7 +1143,7 @@ void resume(const Claimed &claimed) noexcept {
 
 } // namespace internal
 
-Scheduler::Scheduler(const Config &config) {
+scheduler::scheduler(const config &config) {
   NX_ASSERT(!config.adopt_main_thread || current_worker() == nullptr,
             "a thread can be the main thread of only one fiber scheduler");
   m_state = allocate<SchedulerState>(config);
@@ -1155,7 +1158,7 @@ Scheduler::Scheduler(const Config &config) {
   }
 }
 
-Scheduler::~Scheduler() {
+scheduler::~scheduler() {
   SchedulerState &state = *m_state;
   if (state.config.adopt_main_thread) {
     Worker *main = state.workers[0];
@@ -1186,15 +1189,16 @@ Scheduler::~Scheduler() {
   release(m_state);
 }
 
-void Scheduler::run(std::span<const Job> jobs, Counter *counter,
-                    const Priority priority) {
+void scheduler::run(std::span<const job> jobs, fiber::counter *counter,
+                    const fiber::priority priority) {
   m_state->submit(jobs, counter, priority, Affinity::Any);
 }
 
-void Scheduler::run_on_main(std::span<const Job> jobs, Counter *counter) {
+void scheduler::run_on_main(std::span<const job> jobs,
+                            fiber::counter *counter) {
   NX_ASSERT(m_state->config.adopt_main_thread,
             "run_on_main needs a scheduler with a main thread");
-  m_state->submit(jobs, counter, Priority::Normal, Affinity::Main);
+  m_state->submit(jobs, counter, fiber::priority::Normal, Affinity::Main);
 }
 
 // The fiber itself moves, so fn runs on its stack with its fiber_local, and
@@ -1234,7 +1238,7 @@ void run_blocking(const function_ref<void()> fn) noexcept {
   state->suspend(After::Ready);
 }
 
-void wait(Counter &counter, const u32 target) noexcept {
+void wait(fiber::counter &counter, const u32 target) noexcept {
   if (counter.value() > target) {
     if (Worker *worker = current_worker()) {
       worker->state->suspend_until(worker, counter, target);
@@ -1253,14 +1257,14 @@ void wait(Counter &counter, const u32 target) noexcept {
   SchedulerState::settle(counter);
 }
 
-void Scheduler::yield() {
+void scheduler::yield() {
   if (in_fiber())
     m_state->suspend(After::Yield);
   else
     this_thread::yield();
 }
 
-void Scheduler::pump_main(const std::chrono::nanoseconds budget) {
+void scheduler::pump_main(const std::chrono::nanoseconds budget) {
   SchedulerState &state = *m_state;
   Worker *main = state.this_worker();
   NX_ASSERT(main && main->role == Role::Main &&
@@ -1270,19 +1274,21 @@ void Scheduler::pump_main(const std::chrono::nanoseconds budget) {
 }
 
 namespace {
-thread_local void *t_local[nx::cast<usize>(LocalSlot::Count)] = {};
+thread_local void *t_local[nx::cast<usize>(local_slot::Count)] = {};
 
-NX_NO_INLINE void **local_slot(const LocalSlot slot) noexcept {
+NX_NO_INLINE void **slot_address(const local_slot slot) noexcept {
   const auto index = nx::cast<usize>(slot);
   Worker *worker = current_worker();
   return worker ? &worker->current->local[index] : &t_local[index];
 }
 } // namespace
 
-void *fiber_local(const LocalSlot slot) noexcept { return *local_slot(slot); }
+void *fiber_local(const local_slot slot) noexcept {
+  return *slot_address(slot);
+}
 
-void set_fiber_local(void *value, const LocalSlot slot) noexcept {
-  *local_slot(slot) = value;
+void set_fiber_local(void *value, const local_slot slot) noexcept {
+  *slot_address(slot) = value;
 }
 
 bool in_fiber() noexcept {
@@ -1290,16 +1296,16 @@ bool in_fiber() noexcept {
   return worker && worker->current != &worker->thread_fiber;
 }
 
-bool Scheduler::on_worker_thread() const noexcept {
+bool scheduler::on_worker_thread() const noexcept {
   const Worker *worker = m_state->this_worker();
   return worker && worker->role == Role::General;
 }
 
-u32 Scheduler::worker_count() const noexcept {
+u32 scheduler::worker_count() const noexcept {
   return m_state->config.worker_count;
 }
 
-usize Scheduler::worker_os_ids(const std::span<u64> out) const noexcept {
+usize scheduler::worker_os_ids(const std::span<u64> out) const noexcept {
   usize written = 0;
   for (const Worker *worker : m_state->workers) {
     if (worker->role != Role::General || written == out.size())
@@ -1311,19 +1317,19 @@ usize Scheduler::worker_os_ids(const std::span<u64> out) const noexcept {
   return written;
 }
 
-bool Scheduler::on_main_thread() const noexcept {
+bool scheduler::on_main_thread() const noexcept {
   const Worker *worker = m_state->this_worker();
   return worker && worker->role == Role::Main;
 }
 
-bool Scheduler::in_fiber() const noexcept {
+bool scheduler::in_fiber() const noexcept {
   const Worker *worker = m_state->this_worker();
   return worker && worker->current != &worker->thread_fiber;
 }
 
-Scheduler::Stats Scheduler::stats() const noexcept {
+scheduler_stats scheduler::stats() const noexcept {
   const SchedulerState &state = *m_state;
-  Stats stats;
+  scheduler_stats stats;
   stats.workers = state.config.worker_count;
   stats.blocking_threads = state.config.blocking_threads;
   stats.fibers_created = min(state.fiber_count.load(std::memory_order_relaxed),

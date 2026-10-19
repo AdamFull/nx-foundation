@@ -40,7 +40,7 @@ constexpr usize READ_CHUNK = 256u * 1024u;
 } // namespace
 
 struct AsyncIoService::BudgetWaiter {
-  fiber::Counter pending{1};
+  fiber::counter pending{1};
   std::atomic<bool> woken{false};
 
   // Released bytes and cancellation may both wake the same waiter.
@@ -481,7 +481,7 @@ void AsyncIoService::release_admission() noexcept {
 }
 
 void AsyncIoService::reacquire_admission() {
-  fiber::Counter admitted(1);
+  fiber::counter admitted(1);
   {
     nx::scoped_lock lock(m_budget_lock);
     if (m_readmit.empty() && m_fallback_active < m_fallback_limit) {
@@ -497,7 +497,7 @@ void AsyncIoService::pump_fallback() noexcept {
   for (;;) {
     nx::detail::task_fn job;
     task_priority priority = task_priority::Normal;
-    fiber::Counter *readmitted = nullptr;
+    fiber::counter *readmitted = nullptr;
     {
       nx::scoped_lock lock(m_budget_lock);
       if (!m_readmit.empty()) {

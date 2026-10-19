@@ -35,8 +35,8 @@ namespace nx::fiber {
 namespace {
 
 struct RawTransfer {
-  Context *from;
-  Context *to;
+  context *from;
+  context *to;
   void *data;
 };
 
@@ -52,7 +52,7 @@ template <typename T> void store(u8 *frame, usize offset, T value) noexcept {
 // Builds a frame that nx_fiber_switch restores as if the fiber had suspended
 // itself, returning into nx_fiber_start. Offsets mirror the context_*.asm/.S
 // frame layouts.
-void *build_initial_frame(const Stack &stack) noexcept {
+void *build_initial_frame(const fiber::stack &stack) noexcept {
   const uintptr_t top =
       reinterpret_cast<uintptr_t>(stack.base) & ~uintptr_t(15);
   auto *const start = reinterpret_cast<void *>(&nx_fiber_start);
@@ -91,7 +91,7 @@ void *build_initial_frame(const Stack &stack) noexcept {
 } // namespace
 
 struct ContextAccess {
-  static void before_switch(Context &from, Context &to,
+  static void before_switch(context &from, context &to,
                             bool from_exits) noexcept {
     NX_ASSERT(to.m_sp, "switching to a fiber that is running or never started");
 #if NX_TSAN_ENABLED
@@ -110,7 +110,7 @@ struct ContextAccess {
   }
 
   static void after_switch(const RawTransfer &in) noexcept {
-    Context &self = *in.to;
+    context &self = *in.to;
     self.m_sp = nullptr;
 #if NX_ASAN_ENABLED
     const void *from_bottom = nullptr;
@@ -129,24 +129,24 @@ struct ContextAccess {
 
   [[noreturn]] static void run(const RawTransfer &in) noexcept {
     after_switch(in);
-    in.to->m_entry(Transfer{in.from, in.data});
+    in.to->m_entry(transfer{in.from, in.data});
     NX_ASSERT(false, "fiber entry returned");
     std::abort();
   }
 };
 
-Context::Context(const Stack &stack, const EntryFn entry) noexcept {
+context::context(const fiber::stack &stack, const entry_fn entry) noexcept {
   reset(stack, entry);
 }
 
-Context::~Context() noexcept {
+context::~context() noexcept {
 #if NX_TSAN_ENABLED
   if (m_owns_tsan_fiber)
     __tsan_destroy_fiber(m_tsan_fiber);
 #endif
 }
 
-void Context::reset(const Stack &stack, const EntryFn entry) noexcept {
+void context::reset(const fiber::stack &stack, const entry_fn entry) noexcept {
   NX_ASSERT(stack && entry);
   m_entry = entry;
   m_stack_bottom = stack.limit;
@@ -165,17 +165,17 @@ void Context::reset(const Stack &stack, const EntryFn entry) noexcept {
   m_sp = build_initial_frame(stack);
 }
 
-Transfer switch_to(Context &from, Context &to, void *data) noexcept {
+transfer switch_to(context &from, context &to, void *data) noexcept {
   ContextAccess::before_switch(from, to, false);
   RawTransfer out{&from, &to, data};
   const auto *in = static_cast<const RawTransfer *>(
       nx_fiber_switch(&from.m_sp, to.m_sp, &out));
   NX_ASSERT(in->to == &from);
   ContextAccess::after_switch(*in);
-  return Transfer{in->from, in->data};
+  return transfer{in->from, in->data};
 }
 
-void exit_to(Context &from, Context &to, void *data) noexcept {
+void exit_to(context &from, context &to, void *data) noexcept {
   ContextAccess::before_switch(from, to, true);
   RawTransfer out{&from, &to, data};
   nx_fiber_switch(&from.m_sp, to.m_sp, &out);

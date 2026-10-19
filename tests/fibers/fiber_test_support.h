@@ -12,19 +12,19 @@ namespace fiber_test {
 struct Call {
   void (*invoke)(void *);
   void *fn;
-  nx::fiber::Context *self;
+  nx::fiber::context *self;
 };
 
 // Runs fn to completion on a fiber from pool and returns to the caller. REQUIRE
 // throws, and an exception must not escape a fiber, so fn may only CHECK.
 template <typename F>
-void run_on_fiber(nx::fiber::StackPool &pool, F &&fn,
-                  nx::fiber::Stack *used = nullptr) {
+void run_on_fiber(nx::fiber::stack_pool &pool, F &&fn,
+                  nx::fiber::stack *used = nullptr) {
   using Fn = std::remove_reference_t<F>;
   auto stack = pool.acquire();
   REQUIRE(stack.has_value());
-  nx::fiber::Context caller;
-  nx::fiber::Context fiber(*stack, [](nx::fiber::Transfer t) {
+  nx::fiber::context caller;
+  nx::fiber::context fiber(*stack, [](nx::fiber::transfer t) {
     auto *call = static_cast<Call *>(t.data);
     call->invoke(call->fn);
     nx::fiber::exit_to(*call->self, *t.from);

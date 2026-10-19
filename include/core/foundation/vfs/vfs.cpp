@@ -38,7 +38,7 @@ bool match_mount(const nx::string_view prefix, const nx::string_view v,
 /// neither other mounts nor mount changes; unmount waits for its own users.
 struct Mounted {
   Device *device = nullptr;
-  fiber::Counter users;
+  fiber::counter users;
 };
 
 struct Mount {

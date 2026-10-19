@@ -10,19 +10,15 @@
 #include <vector>
 
 using namespace std::chrono_literals;
-using nx::fiber::Counter;
-using nx::fiber::Job;
-using nx::fiber::Priority;
-using nx::fiber::Scheduler;
 
 namespace {
 
-template <typename F> Job job_of(F &fn) {
-  return Job{[](void *arg) { (*static_cast<F *>(arg))(); }, &fn};
+template <typename F> nx::fiber::job job_of(F &fn) {
+  return nx::fiber::job{[](void *arg) { (*static_cast<F *>(arg))(); }, &fn};
 }
 
 struct Tree {
-  Scheduler *scheduler = nullptr;
+  nx::fiber::scheduler *scheduler = nullptr;
   std::atomic<u32> *leaves = nullptr;
   u32 depth = 0;
 };
@@ -36,12 +32,12 @@ void spawn_tree(void *arg) {
     return;
   }
   Tree children[4];
-  Job jobs[4];
+  nx::fiber::job jobs[4];
   for (u32 i = 0; i < 4; ++i) {
     children[i] = Tree{node.scheduler, node.leaves, node.depth - 1};
-    jobs[i] = Job{&spawn_tree, &children[i]};
+    jobs[i] = nx::fiber::job{&spawn_tree, &children[i]};
   }
-  Counter counter;
+  nx::fiber::counter counter;
   node.scheduler->run(jobs, &counter);
   node.scheduler->wait(counter);
 }
@@ -50,7 +46,7 @@ void spawn_tree(void *arg) {
 
 TEST_CASE("fiber scheduler: runs a batch on worker threads and the main "
           "thread waits for it") {
-  Scheduler scheduler({.worker_count = 3});
+  nx::fiber::scheduler scheduler({.worker_count = 3});
   const u64 main_id = nx::this_thread::id();
   std::atomic<u32> ran{0};
   std::atomic<u32> on_main{0};
@@ -59,8 +55,8 @@ TEST_CASE("fiber scheduler: runs a batch on worker threads and the main "
     if (nx::this_thread::id() == main_id)
       on_main.fetch_add(1);
   };
-  std::vector<Job> jobs(200, job_of(body));
-  Counter counter;
+  std::vector<nx::fiber::job> jobs(200, job_of(body));
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   scheduler.wait(counter);
   CHECK(ran.load() == 200);
@@ -70,11 +66,11 @@ TEST_CASE("fiber scheduler: runs a batch on worker threads and the main "
 
 TEST_CASE("fiber scheduler: waiting inside a job suspends the fiber, not the "
           "thread") {
-  Scheduler scheduler({.worker_count = 2, .max_fibers = 256});
+  nx::fiber::scheduler scheduler({.worker_count = 2, .max_fibers = 256});
   std::atomic<u32> leaves{0};
   Tree root{&scheduler, &leaves, 3};
-  Counter counter;
-  const Job job{&spawn_tree, &root};
+  nx::fiber::counter counter;
+  const nx::fiber::job job{&spawn_tree, &root};
   scheduler.run({&job, 1}, &counter);
   scheduler.wait(counter);
   CHECK(leaves.load() == 64);
@@ -83,11 +79,11 @@ TEST_CASE("fiber scheduler: waiting inside a job suspends the fiber, not the "
 
 TEST_CASE("fiber scheduler: past the fiber limit, waits run work nested and "
           "still finish") {
-  Scheduler scheduler({.worker_count = 2, .max_fibers = 4});
+  nx::fiber::scheduler scheduler({.worker_count = 2, .max_fibers = 4});
   std::atomic<u32> leaves{0};
   Tree root{&scheduler, &leaves, 3};
-  Counter counter;
-  const Job job{&spawn_tree, &root};
+  nx::fiber::counter counter;
+  const nx::fiber::job job{&spawn_tree, &root};
   scheduler.run({&job, 1}, &counter);
   scheduler.wait(counter);
   CHECK(leaves.load() == 64);
@@ -97,7 +93,7 @@ TEST_CASE("fiber scheduler: past the fiber limit, waits run work nested and "
 
 TEST_CASE("fiber scheduler: main-affine jobs run on the main thread only "
           "when it pumps") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   const u64 main_id = nx::this_thread::id();
   std::atomic<u32> ran{0};
   std::atomic<u32> on_main{0};
@@ -106,8 +102,8 @@ TEST_CASE("fiber scheduler: main-affine jobs run on the main thread only "
     if (nx::this_thread::id() == main_id)
       on_main.fetch_add(1);
   };
-  std::vector<Job> jobs(10, job_of(body));
-  Counter counter;
+  std::vector<nx::fiber::job> jobs(10, job_of(body));
+  nx::fiber::counter counter;
   scheduler.run_on_main(jobs, &counter);
   nx::this_thread::sleep_for(20ms);
   CHECK(ran.load() == 0);
@@ -120,7 +116,7 @@ TEST_CASE("fiber scheduler: main-affine jobs run on the main thread only "
 
 TEST_CASE("fiber scheduler: main-affine work a job waits for runs on the main "
           "thread's own stack") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   const u64 main_id = nx::this_thread::id();
   u64 during = 0;
   bool in_fiber = true;
@@ -128,18 +124,18 @@ TEST_CASE("fiber scheduler: main-affine work a job waits for runs on the main "
     during = nx::this_thread::id();
     in_fiber = scheduler.in_fiber();
   };
-  const Job main_job = job_of(on_main);
+  const nx::fiber::job main_job = job_of(on_main);
   u64 before = 0;
   u64 after = 0;
   auto body = [&] {
     before = nx::this_thread::id();
-    Counter done;
+    nx::fiber::counter done;
     scheduler.run_on_main({&main_job, 1}, &done);
     scheduler.wait(done);
     after = nx::this_thread::id();
   };
-  const Job job = job_of(body);
-  Counter counter;
+  const nx::fiber::job job = job_of(body);
+  nx::fiber::counter counter;
   scheduler.run({&job, 1}, &counter);
   scheduler.wait(counter);
   CHECK(before != main_id);
@@ -150,27 +146,27 @@ TEST_CASE("fiber scheduler: main-affine work a job waits for runs on the main "
 
 TEST_CASE("fiber scheduler: main-affine work may wait while the main thread "
           "waits") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   std::atomic<u32> leaves{0};
   auto leaf = [&] { leaves.fetch_add(1); };
-  const Job leaf_job = job_of(leaf);
+  const nx::fiber::job leaf_job = job_of(leaf);
   // Runs in place inside the main thread's wait, then waits itself.
   auto on_main = [&] {
-    Counter inner;
+    nx::fiber::counter inner;
     scheduler.run({&leaf_job, 1}, &inner);
     scheduler.wait(inner);
-    Counter nested;
+    nx::fiber::counter nested;
     scheduler.run({&leaf_job, 1}, &nested);
     scheduler.wait(nested);
   };
-  const Job main_job = job_of(on_main);
+  const nx::fiber::job main_job = job_of(on_main);
   auto body = [&] {
-    Counter done;
+    nx::fiber::counter done;
     scheduler.run_on_main({&main_job, 1}, &done);
     scheduler.wait(done);
   };
-  const Job job = job_of(body);
-  Counter counter;
+  const nx::fiber::job job = job_of(body);
+  nx::fiber::counter counter;
   scheduler.run({&job, 1}, &counter);
   scheduler.wait(counter);
   CHECK(leaves.load() == 2);
@@ -178,18 +174,18 @@ TEST_CASE("fiber scheduler: main-affine work may wait while the main thread "
 
 TEST_CASE("fiber scheduler: a timed wait on the main thread serves main "
           "work, then times out") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   const u64 main_id = nx::this_thread::id();
   nx::fiber::event never;
   std::atomic<u64> ran_on{0};
   auto on_main = [&] { ran_on = nx::this_thread::id(); };
-  const Job main_job = job_of(on_main);
+  const nx::fiber::job main_job = job_of(on_main);
   auto body = [&] {
     nx::this_thread::sleep_for(5ms);
     scheduler.run_on_main({&main_job, 1});
   };
-  const Job job = job_of(body);
-  Counter counter;
+  const nx::fiber::job job = job_of(body);
+  nx::fiber::counter counter;
   scheduler.run({&job, 1}, &counter);
 
   const auto start = std::chrono::steady_clock::now();
@@ -201,14 +197,14 @@ TEST_CASE("fiber scheduler: a timed wait on the main thread serves main "
 
 TEST_CASE("fiber scheduler: a wait on the main thread ends when a worker "
           "wakes it") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   nx::fiber::event later;
   auto body = [&] {
     nx::this_thread::sleep_for(10ms);
     later.set();
   };
-  const Job job = job_of(body);
-  Counter counter;
+  const nx::fiber::job job = job_of(body);
+  nx::fiber::counter counter;
   scheduler.run({&job, 1}, &counter);
 
   const auto start = std::chrono::steady_clock::now();
@@ -218,7 +214,7 @@ TEST_CASE("fiber scheduler: a wait on the main thread ends when a worker "
 }
 
 TEST_CASE("fiber scheduler: yield lets queued work run on the same worker") {
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   std::atomic<bool> released{false};
   u32 yields = 0;
   auto waiter = [&] {
@@ -226,8 +222,8 @@ TEST_CASE("fiber scheduler: yield lets queued work run on the same worker") {
       ++yields, scheduler.yield();
   };
   auto releaser = [&] { released.store(true); };
-  const Job jobs[] = {job_of(waiter), job_of(releaser)};
-  Counter counter;
+  const nx::fiber::job jobs[] = {job_of(waiter), job_of(releaser)};
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   scheduler.wait(counter);
   CHECK(released.load());
@@ -236,15 +232,15 @@ TEST_CASE("fiber scheduler: yield lets queued work run on the same worker") {
 
 TEST_CASE("fiber scheduler: a counter decremented by a foreign thread wakes "
           "a waiting fiber") {
-  Scheduler scheduler({.worker_count = 2});
-  Counter external(1);
+  nx::fiber::scheduler scheduler({.worker_count = 2});
+  nx::fiber::counter external(1);
   std::atomic<bool> resumed{false};
   auto body = [&] {
     scheduler.wait(external);
     resumed.store(true);
   };
-  const Job job = job_of(body);
-  Counter done;
+  const nx::fiber::job job = job_of(body);
+  nx::fiber::counter done;
   scheduler.run({&job, 1}, &done);
   nx::this_thread::sleep_for(20ms);
   CHECK_FALSE(resumed.load());
@@ -256,14 +252,14 @@ TEST_CASE("fiber scheduler: a counter decremented by a foreign thread wakes "
 }
 
 TEST_CASE("fiber scheduler: a thread the scheduler does not own can wait") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   std::atomic<u32> ran{0};
   auto body = [&] {
     nx::this_thread::sleep_for(1ms);
     ran.fetch_add(1);
   };
-  std::vector<Job> jobs(16, job_of(body));
-  Counter counter;
+  std::vector<nx::fiber::job> jobs(16, job_of(body));
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   bool finished = false;
   nx::thread foreign([&] {
@@ -276,7 +272,7 @@ TEST_CASE("fiber scheduler: a thread the scheduler does not own can wait") {
 
 TEST_CASE("fiber scheduler: high priority jobs start before low priority "
           "ones") {
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   std::atomic<bool> gate{false};
   std::vector<u32> order;
   auto blocker = [&] {
@@ -285,14 +281,14 @@ TEST_CASE("fiber scheduler: high priority jobs start before low priority "
   };
   auto low = [&] { order.push_back(0); };
   auto high = [&] { order.push_back(1); };
-  const Job first = job_of(blocker);
-  Counter counter;
+  const nx::fiber::job first = job_of(blocker);
+  nx::fiber::counter counter;
   scheduler.run({&first, 1}, &counter);
   nx::this_thread::sleep_for(10ms);
-  const std::vector<Job> lows(4, job_of(low));
-  const std::vector<Job> highs(4, job_of(high));
-  scheduler.run(lows, &counter, Priority::Low);
-  scheduler.run(highs, &counter, Priority::High);
+  const std::vector<nx::fiber::job> lows(4, job_of(low));
+  const std::vector<nx::fiber::job> highs(4, job_of(high));
+  scheduler.run(lows, &counter, nx::fiber::priority::Low);
+  scheduler.run(highs, &counter, nx::fiber::priority::High);
   gate.store(true);
   scheduler.wait(counter);
   REQUIRE(order.size() == 8);
@@ -300,7 +296,7 @@ TEST_CASE("fiber scheduler: high priority jobs start before low priority "
 }
 
 TEST_CASE("fiber scheduler: pump_main returns after its budget when idle") {
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   const auto start = std::chrono::steady_clock::now();
   scheduler.pump_main(5ms);
   const auto elapsed = std::chrono::steady_clock::now() - start;
@@ -315,27 +311,27 @@ TEST_CASE("fiber scheduler: destruction finishes outstanding jobs") {
     ran.fetch_add(1);
   };
   {
-    Scheduler scheduler({.worker_count = 2});
-    std::vector<Job> jobs(32, job_of(body));
+    nx::fiber::scheduler scheduler({.worker_count = 2});
+    std::vector<nx::fiber::job> jobs(32, job_of(body));
     scheduler.run(jobs);
-    std::vector<Job> main_jobs(4, job_of(body));
+    std::vector<nx::fiber::job> main_jobs(4, job_of(body));
     scheduler.run_on_main(main_jobs);
   }
   CHECK(ran.load() == 36);
 }
 
 TEST_CASE("fiber scheduler: many concurrent waits and wakes stay consistent") {
-  Scheduler scheduler({.worker_count = 4});
+  nx::fiber::scheduler scheduler({.worker_count = 4});
   std::atomic<u32> leaves{0};
   constexpr u32 ROOTS = 64;
   Tree roots[ROOTS];
-  Job jobs[ROOTS];
+  nx::fiber::job jobs[ROOTS];
   for (u32 i = 0; i < ROOTS; ++i) {
     roots[i] = Tree{&scheduler, &leaves, 3};
-    jobs[i] = Job{&spawn_tree, &roots[i]};
+    jobs[i] = nx::fiber::job{&spawn_tree, &roots[i]};
   }
   for (u32 round = 0; round < 5; ++round) {
-    Counter counter;
+    nx::fiber::counter counter;
     scheduler.run(jobs, &counter);
     scheduler.wait(counter);
   }
@@ -346,38 +342,38 @@ TEST_CASE("fiber scheduler: many concurrent waits and wakes stay consistent") {
 
 TEST_CASE("fiber scheduler: a wake racing the suspension is neither lost nor "
           "early") {
-  Scheduler scheduler({.worker_count = 3});
+  nx::fiber::scheduler scheduler({.worker_count = 3});
   constexpr u32 JOBS = 4;
   constexpr u32 ROUNDS = 20000;
-  std::atomic<Counter *> slots[JOBS] = {};
+  std::atomic<nx::fiber::counter *> slots[JOBS] = {};
   std::atomic<bool> stop{false};
   nx::thread waker([&] {
     while (!stop.load(std::memory_order_acquire))
       for (auto &slot : slots)
-        if (Counter *counter = slot.exchange(nullptr))
+        if (nx::fiber::counter *counter = slot.exchange(nullptr))
           counter->decrement();
   });
 
   struct Waiter {
-    Scheduler *scheduler;
-    std::atomic<Counter *> *slot;
+    nx::fiber::scheduler *scheduler;
+    std::atomic<nx::fiber::counter *> *slot;
     u32 finished = 0;
   } waiters[JOBS];
-  Job jobs[JOBS];
+  nx::fiber::job jobs[JOBS];
   for (u32 i = 0; i < JOBS; ++i) {
     waiters[i] = Waiter{&scheduler, &slots[i]};
-    jobs[i] = Job{[](void *arg) {
-                    auto &waiter = *static_cast<Waiter *>(arg);
-                    for (u32 round = 0; round < ROUNDS; ++round) {
-                      Counter counter(1);
-                      waiter.slot->store(&counter);
-                      waiter.scheduler->wait(counter);
-                      waiter.finished += counter.value() == 0;
-                    }
-                  },
-                  &waiters[i]};
+    jobs[i] = nx::fiber::job{[](void *arg) {
+                               auto &waiter = *static_cast<Waiter *>(arg);
+                               for (u32 round = 0; round < ROUNDS; ++round) {
+                                 nx::fiber::counter counter(1);
+                                 waiter.slot->store(&counter);
+                                 waiter.scheduler->wait(counter);
+                                 waiter.finished += counter.value() == 0;
+                               }
+                             },
+                             &waiters[i]};
   }
-  Counter done;
+  nx::fiber::counter done;
   scheduler.run(jobs, &done);
   scheduler.wait(done);
   stop.store(true, std::memory_order_release);
@@ -388,10 +384,10 @@ TEST_CASE("fiber scheduler: a wake racing the suspension is neither lost nor "
 
 TEST_CASE("fiber scheduler: schedulers without a main thread coexist beside "
           "one with") {
-  Scheduler main_scheduler({.worker_count = 1});
-  Scheduler a(
+  nx::fiber::scheduler main_scheduler({.worker_count = 1});
+  nx::fiber::scheduler a(
       {.worker_count = 2, .name = "test-a", .adopt_main_thread = false});
-  Scheduler b(
+  nx::fiber::scheduler b(
       {.worker_count = 2, .name = "test-b", .adopt_main_thread = false});
   CHECK(main_scheduler.on_main_thread());
   CHECK_FALSE(a.on_main_thread());
@@ -403,10 +399,10 @@ TEST_CASE("fiber scheduler: schedulers without a main thread coexist beside "
   auto body_b = [&] {
     on_b.fetch_add(b.on_worker_thread() && !a.on_worker_thread() ? 1 : 0);
   };
-  const std::vector<Job> jobs_a(100, job_of(body_a));
-  const std::vector<Job> jobs_b(100, job_of(body_b));
-  Counter done_a;
-  Counter done_b;
+  const std::vector<nx::fiber::job> jobs_a(100, job_of(body_a));
+  const std::vector<nx::fiber::job> jobs_b(100, job_of(body_b));
+  nx::fiber::counter done_a;
+  nx::fiber::counter done_b;
   a.run(jobs_a, &done_a);
   b.run(jobs_b, &done_b);
   nx::fiber::wait(done_a);
@@ -418,9 +414,9 @@ TEST_CASE("fiber scheduler: schedulers without a main thread coexist beside "
 
 TEST_CASE("fiber scheduler: a fiber waits on work from another scheduler "
           "without blocking its thread") {
-  Scheduler home({.worker_count = 1});
-  Scheduler other({.worker_count = 1, .adopt_main_thread = false});
-  Counter remote(1);
+  nx::fiber::scheduler home({.worker_count = 1});
+  nx::fiber::scheduler other({.worker_count = 1, .adopt_main_thread = false});
+  nx::fiber::counter remote(1);
   std::atomic<bool> released{false};
   std::atomic<bool> neighbour_ran_first{false};
   auto waiter = [&] { nx::fiber::wait(remote); };
@@ -430,10 +426,10 @@ TEST_CASE("fiber scheduler: a fiber waits on work from another scheduler "
     released.store(true);
     remote.decrement();
   };
-  const Job home_jobs[] = {job_of(waiter), job_of(neighbour)};
-  const Job other_job = job_of(release);
-  Counter home_done;
-  Counter other_done;
+  const nx::fiber::job home_jobs[] = {job_of(waiter), job_of(neighbour)};
+  const nx::fiber::job other_job = job_of(release);
+  nx::fiber::counter home_done;
+  nx::fiber::counter other_done;
   home.run(home_jobs, &home_done);
   other.run({&other_job, 1}, &other_done);
   home.wait(home_done);
@@ -442,31 +438,31 @@ TEST_CASE("fiber scheduler: a fiber waits on work from another scheduler "
 }
 
 TEST_CASE("fiber scheduler: fiber_local follows its job across a migration") {
-  Scheduler scheduler({.worker_count = 3});
+  nx::fiber::scheduler scheduler({.worker_count = 3});
   std::atomic<u32> mismatches{0};
   std::atomic<u32> dirty_starts{0};
   struct Local {
-    Scheduler *scheduler;
+    nx::fiber::scheduler *scheduler;
     std::atomic<u32> *mismatches;
     std::atomic<u32> *dirty_starts;
   } shared{&scheduler, &mismatches, &dirty_starts};
-  const Job job{[](void *arg) {
-                  auto &local = *static_cast<Local *>(arg);
-                  if (nx::fiber::fiber_local() != nullptr)
-                    local.dirty_starts->fetch_add(1);
-                  u32 marker = 0;
-                  nx::fiber::set_fiber_local(&marker);
-                  for (u32 i = 0; i < 20; ++i) {
-                    local.scheduler->yield();
-                    if (nx::fiber::fiber_local() != &marker)
-                      local.mismatches->fetch_add(1);
-                  }
-                },
-                &shared};
-  const std::vector<Job> jobs(64, job);
+  const nx::fiber::job job{[](void *arg) {
+                             auto &local = *static_cast<Local *>(arg);
+                             if (nx::fiber::fiber_local() != nullptr)
+                               local.dirty_starts->fetch_add(1);
+                             u32 marker = 0;
+                             nx::fiber::set_fiber_local(&marker);
+                             for (u32 i = 0; i < 20; ++i) {
+                               local.scheduler->yield();
+                               if (nx::fiber::fiber_local() != &marker)
+                                 local.mismatches->fetch_add(1);
+                             }
+                           },
+                           &shared};
+  const std::vector<nx::fiber::job> jobs(64, job);
   // The second wave starts on fibers recycled from the first.
   for (u32 wave = 0; wave < 2; ++wave) {
-    Counter counter;
+    nx::fiber::counter counter;
     scheduler.run(jobs, &counter);
     scheduler.wait(counter);
   }
@@ -478,8 +474,8 @@ TEST_CASE("fiber scheduler: fiber_local follows its job across a migration") {
 namespace {
 
 struct Flood {
-  Scheduler *scheduler = nullptr;
-  Counter *counter = nullptr;
+  nx::fiber::scheduler *scheduler = nullptr;
+  nx::fiber::counter *counter = nullptr;
   std::atomic<bool> low_ran{false};
   std::atomic<u32> high_runs{0};
   u32 high_runs_before_low = 0;
@@ -490,8 +486,8 @@ void flood_high(void *arg) {
   auto &flood = *static_cast<Flood *>(arg);
   const u32 runs = flood.high_runs.fetch_add(1) + 1;
   if (!flood.low_ran.load() && runs < 100000) {
-    const Job next{&flood_high, arg};
-    flood.scheduler->run({&next, 1}, flood.counter, Priority::High);
+    const nx::fiber::job next{&flood_high, arg};
+    flood.scheduler->run({&next, 1}, flood.counter, nx::fiber::priority::High);
   }
 }
 
@@ -505,22 +501,22 @@ void record_low(void *arg) {
 
 TEST_CASE("fiber scheduler: sustained high priority work cannot starve low "
           "priority work") {
-  Scheduler scheduler({.worker_count = 1});
-  Counter counter;
+  nx::fiber::scheduler scheduler({.worker_count = 1});
+  nx::fiber::counter counter;
   Flood flood;
   flood.scheduler = &scheduler;
   flood.counter = &counter;
-  const Job high{&flood_high, &flood};
-  const Job low{&record_low, &flood};
-  scheduler.run({&high, 1}, &counter, Priority::High);
-  scheduler.run({&low, 1}, &counter, Priority::Low);
+  const nx::fiber::job high{&flood_high, &flood};
+  const nx::fiber::job low{&record_low, &flood};
+  scheduler.run({&high, 1}, &counter, nx::fiber::priority::High);
+  scheduler.run({&low, 1}, &counter, nx::fiber::priority::Low);
   scheduler.wait(counter);
   CHECK(flood.low_ran.load());
   CHECK(flood.high_runs_before_low < 100);
 }
 
 TEST_CASE("fiber scheduler: an idle pump_main returns close to its budget") {
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   std::vector<std::chrono::steady_clock::duration> overshoots;
   for (u32 i = 0; i < 21; ++i) {
     const auto deadline = std::chrono::steady_clock::now() + 1ms;
@@ -554,7 +550,7 @@ void wait_for_flag(const std::atomic<bool> &flag) {
 
 TEST_CASE("fiber scheduler: run_blocking moves the job to a service thread "
           "and back") {
-  Scheduler scheduler({.worker_count = 2, .blocking_threads = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 2, .blocking_threads = 1});
   CHECK(scheduler.worker_count() == 2u);
   CHECK(scheduler.stats().blocking_threads == 1u);
   u64 before = 0;
@@ -575,8 +571,8 @@ TEST_CASE("fiber scheduler: run_blocking moves the job to a service thread "
     });
     after_on_worker = scheduler.on_worker_thread();
   };
-  const Job job = job_of(body);
-  Counter counter;
+  const nx::fiber::job job = job_of(body);
+  nx::fiber::counter counter;
   scheduler.run({&job, 1}, &counter);
   scheduler.wait(counter);
   CHECK(during != before);
@@ -588,7 +584,7 @@ TEST_CASE("fiber scheduler: run_blocking moves the job to a service thread "
 
 TEST_CASE("fiber scheduler: a worker keeps running jobs while another job "
           "blocks in run_blocking") {
-  Scheduler scheduler({.worker_count = 1, .blocking_threads = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1, .blocking_threads = 1});
   std::atomic<bool> blocking{false};
   std::atomic<bool> released{false};
   bool saw_release = false;
@@ -599,9 +595,9 @@ TEST_CASE("fiber scheduler: a worker keeps running jobs while another job "
     });
   };
   auto releaser = [&] { released.store(true); };
-  const Job first = job_of(blocker);
-  const Job second = job_of(releaser);
-  Counter counter;
+  const nx::fiber::job first = job_of(blocker);
+  const nx::fiber::job second = job_of(releaser);
+  nx::fiber::counter counter;
   scheduler.run({&first, 1}, &counter);
   wait_for_flag(blocking);
   scheduler.run({&second, 1}, &counter);
@@ -611,7 +607,7 @@ TEST_CASE("fiber scheduler: a worker keeps running jobs while another job "
 
 TEST_CASE("fiber scheduler: blocking calls beyond the service threads queue "
           "and all finish") {
-  Scheduler scheduler({.worker_count = 4, .blocking_threads = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 4, .blocking_threads = 2});
   std::atomic<u32> inside{0};
   std::atomic<u32> peak{0};
   std::atomic<u32> finished{0};
@@ -626,8 +622,8 @@ TEST_CASE("fiber scheduler: blocking calls beyond the service threads queue "
     });
     finished.fetch_add(1);
   };
-  const std::vector<Job> jobs(12, job_of(body));
-  Counter counter;
+  const std::vector<nx::fiber::job> jobs(12, job_of(body));
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   scheduler.wait(counter);
   CHECK(finished.load() == 12u);
@@ -636,7 +632,7 @@ TEST_CASE("fiber scheduler: blocking calls beyond the service threads queue "
 
 TEST_CASE("fiber scheduler: a fiber that suspends inside run_blocking frees "
           "its service thread") {
-  Scheduler scheduler({.worker_count = 2, .blocking_threads = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 2, .blocking_threads = 1});
   nx::fiber::event ready(true);
   std::atomic<bool> waiting{false};
   bool woken = false;
@@ -647,9 +643,9 @@ TEST_CASE("fiber scheduler: a fiber that suspends inside run_blocking frees "
     });
   };
   auto setter = [&] { nx::fiber::run_blocking([&] { ready.set(); }); };
-  const Job first = job_of(waiter);
-  const Job second = job_of(setter);
-  Counter counter;
+  const nx::fiber::job first = job_of(waiter);
+  const nx::fiber::job second = job_of(setter);
+  nx::fiber::counter counter;
   scheduler.run({&first, 1}, &counter);
   wait_for_flag(waiting);
   scheduler.run({&second, 1}, &counter);
@@ -664,46 +660,47 @@ TEST_CASE("fiber scheduler: run_blocking runs in place without a service "
   nx::fiber::run_blocking([&] { outside = nx::this_thread::id(); });
   CHECK(outside == caller);
 
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   u64 before = 0;
   u64 during = 0;
   auto body = [&] {
     before = nx::this_thread::id();
     nx::fiber::run_blocking([&] { during = nx::this_thread::id(); });
   };
-  const Job job = job_of(body);
-  Counter counter;
+  const nx::fiber::job job = job_of(body);
+  nx::fiber::counter counter;
   scheduler.run({&job, 1}, &counter);
   scheduler.wait(counter);
   CHECK(during == before);
 }
 
 TEST_CASE("fiber scheduler: a yield with its lane full does not spin forever") {
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   std::atomic<u32> ran{0};
   struct Flooder {
-    Scheduler *scheduler;
+    nx::fiber::scheduler *scheduler;
     std::atomic<u32> *ran;
-    Job leaf;
+    nx::fiber::job leaf;
     bool yielded = false;
   } flooder{&scheduler, &ran, {}};
-  flooder.leaf =
-      Job{[](void *arg) { static_cast<Flooder *>(arg)->ran->fetch_add(1); },
-          &flooder};
+  flooder.leaf = nx::fiber::job{
+      [](void *arg) { static_cast<Flooder *>(arg)->ran->fetch_add(1); },
+      &flooder};
   // The worker's own queue, then its lane of the global queue, then a few
   // more that run in place: the lane is full when the root yields.
   constexpr u32 JOBS = 256 + 4096 + 16;
-  const Job root{[](void *arg) {
-                   auto &f = *static_cast<Flooder *>(arg);
-                   const std::vector<Job> jobs(JOBS, f.leaf);
-                   Counter inner;
-                   f.scheduler->run(jobs, &inner);
-                   f.scheduler->yield();
-                   f.yielded = true;
-                   f.scheduler->wait(inner);
-                 },
-                 &flooder};
-  Counter done;
+  const nx::fiber::job root{[](void *arg) {
+                              auto &f = *static_cast<Flooder *>(arg);
+                              const std::vector<nx::fiber::job> jobs(JOBS,
+                                                                     f.leaf);
+                              nx::fiber::counter inner;
+                              f.scheduler->run(jobs, &inner);
+                              f.scheduler->yield();
+                              f.yielded = true;
+                              f.scheduler->wait(inner);
+                            },
+                            &flooder};
+  nx::fiber::counter done;
   scheduler.run({&root, 1}, &done);
   scheduler.wait(done);
   CHECK(flooder.yielded);
@@ -712,30 +709,30 @@ TEST_CASE("fiber scheduler: a yield with its lane full does not spin forever") {
 
 TEST_CASE("fiber scheduler: the pool's fiber_local slot is apart from the "
           "caller's") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   struct Seen {
     void *user_at_start = reinterpret_cast<void *>(1);
     void *pool_after = nullptr;
     void *user_after = nullptr;
   } seen;
-  const Job job{
+  const nx::fiber::job job{
       [](void *arg) {
         auto &s = *static_cast<Seen *>(arg);
         s.user_at_start = nx::fiber::fiber_local();
         u32 pool_marker = 0;
         u32 user_marker = 0;
-        nx::fiber::set_fiber_local(&pool_marker, nx::fiber::LocalSlot::Pool);
+        nx::fiber::set_fiber_local(&pool_marker, nx::fiber::local_slot::Pool);
         nx::fiber::set_fiber_local(&user_marker);
         s.pool_after =
-            nx::fiber::fiber_local(nx::fiber::LocalSlot::Pool) == &pool_marker
+            nx::fiber::fiber_local(nx::fiber::local_slot::Pool) == &pool_marker
                 ? &pool_marker
                 : nullptr;
         s.user_after =
             nx::fiber::fiber_local() == &user_marker ? &user_marker : nullptr;
-        nx::fiber::set_fiber_local(nullptr, nx::fiber::LocalSlot::Pool);
+        nx::fiber::set_fiber_local(nullptr, nx::fiber::local_slot::Pool);
       },
       &seen};
-  Counter done;
+  nx::fiber::counter done;
   scheduler.run({&job, 1}, &done);
   scheduler.wait(done);
   CHECK(seen.user_at_start == nullptr);

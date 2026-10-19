@@ -205,7 +205,9 @@ public:
 
   [[nodiscard]] bool empty() const noexcept { return m_size == 0; }
   [[nodiscard]] usize size() const noexcept { return m_size; }
-  [[nodiscard]] usize bytes_size() const noexcept { return m_size * sizeof(T); }
+  [[nodiscard]] usize size_bytes() const noexcept { return m_size * sizeof(T); }
+  /// Deprecated: size_bytes, as std::span names it.
+  [[nodiscard]] usize bytes_size() const noexcept { return size_bytes(); }
 
   [[nodiscard]] iterator begin() noexcept { return m_data; }
   [[nodiscard]] iterator end() noexcept { return m_data + m_size; }

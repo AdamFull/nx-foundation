@@ -232,7 +232,7 @@ mount_pack_manifest(const nx::fs::path_view manifest_path,
 
   nx::vector<PendingPack> pending;
   pending.reserve(manifest->packs.size());
-  defer {
+  NX_DEFER {
     for (const PendingPack &pack : pending)
       if (pack.device)
         nx::release(pack.device);

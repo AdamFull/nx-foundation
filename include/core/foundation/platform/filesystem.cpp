@@ -1013,7 +1013,7 @@ io_result<void> copy_dir_posix(string &from, string &to, bool overwrite,
   DIR *d = ::opendir(from.c_str());
   if (!d)
     return err(map_errno(io_error::OpenFailed));
-  defer { ::closedir(d); };
+  NX_DEFER { ::closedir(d); };
 
   const usize from_len = from.size();
   const usize to_len = to.size();
@@ -1108,7 +1108,7 @@ io_result<void> remove_node_posix(string &path, i32 depth) {
     DIR *d = ::opendir(path.c_str());
     if (!d)
       return err(map_errno(io_error::OpenFailed));
-    defer { ::closedir(d); };
+    NX_DEFER { ::closedir(d); };
 
     const usize len = path.size();
     io_result<void> result{};
@@ -1167,7 +1167,7 @@ std::optional<file_error> list_dir_posix(string &dir,
       return std::nullopt;
     return map_errno(io_error::OpenFailed);
   }
-  defer { ::closedir(d); };
+  NX_DEFER { ::closedir(d); };
 
   const usize dir_len = dir.size();
   std::optional<file_error> err;

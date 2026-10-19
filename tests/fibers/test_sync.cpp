@@ -10,21 +10,19 @@
 #include <vector>
 
 using namespace std::chrono_literals;
-using nx::fiber::Counter;
-using nx::fiber::Job;
-using nx::fiber::Scheduler;
 
 namespace {
 
 using steady = std::chrono::steady_clock;
 
-template <typename F> Job job_of(F &fn) {
-  return Job{[](void *arg) { (*static_cast<F *>(arg))(); }, &fn};
+template <typename F> nx::fiber::job job_of(F &fn) {
+  return nx::fiber::job{[](void *arg) { (*static_cast<F *>(arg))(); }, &fn};
 }
 
-template <typename F> void run_many(Scheduler &scheduler, F &fn, usize count) {
-  const std::vector<Job> jobs(count, job_of(fn));
-  Counter counter;
+template <typename F>
+void run_many(nx::fiber::scheduler &scheduler, F &fn, usize count) {
+  const std::vector<nx::fiber::job> jobs(count, job_of(fn));
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   scheduler.wait(counter);
 }
@@ -40,7 +38,7 @@ void raise_max(std::atomic<u32> &max, u32 value) {
 // One worker: a contender that blocked the thread instead of suspending would
 // keep the holder, which yields inside the lock, from ever running again.
 TEST_CASE("fiber sync: a contended mutex suspends fibers on a single worker") {
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   nx::fiber::mutex lock;
   u32 shared = 0;
   auto body = [&] {
@@ -56,7 +54,7 @@ TEST_CASE("fiber sync: a contended mutex suspends fibers on a single worker") {
 }
 
 TEST_CASE("fiber sync: fibers and foreign threads share a mutex") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   nx::fiber::mutex lock;
   u64 shared = 0;
   auto body = [&] {
@@ -65,8 +63,8 @@ TEST_CASE("fiber sync: fibers and foreign threads share a mutex") {
       ++shared;
     }
   };
-  const std::vector<Job> jobs(8, job_of(body));
-  Counter counter;
+  const std::vector<nx::fiber::job> jobs(8, job_of(body));
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   nx::thread a([&] { body(); });
   nx::thread b([&] { body(); });
@@ -77,7 +75,7 @@ TEST_CASE("fiber sync: fibers and foreign threads share a mutex") {
 }
 
 TEST_CASE("fiber sync: rw_lock shares readers and excludes writers") {
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   nx::fiber::rw_lock lock;
   std::atomic<u32> readers{0};
   std::atomic<u32> max_readers{0};
@@ -104,9 +102,9 @@ TEST_CASE("fiber sync: rw_lock shares readers and excludes writers") {
       lock.unlock();
     }
   };
-  std::vector<Job> jobs(6, job_of(reader));
+  std::vector<nx::fiber::job> jobs(6, job_of(reader));
   jobs.insert(jobs.end(), 2, job_of(writer));
-  Counter counter;
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   scheduler.wait(counter);
   CHECK(violations.load() == 0);
@@ -114,15 +112,15 @@ TEST_CASE("fiber sync: rw_lock shares readers and excludes writers") {
 }
 
 TEST_CASE("fiber sync: a manual-reset event releases every waiter") {
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   nx::fiber::event ready(true);
   std::atomic<u32> passed{0};
   auto waiter = [&] {
     ready.wait();
     passed.fetch_add(1);
   };
-  const std::vector<Job> jobs(8, job_of(waiter));
-  Counter counter;
+  const std::vector<nx::fiber::job> jobs(8, job_of(waiter));
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   nx::this_thread::sleep_for(20ms);
   CHECK(passed.load() == 0);
@@ -135,15 +133,15 @@ TEST_CASE("fiber sync: a manual-reset event releases every waiter") {
 // A set with no waiter queued stays set until one arrives, and two such sets
 // collapse into one, so each set here waits for its release before the next.
 TEST_CASE("fiber sync: an auto-reset event releases one waiter per set") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   nx::fiber::event signal;
   std::atomic<u32> passed{0};
   auto waiter = [&] {
     signal.wait();
     passed.fetch_add(1);
   };
-  const std::vector<Job> jobs(8, job_of(waiter));
-  Counter counter;
+  const std::vector<nx::fiber::job> jobs(8, job_of(waiter));
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   bool one_per_set = true;
   for (u32 i = 1; i <= 8; ++i) {
@@ -166,7 +164,7 @@ TEST_CASE("fiber sync: an auto-reset event releases one waiter per set") {
 }
 
 TEST_CASE("fiber sync: a semaphore bounds concurrency to its count") {
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   nx::fiber::semaphore permits(2);
   std::atomic<u32> inside{0};
   std::atomic<u32> max_inside{0};
@@ -187,7 +185,7 @@ TEST_CASE("fiber sync: a semaphore bounds concurrency to its count") {
 }
 
 TEST_CASE("fiber sync: cond_var passes items through a bounded queue") {
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   nx::fiber::mutex lock;
   nx::fiber::cond_var changed;
   std::vector<u32> queue;
@@ -215,8 +213,9 @@ TEST_CASE("fiber sync: cond_var passes items through a bounded queue") {
       changed.notify_all();
     }
   };
-  const Job jobs[] = {job_of(consumer), job_of(consumer), job_of(producer)};
-  Counter counter;
+  const nx::fiber::job jobs[] = {job_of(consumer), job_of(consumer),
+                                 job_of(producer)};
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   scheduler.wait(counter);
   CHECK(consumed == 1000ull * 1001 / 2);
@@ -224,7 +223,7 @@ TEST_CASE("fiber sync: cond_var passes items through a bounded queue") {
 
 TEST_CASE("fiber sync: timed waits time out, and succeed when signalled "
           "first") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   nx::fiber::event never;
   nx::fiber::semaphore later;
   nx::fiber::mutex lock;
@@ -245,9 +244,10 @@ TEST_CASE("fiber sync: timed waits time out, and succeed when signalled "
     nx::fiber::sleep_for(10ms);
     later.release();
   };
-  const Job jobs[] = {job_of(timing_out), job_of(signalled), job_of(releaser)};
+  const nx::fiber::job jobs[] = {job_of(timing_out), job_of(signalled),
+                                 job_of(releaser)};
   const auto start = steady::now();
-  Counter counter;
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   scheduler.wait(counter);
   CHECK_FALSE(event_result);
@@ -258,7 +258,7 @@ TEST_CASE("fiber sync: timed waits time out, and succeed when signalled "
 }
 
 TEST_CASE("fiber sync: sleep_for frees the worker for other jobs") {
-  Scheduler scheduler({.worker_count = 1});
+  nx::fiber::scheduler scheduler({.worker_count = 1});
   steady::time_point sleeper_done{};
   steady::time_point other_done{};
   const auto start = steady::now();
@@ -267,8 +267,8 @@ TEST_CASE("fiber sync: sleep_for frees the worker for other jobs") {
     sleeper_done = steady::now();
   };
   auto other = [&] { other_done = steady::now(); };
-  const Job jobs[] = {job_of(sleeper), job_of(other)};
-  Counter counter;
+  const nx::fiber::job jobs[] = {job_of(sleeper), job_of(other)};
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   scheduler.wait(counter);
   CHECK(sleeper_done - start >= 50ms);
@@ -276,7 +276,7 @@ TEST_CASE("fiber sync: sleep_for frees the worker for other jobs") {
 }
 
 TEST_CASE("fiber sync: permits are conserved when timeouts race releases") {
-  Scheduler scheduler({.worker_count = 4});
+  nx::fiber::scheduler scheduler({.worker_count = 4});
   nx::fiber::semaphore permits;
   constexpr u32 RELEASES = 3000;
   std::atomic<u32> acquired{0};
@@ -297,9 +297,9 @@ TEST_CASE("fiber sync: permits are conserved when timeouts race releases") {
     }
     releasing.store(false);
   };
-  std::vector<Job> jobs(32, job_of(contender));
+  std::vector<nx::fiber::job> jobs(32, job_of(contender));
   jobs.push_back(job_of(releaser));
-  Counter counter;
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   scheduler.wait(counter);
   u32 left = 0;
@@ -311,15 +311,15 @@ TEST_CASE("fiber sync: permits are conserved when timeouts race releases") {
 
 TEST_CASE("fiber sync: threads outside any scheduler and the main thread can "
           "wait") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   nx::fiber::event from_job(true);
   nx::fiber::event from_thread(true);
   auto setter = [&] {
     nx::fiber::sleep_for(10ms);
     from_job.set();
   };
-  const Job job = job_of(setter);
-  Counter counter;
+  const nx::fiber::job job = job_of(setter);
+  nx::fiber::counter counter;
   scheduler.run({&job, 1}, &counter);
   from_job.wait();
   CHECK(from_job.is_set());
@@ -379,7 +379,7 @@ TEST_CASE("fiber sync: may_suspend reports OS locks and no_suspend scopes") {
 // Each wait races a set() from another worker; a waiter published before it
 // is off its stack, or after its lock is dropped, loses a wake and hangs.
 TEST_CASE("fiber sync: ping-pong across workers never loses a wake") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   nx::fiber::event ping;
   nx::fiber::event pong;
   constexpr u32 ROUNDS = 20000;
@@ -399,8 +399,8 @@ TEST_CASE("fiber sync: ping-pong across workers never loses a wake") {
       pong.set();
     }
   };
-  const Job jobs[] = {job_of(left), job_of(right)};
-  Counter counter;
+  const nx::fiber::job jobs[] = {job_of(left), job_of(right)};
+  nx::fiber::counter counter;
   scheduler.run(jobs, &counter);
   scheduler.wait(counter);
   CHECK(pings == ROUNDS);
@@ -410,7 +410,7 @@ TEST_CASE("fiber sync: ping-pong across workers never loses a wake") {
 // With every worker idle, a timer is kept by a parked worker; on Windows a
 // futex timeout would round each of these up to the ~15.6 ms system tick.
 TEST_CASE("fiber sync: a short sleep on an idle scheduler is precise") {
-  Scheduler scheduler({.worker_count = 2});
+  nx::fiber::scheduler scheduler({.worker_count = 2});
   std::vector<steady::duration> overshoots;
   auto body = [&] {
     for (u32 i = 0; i < 21; ++i) {
@@ -419,8 +419,8 @@ TEST_CASE("fiber sync: a short sleep on an idle scheduler is precise") {
       overshoots.push_back(steady::now() - deadline);
     }
   };
-  const Job job = job_of(body);
-  Counter counter;
+  const nx::fiber::job job = job_of(body);
+  nx::fiber::counter counter;
   scheduler.run({&job, 1}, &counter);
   scheduler.wait(counter);
   REQUIRE(overshoots.size() == 21);

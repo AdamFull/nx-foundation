@@ -13,4 +13,10 @@ inline constexpr usize SHA256_BYTES = 32;
 [[nodiscard]] std::array<u8, SHA256_BYTES>
 sha256(std::span<const u8> bytes) noexcept;
 
+[[nodiscard]] inline std::array<u8, SHA256_BYTES>
+sha256(const std::span<const std::byte> bytes) noexcept {
+  return sha256(std::span<const u8>(reinterpret_cast<const u8 *>(bytes.data()),
+                                    bytes.size()));
+}
+
 } // namespace nx

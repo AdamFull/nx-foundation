@@ -299,7 +299,7 @@ struct Logger {
   /// Loggers between reading `pool` and scheduling the drain job.
   std::atomic<u32> submitting{0};
   std::atomic<bool> drain_scheduled{false};
-  fiber::Counter draining;
+  fiber::counter draining;
   /// One writer at a time keeps records in submission order.
   mutex write_mutex;
 

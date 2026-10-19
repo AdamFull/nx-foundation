@@ -9,14 +9,10 @@
 #include <windows.h>
 #endif
 
-using nx::fiber::Context;
-using nx::fiber::StackPool;
-using nx::fiber::Transfer;
-
 namespace {
 
 struct PingPong {
-  Context *fiber = nullptr;
+  nx::fiber::context *fiber = nullptr;
 };
 
 NX_NO_INLINE bool stack_is_aligned() {
@@ -36,18 +32,18 @@ NX_NO_INLINE void throw_from_depth(i32 depth) {
 
 TEST_CASE("fiber context: a new fiber gets the data and the context that "
           "started it") {
-  StackPool pool;
+  nx::fiber::stack_pool pool;
   auto stack = pool.acquire();
   REQUIRE(stack.has_value());
 
   struct Seen {
-    Context *from = nullptr;
+    nx::fiber::context *from = nullptr;
     void *data = nullptr;
-    Context *self = nullptr;
+    nx::fiber::context *self = nullptr;
   } seen;
 
-  Context caller;
-  Context fiber(*stack, [](Transfer t) {
+  nx::fiber::context caller;
+  nx::fiber::context fiber(*stack, [](nx::fiber::transfer t) {
     auto *s = static_cast<Seen *>(t.data);
     s->from = t.from;
     s->data = t.data;
@@ -56,7 +52,7 @@ TEST_CASE("fiber context: a new fiber gets the data and the context that "
   seen.self = &fiber;
 
   CHECK(fiber.suspended());
-  const Transfer back = nx::fiber::switch_to(caller, fiber, &seen);
+  const nx::fiber::transfer back = nx::fiber::switch_to(caller, fiber, &seen);
   CHECK(seen.from == &caller);
   CHECK(seen.data == &seen);
   CHECK(back.from == &fiber);
@@ -67,12 +63,12 @@ TEST_CASE("fiber context: a new fiber gets the data and the context that "
 
 TEST_CASE("fiber context: ping-pong passes data both ways and keeps each "
           "side's locals") {
-  StackPool pool;
+  nx::fiber::stack_pool pool;
   auto stack = pool.acquire();
   REQUIRE(stack.has_value());
 
-  Context caller;
-  Context fiber(*stack, [](Transfer t) {
+  nx::fiber::context caller;
+  nx::fiber::context fiber(*stack, [](nx::fiber::transfer t) {
     auto *state = static_cast<PingPong *>(t.data);
     u64 local_sum = 0;
     for (u32 i = 1;; ++i) {
@@ -86,7 +82,7 @@ TEST_CASE("fiber context: ping-pong passes data both ways and keeps each "
   u64 expected = 0;
   bool matched = true;
   for (u32 i = 1; i <= 10000; ++i) {
-    const Transfer t =
+    const nx::fiber::transfer t =
         nx::fiber::switch_to(caller, fiber, i == 1 ? &state : nullptr);
     expected += i;
     matched = matched && reinterpret_cast<uintptr_t>(t.data) == expected;
@@ -97,7 +93,7 @@ TEST_CASE("fiber context: ping-pong passes data both ways and keeps each "
 }
 
 TEST_CASE("fiber context: code on a new fiber sees an ABI-aligned stack") {
-  StackPool pool;
+  nx::fiber::stack_pool pool;
   bool aligned = false;
   fiber_test::run_on_fiber(pool, [&] { aligned = stack_is_aligned(); });
   CHECK(aligned);
@@ -105,18 +101,18 @@ TEST_CASE("fiber context: code on a new fiber sees an ABI-aligned stack") {
 
 TEST_CASE("fiber context: each fiber keeps its own floating-point rounding "
           "mode") {
-  StackPool pool;
+  nx::fiber::stack_pool pool;
   auto stack = pool.acquire();
   REQUIRE(stack.has_value());
 
   struct Modes {
-    Context *self = nullptr;
+    nx::fiber::context *self = nullptr;
     int first = -1;
     int after_resume = -1;
   } modes;
 
-  Context caller;
-  Context fiber(*stack, [](Transfer t) {
+  nx::fiber::context caller;
+  nx::fiber::context fiber(*stack, [](nx::fiber::transfer t) {
     auto *m = static_cast<Modes *>(t.data);
     m->first = std::fegetround();
     std::fesetround(FE_UPWARD);
@@ -139,18 +135,18 @@ TEST_CASE("fiber context: each fiber keeps its own floating-point rounding "
 }
 
 TEST_CASE("fiber context: a suspended fiber resumes on another OS thread") {
-  StackPool pool;
+  nx::fiber::stack_pool pool;
   auto stack = pool.acquire();
   REQUIRE(stack.has_value());
 
   struct Threads {
-    Context *self = nullptr;
+    nx::fiber::context *self = nullptr;
     u64 ids[2] = {};
     u32 runs = 0;
   } seen;
 
-  Context caller;
-  Context fiber(*stack, [](Transfer t) {
+  nx::fiber::context caller;
+  nx::fiber::context fiber(*stack, [](nx::fiber::transfer t) {
     auto *s = static_cast<Threads *>(t.data);
     for (;;) {
       s->ids[s->runs++] = nx::this_thread::id();
@@ -161,7 +157,7 @@ TEST_CASE("fiber context: a suspended fiber resumes on another OS thread") {
 
   nx::fiber::switch_to(caller, fiber, &seen);
   nx::thread other([&] {
-    Context thread_context;
+    nx::fiber::context thread_context;
     nx::fiber::switch_to(thread_context, fiber, &seen);
   });
   other.join();
@@ -174,7 +170,7 @@ TEST_CASE("fiber context: a suspended fiber resumes on another OS thread") {
 }
 
 TEST_CASE("fiber context: exceptions unwind within a fiber's stack") {
-  StackPool pool;
+  nx::fiber::stack_pool pool;
   bool caught = false;
   fiber_test::run_on_fiber(pool, [&] {
     try {
@@ -187,23 +183,23 @@ TEST_CASE("fiber context: exceptions unwind within a fiber's stack") {
 }
 
 TEST_CASE("fiber context: a reset context runs its entry again") {
-  StackPool pool;
+  nx::fiber::stack_pool pool;
   auto stack = pool.acquire();
   REQUIRE(stack.has_value());
 
   struct Count {
-    Context *self = nullptr;
+    nx::fiber::context *self = nullptr;
     u32 runs = 0;
   } count;
 
-  const nx::fiber::EntryFn entry = [](Transfer t) {
+  const nx::fiber::entry_fn entry = [](nx::fiber::transfer t) {
     auto *c = static_cast<Count *>(t.data);
     ++c->runs;
     nx::fiber::exit_to(*c->self, *t.from);
   };
 
-  Context caller;
-  Context fiber(*stack, entry);
+  nx::fiber::context caller;
+  nx::fiber::context fiber(*stack, entry);
   count.self = &fiber;
   nx::fiber::switch_to(caller, fiber, &count);
   fiber.reset(*stack, entry);
@@ -215,10 +211,10 @@ TEST_CASE("fiber context: a reset context runs its entry again") {
 #if NX_HAS_WINDOWS_API
 TEST_CASE("fiber context: the thread's stack bounds follow the running "
           "fiber") {
-  StackPool pool;
+  nx::fiber::stack_pool pool;
   ULONG_PTR low = 0;
   ULONG_PTR high = 0;
-  nx::fiber::Stack used;
+  nx::fiber::stack used;
   fiber_test::run_on_fiber(
       pool, [&] { GetCurrentThreadStackLimits(&low, &high); }, &used);
 
