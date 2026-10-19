@@ -395,18 +395,37 @@ public:
 };
 #endif
 
-[[nodiscard]] inline void *
-mem_alloc(usize size, usize align = alignof(max_align_t)) noexcept {
-  assert(allocation_allowed() && "allocation inside a scoped_no_alloc");
+namespace detail {
+
+[[nodiscard]] inline void *heap_alloc(usize size, usize align) noexcept {
 #if NX_USE_MIMALLOC
   return mi_aligned_alloc(align, size);
 #elif defined(NX_PLATFORM_WINDOWS)
   return _aligned_malloc(size, align);
 #else
   void *p = nullptr;
-  posix_memalign(&p, align, size);
+  if (posix_memalign(&p, max(align, sizeof(void *)), size) != 0)
+    return nullptr;
   return p;
 #endif
+}
+
+inline void heap_free(void *ptr) noexcept {
+#if NX_USE_MIMALLOC
+  mi_free(ptr);
+#elif defined(NX_PLATFORM_WINDOWS)
+  _aligned_free(ptr);
+#else
+  free(ptr);
+#endif
+}
+
+} // namespace detail
+
+[[nodiscard]] inline void *
+mem_alloc(usize size, usize align = alignof(max_align_t)) noexcept {
+  assert(allocation_allowed() && "allocation inside a scoped_no_alloc");
+  return detail::heap_alloc(size, align);
 }
 
 [[nodiscard]] inline void *
@@ -428,8 +447,7 @@ mem_realloc(void *ptr, usize newsize,
 #endif
   }
   void *p = nullptr;
-  posix_memalign(&p, align, newsize);
-  if (!p)
+  if (posix_memalign(&p, max(align, sizeof(void *)), newsize) != 0)
     return nullptr;
   if (ptr) {
     memcpy(p, ptr, old_size < newsize ? old_size : newsize);
@@ -444,13 +462,7 @@ mem_realloc(void *ptr, usize newsize,
 // that was handed ownership of something it should only have borrowed.
 inline void mem_free(void *ptr) noexcept {
   assert(allocation_allowed() && "free inside a scoped_no_alloc");
-#if NX_USE_MIMALLOC
-  mi_free(ptr);
-#elif defined(NX_PLATFORM_WINDOWS)
-  _aligned_free(ptr);
-#else
-  free(ptr);
-#endif
+  detail::heap_free(ptr);
 }
 
 // Typed allocation: allocates aligned memory and constructs T in place.
@@ -491,15 +503,23 @@ template <typename T, usize Align = alignof(T)>
   requires(!std::is_array_v<T> && Align >= alignof(T))
 [[nodiscard]] T *
 allocate_array(usize n) noexcept(std::is_nothrow_default_constructible_v<T>) {
-  if (n == 0) [[unlikely]]
+  if (n == 0 || n > usize(-1) / sizeof(T)) [[unlikely]]
     return nullptr;
   void *raw = mem_alloc(n * sizeof(T), Align);
   if (!raw) [[unlikely]]
     return nullptr;
   T *arr = static_cast<T *>(raw);
   if constexpr (!std::is_trivially_default_constructible_v<T>) {
-    for (usize i = 0; i < n; ++i)
-      ::new (arr + i) T();
+    usize built = 0;
+    try {
+      for (; built < n; ++built)
+        ::new (arr + built) T();
+    } catch (...) {
+      while (built-- > 0)
+        arr[built].~T();
+      mem_free(raw);
+      throw;
+    }
   }
   return arr;
 }
@@ -517,21 +537,52 @@ void release_array(T *ptr, usize n) noexcept {
   mem_free(ptr);
 }
 
+namespace detail {
+
+// MSVC's debug STL gives every container a heap-allocated iterator proxy, even
+// an empty one. Release builds have none, so it is no allocation
+// scoped_no_alloc should refuse.
+#if defined(_MSVC_STL_VERSION) && _ITERATOR_DEBUG_LEVEL != 0
+template <typename T>
+inline constexpr bool stl_debug_proxy =
+    std::is_same_v<T, std::_Container_proxy>;
+#else
+template <typename T> inline constexpr bool stl_debug_proxy = false;
+#endif
+
+} // namespace detail
+
+/// Allocates through mem_alloc, honouring alignof(T); the allocator behind
+/// nx::Allocator.
 template <typename T> struct DefaultAllocator {
   using value_type = T;
+  using is_always_equal = std::true_type;
 
   DefaultAllocator() = default;
   template <typename U>
   DefaultAllocator(const DefaultAllocator<U> &) noexcept {}
 
   [[nodiscard]] T *allocate(const std::size_t n) {
-    void *p = mem_alloc(n * sizeof(T), alignof(T));
+    if (n > max_size()) [[unlikely]]
+      throw std::bad_array_new_length{};
+    void *const p = detail::stl_debug_proxy<T>
+                        ? detail::heap_alloc(n * sizeof(T), alignof(T))
+                        : mem_alloc(n * sizeof(T), alignof(T));
     if (!p) [[unlikely]]
       throw std::bad_alloc{};
     return static_cast<T *>(p);
   }
 
-  void deallocate(T *p, std::size_t) noexcept { mem_free(p); }
+  void deallocate(T *p, std::size_t) noexcept {
+    if constexpr (detail::stl_debug_proxy<T>)
+      detail::heap_free(p);
+    else
+      mem_free(p);
+  }
+
+  [[nodiscard]] static constexpr std::size_t max_size() noexcept {
+    return std::size_t(-1) / sizeof(T);
+  }
 
   template <typename U>
   bool operator==(const DefaultAllocator<U> &) const noexcept {
@@ -539,11 +590,7 @@ template <typename T> struct DefaultAllocator {
   }
 };
 
-#if NX_USE_MIMALLOC
-template <typename T> using Allocator = mi_stl_allocator<T>;
-#else
 template <typename T> using Allocator = DefaultAllocator<T>;
-#endif
 
 template <typename T, typename Alloc = Allocator<T>>
 using vector = std::vector<T, Alloc>;
@@ -681,20 +728,14 @@ public:
   }
 
   shared_ptr &operator=(shared_ptr &&other) noexcept {
-    if (this != &other) {
-      detail::shared_release(m_ptr);
-      m_ptr = other.m_ptr;
-      other.m_ptr = nullptr;
-    }
+    shared_ptr(std::move(other)).swap(*this);
     return *this;
   }
 
   template <typename U>
     requires detail::SharedRebindable<U, T>
   shared_ptr &operator=(shared_ptr<U> &&other) noexcept {
-    detail::shared_release(m_ptr);
-    m_ptr = other.m_ptr;
-    other.m_ptr = nullptr;
+    shared_ptr(std::move(other)).swap(*this);
     return *this;
   }
 
@@ -704,8 +745,9 @@ public:
   }
 
   void reset() noexcept {
-    detail::shared_release(m_ptr);
+    T *const old = m_ptr;
     m_ptr = nullptr;
+    detail::shared_release(old);
   }
 
   void swap(shared_ptr &other) noexcept {
@@ -738,8 +780,9 @@ private:
     if (m_ptr == object)
       return *this;
     detail::shared_retain(object);
-    detail::shared_release(m_ptr);
+    T *const old = m_ptr;
     m_ptr = object;
+    detail::shared_release(old);
     return *this;
   }
 

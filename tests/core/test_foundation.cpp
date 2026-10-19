@@ -736,3 +736,88 @@ TEST_CASE("foundation: cpu_relax is callable and harmless") {
     nx::detail::cpu_relax();
   CHECK(true);
 }
+
+namespace {
+
+struct ListNode {
+  nx::shared_ptr<ListNode> next;
+  int value = 0;
+  explicit ListNode(const int v) : value(v) {}
+};
+
+struct alignas(64) WideSlot {
+  float lanes[16] = {};
+};
+
+struct ThrowsOnThird {
+  static inline int built = 0;
+  static inline int alive = 0;
+  ThrowsOnThird() {
+    if (++built == 3)
+      throw 3;
+    ++alive;
+  }
+  ~ThrowsOnThird() { --alive; }
+};
+
+} // namespace
+
+TEST_CASE(
+    "foundation: shared_ptr move-assign from a member of its own target") {
+  nx::shared_ptr<ListNode> head = nx::make_shared<ListNode>(1);
+  head->next = nx::make_shared<ListNode>(2);
+  head->next->next = nx::make_shared<ListNode>(3);
+  head = std::move(head->next);
+  REQUIRE(head != nullptr);
+  CHECK(head->value == 2);
+  CHECK(head.use_count() == 1);
+  head = std::move(head->next);
+  REQUIRE(head != nullptr);
+  CHECK(head->value == 3);
+  head.reset();
+  CHECK(head == nullptr);
+}
+
+TEST_CASE(
+    "foundation: shared_ptr copy-assign from a member of its own target") {
+  nx::shared_ptr<ListNode> head = nx::make_shared<ListNode>(1);
+  head->next = nx::make_shared<ListNode>(2);
+  head = head->next;
+  REQUIRE(head != nullptr);
+  CHECK(head->value == 2);
+  CHECK(head.use_count() == 1);
+}
+
+TEST_CASE("foundation: nx::Allocator honours over-alignment") {
+  static_assert(std::is_same_v<nx::Allocator<int>, nx::DefaultAllocator<int>>);
+  nx::vector<WideSlot> slots;
+  for (int i = 0; i < 33; ++i) {
+    slots.emplace_back();
+    CHECK(reinterpret_cast<uintptr_t>(slots.data()) % alignof(WideSlot) == 0);
+  }
+}
+
+TEST_CASE("foundation: DefaultAllocator rejects a size that overflows") {
+  nx::DefaultAllocator<u64> alloc;
+  CHECK_THROWS_AS((void)alloc.allocate(alloc.max_size() + 1),
+                  std::bad_array_new_length);
+}
+
+TEST_CASE("foundation: allocate_array rejects a size that overflows") {
+  CHECK(nx::allocate_array<u64>(usize(-1) / 4) == nullptr);
+}
+
+TEST_CASE("foundation: allocate_array destroys what it built when one throws") {
+  ThrowsOnThird::built = 0;
+  ThrowsOnThird::alive = 0;
+  CHECK_THROWS_AS((void)nx::allocate_array<ThrowsOnThird>(5), int);
+  CHECK(ThrowsOnThird::alive == 0);
+}
+
+TEST_CASE("foundation: mem_alloc honours alignments below a pointer") {
+  for (const usize align : {usize(1), usize(2), usize(4)}) {
+    void *const p = nx::mem_alloc(3, align);
+    REQUIRE(p != nullptr);
+    nx::mem_free(p);
+  }
+}

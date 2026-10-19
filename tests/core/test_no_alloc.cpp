@@ -87,3 +87,13 @@ TEST_CASE("scoped_no_alloc: compiles away when the guard is off") {
   CHECK(nx::allocation_allowed());
 #endif
 }
+
+TEST_CASE("scoped_no_alloc: an empty nx::vector may be made and dropped") {
+  usize size = 1;
+  {
+    const nx::scoped_no_alloc guard;
+    const nx::vector<int> empty;
+    size = empty.size();
+  }
+  CHECK(size == 0);
+}
