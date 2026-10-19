@@ -404,7 +404,7 @@ non-inlined calls.
 | `nx::function_ref` | `core/callable.h` | A non-owning reference to a callable, for parameters that only call it. |
 | `nx::enums::map` | `core/enum.h` | A fixed array indexed directly by enum value, sized from the enum's `Count`. Zero-overhead enum-to-value lookup. |
 | `nx::enums::flags` | `core/enum.h` | A type-safe bitset over a scoped enum's enumerators, with bit operators. |
-| `nx::result` / `nx::err` | `core/result.h` | An error-or-value type for exception-free error handling, with `and_then`/`transform`/`or_else`/`transform_error` combinators. |
+| `nx::result` / `nx::err` | `core/result.h` | An error-or-value type for exception-free error handling, shaped like `std::expected`: it converts from anything its value is made from, compares with `==` against results, values and `err`s, and has `and_then`/`transform`/`or_else`/`transform_error` combinators (a `transform` may return void), `error_or`, `emplace` and `swap`. It is `[[nodiscard]]`. |
 | `nx::scope_guard` | `core/scope_guard.h` | Run an action on scope exit unless dismissed. Also `scoped_exit()` and the Go-style `NX_DEFER { ... };` macro. |
 | `nx::scoped_value` | `core/scope_guard.h` | Temporarily replace a value and restore it on scope exit, including correctly nested scopes. |
 | `nx::guid` | `core/random.h` | A 128-bit unique identifier (UUID): parse, format, compare, hash. Generate via `nx::rng::guid()`. |

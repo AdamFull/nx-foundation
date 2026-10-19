@@ -20,7 +20,7 @@ void reset_counts() { g_ctors = g_dtors = g_copies = g_moves = 0; }
 
 struct Payload {
   int value;
-  explicit Payload(int v = 0) : value(v) { ++g_ctors; }
+  explicit Payload(int v = 0) noexcept : value(v) { ++g_ctors; }
   Payload(const Payload &o) : value(o.value) {
     ++g_ctors;
     ++g_copies;
@@ -608,4 +608,146 @@ TEST_CASE("result<void>: constexpr usage") {
   static_assert(bad.error() == Error::NotFound);
 
   CHECK(ok.has_value());
+}
+
+TEST_CASE("result: converts from anything the value is made from") {
+  const nx::result<std::string, Error> text = "hello";
+  CHECK(*text == "hello");
+
+  nx::result<long long, Error> wide = 7;
+  CHECK(*wide == 7);
+
+  static_assert(std::is_constructible_v<nx::result<MoveOnly, Error>, int>);
+  static_assert(!std::is_convertible_v<int, nx::result<MoveOnly, Error>>);
+  const nx::result<MoveOnly, Error> made(3);
+  CHECK(made->value == 3);
+
+  const nx::result<long long, Error> bad = nx::err{Error::Denied};
+  CHECK(bad.error() == Error::Denied);
+}
+
+TEST_CASE("result: transform takes a function that returns void") {
+  int seen = 0;
+  nx::result<int, Error> ok = 4;
+  const auto done = ok.transform([&](int v) { seen = v; });
+  static_assert(std::is_same_v<decltype(done), const nx::result<void, Error>>);
+  CHECK(done.has_value());
+  CHECK(seen == 4);
+
+  nx::result<int, Error> bad = nx::err{Error::NotFound};
+  const auto skipped = bad.transform([&](int) { seen = -1; });
+  CHECK(skipped.error() == Error::NotFound);
+  CHECK(seen == 4);
+
+  nx::result<void, Error> unit;
+  CHECK(unit.transform([&] { seen = 9; }).has_value());
+  CHECK(seen == 9);
+  nx::result<void, Error> unit_bad = nx::err{Error::Denied};
+  CHECK(unit_bad.transform([&] { seen = 0; }).error() == Error::Denied);
+  CHECK(seen == 9);
+}
+
+TEST_CASE("result: error_or returns the error or the fallback") {
+  const nx::result<int, Error> ok = 1;
+  const nx::result<int, Error> bad = nx::err{Error::Denied};
+  CHECK(ok.error_or(Error::None) == Error::None);
+  CHECK(bad.error_or(Error::None) == Error::Denied);
+  CHECK(nx::result<int, std::string>(nx::err{std::string("gone")})
+            .error_or("none") == "gone");
+
+  const nx::result<void, Error> vok;
+  const nx::result<void, Error> vbad = nx::err{Error::NotFound};
+  CHECK(vok.error_or(Error::None) == Error::None);
+  CHECK(vbad.error_or(Error::None) == Error::NotFound);
+}
+
+TEST_CASE("result: emplace replaces either alternative") {
+  reset_counts();
+  {
+    nx::result<Payload, Payload> r = nx::err{Payload{1}};
+    Payload &p = r.emplace(5);
+    CHECK(r.has_value());
+    CHECK(p.value == 5);
+    CHECK(r->value == 5);
+    r.emplace(6);
+    CHECK(r->value == 6);
+  }
+  CHECK(g_ctors == g_dtors);
+
+  nx::result<void, Error> v = nx::err{Error::Denied};
+  v.emplace();
+  CHECK(v.has_value());
+}
+
+TEST_CASE("result: swap exchanges every combination of alternatives") {
+  reset_counts();
+  {
+    nx::result<Payload, Payload> a(Payload{1});
+    nx::result<Payload, Payload> b(Payload{2});
+    swap(a, b);
+    CHECK(a->value == 2);
+    CHECK(b->value == 1);
+
+    nx::result<Payload, Payload> c = nx::err{Payload{3}};
+    nx::result<Payload, Payload> d = nx::err{Payload{4}};
+    c.swap(d);
+    CHECK(c.error().value == 4);
+    CHECK(d.error().value == 3);
+
+    a.swap(c);
+    CHECK_FALSE(a.has_value());
+    CHECK(a.error().value == 4);
+    REQUIRE(c.has_value());
+    CHECK(c->value == 2);
+
+    a.swap(c);
+    REQUIRE(a.has_value());
+    CHECK(a->value == 2);
+    CHECK_FALSE(c.has_value());
+    CHECK(c.error().value == 4);
+  }
+  CHECK(g_ctors == g_dtors);
+
+  nx::result<void, Error> ok;
+  nx::result<void, Error> bad = nx::err{Error::Denied};
+  swap(ok, bad);
+  CHECK_FALSE(ok.has_value());
+  CHECK(ok.error() == Error::Denied);
+  CHECK(bad.has_value());
+  nx::result<void, Error> other = nx::err{Error::NotFound};
+  ok.swap(other);
+  CHECK(ok.error() == Error::NotFound);
+  CHECK(other.error() == Error::Denied);
+}
+
+TEST_CASE("result: equality compares the held alternative") {
+  const nx::result<int, Error> one = 1;
+  const nx::result<long long, Error> wide_one = 1LL;
+  const nx::result<int, Error> two = 2;
+  const nx::result<int, Error> denied = nx::err{Error::Denied};
+  const nx::result<int, Error> missing = nx::err{Error::NotFound};
+
+  CHECK(one == wide_one);
+  CHECK(one != two);
+  CHECK(one != denied);
+  CHECK(denied == nx::result<int, Error>(nx::err{Error::Denied}));
+  CHECK(denied != missing);
+
+  CHECK(one == 1);
+  CHECK(one != 2);
+  CHECK(denied != 1);
+  CHECK(nx::result<int, int>(nx::err{1}) != 1);
+  CHECK(nx::result<int, int>(nx::err{1}) != nx::result<int, int>(1));
+
+  CHECK(denied == nx::err{Error::Denied});
+  CHECK(denied != nx::err{Error::NotFound});
+  CHECK(one != nx::err{Error::Denied});
+
+  const nx::result<void, Error> vok;
+  const nx::result<void, Error> vbad = nx::err{Error::Denied};
+  CHECK(vok == nx::result<void, Error>());
+  CHECK(vok != vbad);
+  CHECK(vbad == nx::err{Error::Denied});
+  CHECK(vbad != nx::err{Error::NotFound});
+  CHECK(vok != nx::err{Error::Denied});
 }
