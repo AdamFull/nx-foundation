@@ -138,7 +138,7 @@ io_result<void> write_route(const path_view vpath, Op &&op) {
     if (c.device()->writable())
       return op(c.device(), c.rel);
   }
-  return err(file_error{io_error::PermissionDenied, 0});
+  return err(file_error{io_error::ReadOnly, 0});
 }
 
 } // namespace

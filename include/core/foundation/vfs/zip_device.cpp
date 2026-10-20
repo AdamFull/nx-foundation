@@ -76,6 +76,10 @@ i32 foundation_stream_read(void *stream, void *buffer, const i32 size) {
     return MZ_PARAM_ERROR;
   }
   const usize read = s->source->read(buffer, nx::cast<usize>(size));
+  if (read < nx::cast<usize>(size) && !s->source->status()) {
+    s->error = MZ_READ_ERROR;
+    return MZ_READ_ERROR;
+  }
   if (read > nx::cast<usize>(INT32_MAX)) {
     s->error = MZ_READ_ERROR;
     return MZ_READ_ERROR;
@@ -553,6 +557,12 @@ public:
 
   [[nodiscard]] bool eof() const override {
     return m_failed || m_position >= m_size;
+  }
+
+  [[nodiscard]] io_result<void> status() const override {
+    if (m_failed)
+      return err(file_error{io_error::ReadFailed, 0});
+    return {};
   }
 
 private:

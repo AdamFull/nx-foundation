@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/foundation/core/foundation.h"
+#include "core/foundation/core/result.h"
 #include "core/foundation/strings/utf8_string.h"
 
 namespace nx::os {
@@ -19,18 +20,17 @@ public:
 
   [[nodiscard]] static string decorate(string_view stem);
 
-  bool open(string_view path);
+  /// Loads the library, closing any held before; the error is the loader's
+  /// own account of why it failed.
+  result<void, string> open(string_view path);
   void close() noexcept;
 
   [[nodiscard]] bool is_open() const noexcept { return m_handle != nullptr; }
 
   [[nodiscard]] void *symbol(string_view name) const noexcept;
 
-  [[nodiscard]] string_view last_error() const noexcept { return m_error; }
-
 private:
   void *m_handle = nullptr;
-  string m_error;
 };
 
 }

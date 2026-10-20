@@ -128,6 +128,14 @@ file_error map_last_error(const io_error fallback) noexcept {
   case ERROR_BAD_PATHNAME:
     kind = io_error::InvalidArgument;
     break;
+  case ERROR_WRITE_PROTECT:
+    kind = io_error::ReadOnly;
+    break;
+  case ERROR_NOT_SUPPORTED:
+  case ERROR_CALL_NOT_IMPLEMENTED:
+  case ERROR_INVALID_FUNCTION:
+    kind = io_error::NotSupported;
+    break;
   default:
     break;
   }
@@ -244,6 +252,16 @@ file_error map_errno(io_error fallback) noexcept {
   case EINVAL:
   case ENAMETOOLONG:
     kind = io_error::InvalidArgument;
+    break;
+  case EROFS:
+    kind = io_error::ReadOnly;
+    break;
+  case ENOSYS:
+  case ENOTSUP:
+#if EOPNOTSUPP != ENOTSUP
+  case EOPNOTSUPP:
+#endif
+    kind = io_error::NotSupported;
     break;
   default:
     break;
@@ -1543,8 +1561,10 @@ public:
     while (total < bytes) {
       const DWORD want = nx::cast<DWORD>(min<usize>(bytes - total, 1u << 30));
       DWORD got = 0;
-      if (!::ReadFile(m_h, p + total, want, &got, nullptr))
+      if (!::ReadFile(m_h, p + total, want, &got, nullptr)) {
+        m_failure = map_last_error(io_error::ReadFailed);
         break;
+      }
       if (got == 0) {
         m_at_eof = true;
         break;
@@ -1552,6 +1572,12 @@ public:
       total += got;
     }
     return total;
+  }
+
+  [[nodiscard]] io_result<void> status() const override {
+    if (m_failure)
+      return err(*m_failure);
+    return {};
   }
 
   bool seek(const i64 offset, const seek_origin origin) override {
@@ -1564,6 +1590,7 @@ public:
     if (!::SetFilePointerEx(m_h, dist, &np, method))
       return false;
     m_at_eof = false;
+    m_failure.reset();
     return true;
   }
 
@@ -1593,6 +1620,7 @@ public:
 private:
   HANDLE m_h = INVALID_HANDLE_VALUE;
   bool m_at_eof = false;
+  std::optional<file_error> m_failure;
 };
 
 class shared_file {
@@ -1605,7 +1633,10 @@ public:
   [[nodiscard]] u64 size() const noexcept { return m_size; }
 
   // An offset in each call, so views on any thread never share a cursor.
-  usize read_at(const u64 offset, void *dst, const usize bytes) const {
+  // Short only when the read fails, or the file shrank since it was opened:
+  // @p bytes never reaches past the size it had then.
+  usize read_at(const u64 offset, void *dst, const usize bytes,
+                file_error &failure) const {
     usize total = 0;
     auto *p = static_cast<u8 *>(dst);
     while (total < bytes) {
@@ -1615,8 +1646,14 @@ public:
       where.OffsetHigh = nx::cast<DWORD>(at >> 32);
       const DWORD want = nx::cast<DWORD>(min<usize>(bytes - total, 1u << 30));
       DWORD got = 0;
-      if (!::ReadFile(m_h, p + total, want, &got, &where) || got == 0)
+      if (!::ReadFile(m_h, p + total, want, &got, &where)) {
+        failure = map_last_error(io_error::ReadFailed);
         break;
+      }
+      if (got == 0) {
+        failure = file_error{io_error::ReadFailed, 0};
+        break;
+      }
       total += got;
     }
     return total;
@@ -1645,6 +1682,7 @@ public:
       if (got < 0) {
         if (errno == EINTR)
           continue;
+        m_failure = map_errno(io_error::ReadFailed);
         break;
       }
       if (got == 0) {
@@ -1656,6 +1694,12 @@ public:
     return total;
   }
 
+  [[nodiscard]] io_result<void> status() const override {
+    if (m_failure)
+      return err(*m_failure);
+    return {};
+  }
+
   bool seek(const i64 offset, const seek_origin origin) override {
     const int whence = origin == seek_origin::begin     ? SEEK_SET
                        : origin == seek_origin::current ? SEEK_CUR
@@ -1663,6 +1707,7 @@ public:
     if (::lseek(m_fd, nx::cast<off_t>(offset), whence) < 0)
       return false;
     m_at_eof = false;
+    m_failure.reset();
     return true;
   }
 
@@ -1688,6 +1733,7 @@ public:
 private:
   int m_fd = -1;
   bool m_at_eof = false;
+  std::optional<file_error> m_failure;
 };
 
 class shared_file {
@@ -1699,7 +1745,8 @@ public:
 
   [[nodiscard]] u64 size() const noexcept { return m_size; }
 
-  usize read_at(const u64 offset, void *dst, const usize bytes) const {
+  usize read_at(const u64 offset, void *dst, const usize bytes,
+                file_error &failure) const {
     usize total = 0;
     auto *p = static_cast<u8 *>(dst);
     while (total < bytes) {
@@ -1707,8 +1754,14 @@ public:
                                   nx::cast<off_t>(offset + total));
       if (got < 0 && errno == EINTR)
         continue;
-      if (got <= 0)
+      if (got < 0) {
+        failure = map_errno(io_error::ReadFailed);
         break;
+      }
+      if (got == 0) {
+        failure = file_error{io_error::ReadFailed, 0};
+        break;
+      }
       total += nx::cast<usize>(got);
     }
     return total;
@@ -1731,9 +1784,18 @@ public:
       return 0;
     const usize want =
         nx::cast<usize>(min<u64>(bytes, m_file->size() - m_cursor));
-    const usize got = m_file->read_at(m_cursor, dst, want);
+    file_error failure;
+    const usize got = m_file->read_at(m_cursor, dst, want, failure);
+    if (got < want)
+      m_failure = failure;
     m_cursor += got;
     return got;
+  }
+
+  [[nodiscard]] io_result<void> status() const override {
+    if (m_failure)
+      return err(*m_failure);
+    return {};
   }
 
   bool seek(const i64 offset, const seek_origin origin) override {
@@ -1745,6 +1807,7 @@ public:
     if (pos < 0 || pos > size)
       return false;
     m_cursor = nx::cast<u64>(pos);
+    m_failure.reset();
     return true;
   }
 
@@ -1757,6 +1820,7 @@ public:
 private:
   nx::shared_ptr<shared_file> m_file;
   u64 m_cursor = 0;
+  std::optional<file_error> m_failure;
 };
 
 [[nodiscard]] stream_factory views_of(nx::shared_ptr<shared_file> file) {

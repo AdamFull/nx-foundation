@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -366,6 +367,8 @@ TEST_CASE("fs::to_string names every io_error") {
   CHECK(fs::to_string(fs::io_error::ReadFailed) == "read failed");
   CHECK(fs::to_string(fs::io_error::WriteFailed) == "write failed");
   CHECK(fs::to_string(fs::io_error::Busy) == "held by another");
+  CHECK(fs::to_string(fs::io_error::ReadOnly) == "read-only");
+  CHECK(fs::to_string(fs::io_error::NotSupported) == "not supported");
   CHECK(fs::to_string(fs::io_error::Unknown) == "unknown error");
 
   for (u32 i = 0; i < static_cast<u32>(fs::io_error::Count); ++i)
@@ -1256,3 +1259,38 @@ TEST_CASE("fs: normalize keeps a Windows root that starts with two "
   CHECK(fs::path::normalize("\\\\server\\share\\..").empty());
 }
 #endif
+
+TEST_CASE("fs::stream: a short read says whether it failed or ended") {
+  const char bytes[] = "abc";
+  auto memory = fs::open_memory(bytes, 3);
+  REQUIRE(memory.has_value());
+  char out[8]{};
+  CHECK((*memory)->read(out, 8) == 3);
+  CHECK((*memory)->status().has_value());
+
+#if !defined(_WIN32)
+  // Windows views refuse writers, so a file there never shrinks under one.
+  const temp_dir dir("viewsshrank");
+  const nx::string file = dir.child("data.bin");
+  REQUIRE(fs::file_write(fs::path_view(file), bytes_of("0123456789", 10))
+              .has_value());
+  auto views = fs::open_file_views(fs::path_view(file));
+  REQUIRE(views.has_value());
+  auto view = (*views)();
+  REQUIRE(view.has_value());
+  CHECK((*view)->status().has_value());
+
+  std::error_code shrunk;
+  std::filesystem::resize_file(std::filesystem::u8path(file.c_str()), 2,
+                               shrunk);
+  REQUIRE_FALSE(shrunk);
+
+  char text[10]{};
+  CHECK((*view)->read(text, 10) == 2);
+  const auto status = (*view)->status();
+  REQUIRE_FALSE(status.has_value());
+  CHECK(status.error().kind == fs::io_error::ReadFailed);
+  CHECK((*view)->seek(0));
+  CHECK((*view)->status().has_value());
+#endif
+}

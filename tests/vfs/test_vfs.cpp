@@ -167,7 +167,9 @@ TEST_CASE("vfs read_text returns file contents as a string") {
 
 TEST_CASE("vfs write fails when no writable mount serves the path") {
   scoped_vfs guard;
-  CHECK_FALSE(vfs::write("/ro/x.txt", bytes_of("x")).has_value());
+  const auto written = vfs::write("/ro/x.txt", bytes_of("x"));
+  REQUIRE_FALSE(written.has_value());
+  CHECK(written.error().kind == vfs::io_error::ReadOnly);
 }
 
 TEST_CASE("vfs host device writes atomically and reads back") {
@@ -196,11 +198,11 @@ TEST_CASE("vfs host device writes atomically and reads back") {
 
 TEST_CASE("vfs read-only host device serves files without accepting writes") {
   temp_dir dir("host_ro");
-  REQUIRE(nx::fs::file_write_text(dir.file("legacy.txt"), "legacy")
-              .has_value());
+  REQUIRE(
+      nx::fs::file_write_text(dir.file("legacy.txt"), "legacy").has_value());
   scoped_vfs guard;
-  vfs::mount("/legacy", vfs::make_host_device(
-                            dir.str(), vfs::HostDeviceAccess::ReadOnly));
+  vfs::mount("/legacy",
+             vfs::make_host_device(dir.str(), vfs::HostDeviceAccess::ReadOnly));
 
   CHECK(read_eq("/legacy/legacy.txt", "legacy"));
   CHECK_FALSE(vfs::write_text("/legacy/new.txt", "new").has_value());
@@ -523,4 +525,17 @@ TEST_CASE("vfs: a slow device holds up neither mounts nor its unmount's "
   CHECK(read_ok.load());
   CHECK(unmounted.load());
   CHECK(destroyed.load());
+}
+
+TEST_CASE("vfs: a device that does not write says it is read-only") {
+  std::atomic<bool> inside{false};
+  std::atomic<bool> destroyed{false};
+  nx::event gate;
+  GateDevice device(inside, gate, destroyed);
+  CHECK_FALSE(device.writable());
+  const auto written = device.write("x.txt", bytes_of("x"));
+  REQUIRE_FALSE(written.has_value());
+  CHECK(written.error().kind == vfs::io_error::ReadOnly);
+  CHECK(device.remove("x.txt").error().kind == vfs::io_error::ReadOnly);
+  CHECK(device.create_directories("d").error().kind == vfs::io_error::ReadOnly);
 }

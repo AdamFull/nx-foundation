@@ -39,7 +39,7 @@ namespace {
 shared_library::~shared_library() { close(); }
 
 shared_library::shared_library(shared_library &&other) noexcept
-    : m_handle(other.m_handle), m_error(std::move(other.m_error)) {
+    : m_handle(other.m_handle) {
   other.m_handle = nullptr;
 }
 
@@ -47,7 +47,6 @@ shared_library &shared_library::operator=(shared_library &&other) noexcept {
   if (this != &other) {
     close();
     m_handle = other.m_handle;
-    m_error = std::move(other.m_error);
     other.m_handle = nullptr;
   }
   return *this;
@@ -73,32 +72,34 @@ string shared_library::decorate(const string_view stem) {
 #endif
 }
 
-bool shared_library::open(const string_view path) {
+result<void, string> shared_library::open(const string_view path) {
   // For the unload, not for the handle: the load below overwrites that either
   // way. Without this, opening twice leaves the first library loaded forever.
   close();
-  m_error.clear();
 
   const string terminated(path);
+  string error;
 
 #if NX_HAS_WINDOWS_API
   const vector<wchar_t> wide = fs::detail::win32_path(terminated.view());
   m_handle = wide.empty() ? nullptr : ::LoadLibraryW(wide.data());
   if (m_handle == nullptr)
-    m_error = windows_error();
+    error = windows_error();
 #elif NX_PLATFORM_POSIX
   ::dlerror();
   m_handle = ::dlopen(terminated.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (m_handle == nullptr)
     if (const char *const why = ::dlerror())
-      m_error = why;
+      error = why;
 #else
-  m_error = "this platform does not load code at run time";
+  error = "this platform does not load code at run time";
 #endif
 
-  if (m_handle == nullptr && m_error.empty())
-    m_error = nx::format("could not load '{}'", path);
-  return m_handle != nullptr;
+  if (m_handle != nullptr)
+    return {};
+  if (error.empty())
+    error = nx::format("could not load '{}'", path);
+  return err(std::move(error));
 }
 
 void shared_library::close() noexcept {

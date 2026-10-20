@@ -29,8 +29,11 @@ constexpr usize READ_CHUNK = 256u * 1024u;
     context.throw_if_cancelled();
     const usize requested = nx::min(READ_CHUNK, bytes.size() - read);
     const usize received = stream->read(bytes.data() + read, requested);
-    if (received == 0)
+    if (received == 0) {
+      if (auto status = stream->status(); !status)
+        return err(status.error());
       return err(file_error{io_error::ReadFailed, 0});
+    }
     read += received;
   }
   context.throw_if_cancelled();
@@ -199,8 +202,11 @@ io_result<nx::blob<u8>> AsyncIoContext::read(const path_view path,
   for (;;) {
     throw_if_cancelled();
     const usize received = stream->read(chunk.data(), chunk.size());
-    if (received == 0)
+    if (received == 0) {
+      if (auto status = stream->status(); !status)
+        return err(status.error());
       break;
+    }
     if (max_bytes != 0 &&
         (received > max_bytes || bytes.size() > max_bytes - received))
       return err(file_error{io_error::FileTooLarge, 0});

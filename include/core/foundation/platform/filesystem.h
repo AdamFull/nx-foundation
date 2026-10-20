@@ -289,6 +289,10 @@ enum class io_error : u32 {
   WriteFailed,
   /// Held by another: a file_lock someone else has.
   Busy,
+  /// The target cannot be written: a read-only device or filesystem.
+  ReadOnly,
+  /// The device or platform does not provide the operation.
+  NotSupported,
   Count,
 };
 
@@ -325,6 +329,10 @@ struct file_error {
     return "write failed";
   case io_error::Busy:
     return "held by another";
+  case io_error::ReadOnly:
+    return "read-only";
+  case io_error::NotSupported:
+    return "not supported";
   default:
     return "unknown error";
   }
@@ -478,8 +486,11 @@ struct stream {
   stream &operator=(const stream &) = delete;
 
   /// Reads up to @p bytes into @p dst; returns the count actually read (a
-  /// short read, including 0, signals end of stream).
+  /// short read, including 0, signals end of stream or a failure).
   virtual usize read(void *dst, usize bytes) = 0;
+  /// Ok unless a read failed, which tells a failure apart from the end of the
+  /// stream. A seek clears it.
+  [[nodiscard]] virtual io_result<void> status() const { return {}; }
   virtual bool seek(i64 offset, seek_origin origin = seek_origin::begin) = 0;
   /// Current cursor position in bytes, or -1 on error.
   [[nodiscard]] virtual i64 tell() const = 0;

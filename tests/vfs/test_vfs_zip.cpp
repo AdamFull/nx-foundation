@@ -582,8 +582,12 @@ TEST_CASE("vfs zip refuses an entry whose CRC does not match") {
   auto stream = vfs::open("/bad.txt");
   REQUIRE(stream.has_value());
   char buffer[16] = {};
+  CHECK((*stream)->status().has_value());
   CHECK((*stream)->read(buffer, 5) == 0u);
   CHECK((*stream)->eof());
+  const auto status = (*stream)->status();
+  REQUIRE_FALSE(status.has_value());
+  CHECK(status.error().kind == nx::fs::io_error::ReadFailed);
 }
 
 TEST_CASE("vfs zip does not trust an entry's declared size") {

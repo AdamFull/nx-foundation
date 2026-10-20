@@ -67,15 +67,15 @@ public:
                                 const std::span<const u8> data) {
     (void)rel;
     (void)data;
-    return err(file_error{io_error::InvalidArgument, 0});
+    return err(file_error{io_error::ReadOnly, 0});
   }
   virtual io_result<void> remove(const path_view rel) {
     (void)rel;
-    return err(file_error{io_error::InvalidArgument, 0});
+    return err(file_error{io_error::ReadOnly, 0});
   }
   virtual io_result<void> create_directories(const path_view rel) {
     (void)rel;
-    return err(file_error{io_error::InvalidArgument, 0});
+    return err(file_error{io_error::ReadOnly, 0});
   }
 
   [[nodiscard]] virtual const char *name() const noexcept = 0;

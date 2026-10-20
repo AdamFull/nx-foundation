@@ -17,7 +17,6 @@ TEST_CASE("shared library: a fresh one holds nothing") {
   const nx::os::shared_library lib;
   CHECK_FALSE(lib.is_open());
   CHECK(lib.symbol("nx_testlib_answer") == nullptr);
-  CHECK(lib.last_error().empty());
 }
 
 TEST_CASE("shared library: opening one finds its symbols") {
@@ -25,9 +24,8 @@ TEST_CASE("shared library: opening one finds its symbols") {
     SKIP("this platform does not load code at run time");
 
   nx::os::shared_library lib;
-  REQUIRE(lib.open(LIB));
+  REQUIRE(lib.open(LIB).has_value());
   CHECK(lib.is_open());
-  CHECK(lib.last_error().empty());
 
   const auto answer =
       reinterpret_cast<answer_fn>(lib.symbol("nx_testlib_answer"));
@@ -44,7 +42,7 @@ TEST_CASE("shared library: a symbol that is not there is null, not a crash") {
     SKIP("this platform does not load code at run time");
 
   nx::os::shared_library lib;
-  REQUIRE(lib.open(LIB));
+  REQUIRE(lib.open(LIB).has_value());
   CHECK(lib.symbol("nx_testlib_absent") == nullptr);
   CHECK(lib.symbol("nx_testlib_answer") != nullptr);
 }
@@ -54,9 +52,10 @@ TEST_CASE("shared library: a path that is not there fails and says so") {
     SKIP("this platform does not load code at run time");
 
   nx::os::shared_library lib;
-  CHECK_FALSE(lib.open("no_such_library_anywhere"));
+  const auto opened = lib.open("no_such_library_anywhere");
+  CHECK_FALSE(opened.has_value());
   CHECK_FALSE(lib.is_open());
-  CHECK_FALSE(lib.last_error().empty());
+  CHECK_FALSE(opened.error().empty());
 }
 
 TEST_CASE("shared library: closing drops the symbols") {
@@ -64,7 +63,7 @@ TEST_CASE("shared library: closing drops the symbols") {
     SKIP("this platform does not load code at run time");
 
   nx::os::shared_library lib;
-  REQUIRE(lib.open(LIB));
+  REQUIRE(lib.open(LIB).has_value());
   lib.close();
   CHECK_FALSE(lib.is_open());
   CHECK(lib.symbol("nx_testlib_answer") == nullptr);
@@ -78,8 +77,8 @@ TEST_CASE("shared library: opening again replaces what was held") {
     SKIP("this platform does not load code at run time");
 
   nx::os::shared_library lib;
-  REQUIRE(lib.open(LIB));
-  REQUIRE(lib.open(LIB));
+  REQUIRE(lib.open(LIB).has_value());
+  REQUIRE(lib.open(LIB).has_value());
   CHECK(lib.is_open());
   CHECK(lib.symbol("nx_testlib_answer") != nullptr);
 }
@@ -89,8 +88,8 @@ TEST_CASE("shared library: a failed open leaves it empty rather than stale") {
     SKIP("this platform does not load code at run time");
 
   nx::os::shared_library lib;
-  REQUIRE(lib.open(LIB));
-  CHECK_FALSE(lib.open("no_such_library_anywhere"));
+  REQUIRE(lib.open(LIB).has_value());
+  CHECK_FALSE(lib.open("no_such_library_anywhere").has_value());
   CHECK_FALSE(lib.is_open());
   CHECK(lib.symbol("nx_testlib_answer") == nullptr);
 }
@@ -100,7 +99,7 @@ TEST_CASE("shared library: moving carries the handle, once") {
     SKIP("this platform does not load code at run time");
 
   nx::os::shared_library from;
-  REQUIRE(from.open(LIB));
+  REQUIRE(from.open(LIB).has_value());
 
   nx::os::shared_library to = std::move(from);
   CHECK(to.is_open());
@@ -130,7 +129,7 @@ TEST_CASE("shared library: one under a non-ASCII path opens") {
           .has_value());
   {
     nx::os::shared_library lib;
-    REQUIRE(lib.open(copy));
+    REQUIRE(lib.open(copy).has_value());
     const auto answer =
         reinterpret_cast<answer_fn>(lib.symbol("nx_testlib_answer"));
     REQUIRE(answer != nullptr);

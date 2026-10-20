@@ -529,3 +529,81 @@ TEST_CASE("async vfs: a device that may block is not asked on the caller's "
   REQUIRE(result);
   CHECK(std::memcmp(result->data(), "host", 4) == 0);
 }
+
+namespace {
+
+/// Gives three bytes, then fails, as a dropped connection would.
+class FailingStream final : public nx::fs::stream {
+public:
+  explicit FailingStream(const bool known_size) : m_known_size(known_size) {}
+
+  usize read(void *dst, const usize bytes) override {
+    if (m_cursor >= 3) {
+      m_failed = true;
+      return 0;
+    }
+    const usize n = nx::min<usize>(bytes, 3 - m_cursor);
+    std::memset(dst, 'x', n);
+    m_cursor += n;
+    return n;
+  }
+  bool seek(const i64 offset, nx::fs::seek_origin) override {
+    m_cursor = nx::cast<usize>(offset);
+    return true;
+  }
+  [[nodiscard]] i64 tell() const override { return nx::cast<i64>(m_cursor); }
+  [[nodiscard]] i64 size() const override { return m_known_size ? 8 : -1; }
+  [[nodiscard]] bool eof() const override { return false; }
+  [[nodiscard]] nx::fs::io_result<void> status() const override {
+    if (m_failed)
+      return nx::err(nx::fs::file_error{nx::fs::io_error::ReadFailed, 42});
+    return {};
+  }
+
+private:
+  bool m_known_size;
+  usize m_cursor = 0;
+  bool m_failed = false;
+};
+
+class FailingDevice final : public nx::vfs::Device {
+public:
+  explicit FailingDevice(const bool known_size) : m_known_size(known_size) {}
+
+  nx::vfs::io_result<nx::blob<u8>> read(nx::vfs::path_view) override {
+    return nx::err(nx::vfs::file_error{nx::vfs::io_error::NotFound, 0});
+  }
+  nx::vfs::io_result<nx::vfs::stream_ptr> open(nx::vfs::path_view) override {
+    return nx::vfs::stream_ptr(nx::allocate<FailingStream>(m_known_size));
+  }
+  nx::vfs::FileInfo stat(nx::vfs::path_view) override {
+    nx::vfs::FileInfo info;
+    info.exists = true;
+    return info;
+  }
+  nx::vfs::io_result<void> list(nx::vfs::path_view,
+                                const nx::vfs::ListFn &) override {
+    return nx::err(nx::vfs::file_error{nx::vfs::io_error::NotFound, 0});
+  }
+  [[nodiscard]] const char *name() const noexcept override { return "failing"; }
+
+private:
+  bool m_known_size;
+};
+
+}
+
+TEST_CASE("async vfs: a stream that fails part way fails the read") {
+  for (const bool known_size : {false, true}) {
+    vfs_fixture::scoped_vfs guard;
+    REQUIRE(nx::vfs::mount("/", nx::allocate<FailingDevice>(known_size), 0)
+                .valid());
+    nx::vfs::AsyncIoService io(io_workers());
+    auto read = io.read("/broken.bin");
+    REQUIRE(read.valid());
+    const auto result = read.get();
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().kind == nx::fs::io_error::ReadFailed);
+    CHECK(result.error().native == 42);
+  }
+}
