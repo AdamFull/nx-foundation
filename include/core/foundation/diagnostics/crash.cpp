@@ -231,9 +231,7 @@ void gather_preamble(const Config &config) {
     put("\n");
   };
 
-  put("application  : ");
-  put(config.application);
-  put("\n");
+  say("application  : ", config.application);
   say("version      : ", config.version);
   say("build        : ", NX_BUILD_CONFIG);
   say("platform     : ", NX_PLATFORM_NAME);
@@ -435,7 +433,7 @@ void handle_signal(const int number, siginfo_t *const info,
     const Out::handle_type handle = open_report(s.report_path);
     {
       Out out(handle);
-      out.text("=== nx2d crash report ===\n\n");
+      out.text("=== crash report ===\n\n");
       out.text("signal       : ");
       out.text(signal_name(number));
       out.nl();
@@ -654,7 +652,7 @@ void write_report(const Request &request) noexcept {
   const Out::handle_type handle = open_report(s.report_path);
   {
     Out out(handle);
-    out.text("=== nx2d crash report ===\n\n");
+    out.text("=== crash report ===\n\n");
     const EXCEPTION_RECORD *const record =
         request.pointers != nullptr ? request.pointers->ExceptionRecord
                                     : nullptr;
@@ -987,7 +985,7 @@ bool report(const Fatal &fatal) {
     return false;
   {
     Out out(handle);
-    out.text("=== nx2d fatal report ===\n\n");
+    out.text("=== fatal report ===\n\n");
     out.line("reason       : ", fatal.reason);
     out.text("thread       : ");
     out.text(thread_label());

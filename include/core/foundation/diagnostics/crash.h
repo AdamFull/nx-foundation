@@ -17,7 +17,7 @@ inline constexpr usize ATTACHMENT_SIZE_CAPACITY = 64u * 1024u * 1024u;
 
 struct Config {
   string_view directory;
-  string_view application = "nx2d";
+  string_view application;
   string_view version;
   bool minidump = true;
   bool minidump_full_memory = false;

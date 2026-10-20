@@ -1,91 +1,67 @@
 #include "framework/nxtest.h"
 
 #include "core/foundation/serialization/asset_contract.h"
+#include "core/foundation/serialization/nva.h"
 
 namespace {
 
-[[nodiscard]] nx::asset_contract::Registry core_registry() {
-  nx::asset_contract::Registry registry;
-  for (const nx::asset_contract::Family &family :
-       nx::asset_contract::core_families) {
-    REQUIRE(registry.add(family.name, family.formats) ==
-            nx::asset_contract::RegistryError::None);
-  }
+using namespace nx::asset_contract;
+
+constexpr nx::string_view RESERVED[] = {".meta", ".slang", ".md"};
+constexpr Format IMAGES[] = {
+    {".png", ".tex.nxb", nx::nva::fourcc('T', 'E', 'X', ' '), true},
+    {".webp", ".tex.nxb", nx::nva::fourcc('T', 'E', 'X', ' '), true},
+};
+constexpr Format DOCUMENTS[] = {
+    {".nxui", ".nxui.nxb", nx::nva::fourcc('N', 'X', 'U', 'I'), true},
+};
+constexpr Format SHADER = {".slang", ".nxb",
+                           nx::nva::fourcc('S', 'H', 'D', 'R')};
+
+[[nodiscard]] Registry sample_registry() {
+  Registry registry(RESERVED);
+  REQUIRE(registry.add("images", IMAGES) == RegistryError::None);
+  REQUIRE(registry.add("documents", DOCUMENTS) == RegistryError::None);
+  REQUIRE(registry.add_directory("shaders", SHADER) == RegistryError::None);
   registry.freeze();
   return registry;
 }
 
 } // namespace
 
-TEST_CASE("asset contract: every core source maps to its published format") {
-  const nx::asset_contract::Registry registry = core_registry();
-  usize formats = 0;
-  for (const nx::asset_contract::Family &family :
-       nx::asset_contract::core_families) {
-    for (const nx::asset_contract::Format &format : family.formats) {
-      ++formats;
-      nx::string source("asset");
-      source += format.source_suffix;
-      const nx::asset_contract::SourceMatch source_match =
-          registry.classify_source(source.view());
-      REQUIRE(source_match.cookable());
-      CHECK(registry.handler_name(source_match.handler) == family.name);
-      CHECK(source_match.format->identity_bearing == format.identity_bearing);
-
-      nx::string published("asset");
-      published += format.published_suffix;
-      const std::optional<u32> found =
-          registry.published_format(published.view());
-      REQUIRE(found);
-      CHECK(*found == format.nva_format);
-    }
-  }
-  CHECK(registry.handler_count() ==
-        std::size(nx::asset_contract::core_families));
-  CHECK(registry.format_count() == formats);
-}
-
-TEST_CASE("asset contract: shader containers have a path-owned format") {
-  const nx::asset_contract::Registry registry = core_registry();
-  const std::optional<u32> root =
-      registry.published_format("shaders/sprite.nxb");
-  const std::optional<u32> module =
-      registry.published_format("shaders/video/yuv.nxb");
-  REQUIRE(root);
-  REQUIRE(module);
-  CHECK(*root == nx::nva::fourcc('S', 'H', 'D', 'R'));
-  CHECK(*module == *root);
-}
-
-TEST_CASE("asset contract: WebP publishes as a texture container") {
-  const nx::asset_contract::Registry registry = core_registry();
-  const nx::asset_contract::SourceMatch source =
-      registry.classify_source("characters/hero.webp");
-  REQUIRE(source.cookable());
-  CHECK(registry.handler_name(source.handler) == "texture");
-  CHECK(source.format->published_suffix == ".tex.nxb");
+TEST_CASE("asset contract: each source maps to its family's published format") {
+  const Registry registry = sample_registry();
+  const SourceMatch png = registry.classify_source("characters/hero.png");
+  REQUIRE(png.cookable());
+  CHECK(registry.handler_name(png.handler) == "images");
+  CHECK(png.format->published_suffix == ".tex.nxb");
+  CHECK(png.format->identity_bearing);
+  CHECK(registry.classify_source("hero.webp").format->source_suffix == ".webp");
   CHECK(registry.published_format("characters/hero.tex.nxb") ==
         nx::nva::fourcc('T', 'E', 'X', ' '));
+  CHECK(registry.handler_count() == 2u);
+  CHECK(registry.format_count() == 3u);
 }
 
-TEST_CASE("asset contract: media cook to names of what they are, whatever "
-          "format they came from") {
-  const nx::asset_contract::Registry registry = core_registry();
-  for (const nx::string_view source :
-       {nx::string_view("hero.png"), nx::string_view("hero.jpg"),
-        nx::string_view("hero.hdr"), nx::string_view("hero.bmp"),
-        nx::string_view("hero.tga")})
-    CHECK(registry.classify_source(source).format->published_suffix ==
-          ".tex.nxb");
-  CHECK(registry.classify_source("hit.ogg").format->published_suffix ==
-        ".audio.nxb");
-  CHECK(registry.classify_source("hit.wav").format->published_suffix ==
-        ".audio.nxb");
-  CHECK(registry.classify_source("body.ttf").format->published_suffix ==
-        ".font.nxb");
-  // Authored formats already name what they are.
-  CHECK(registry.classify_source("menu.nxui").format->published_suffix ==
-        ".nxui.nxb");
+TEST_CASE("asset contract: a directory owns the format of what it publishes") {
+  const Registry registry = sample_registry();
+  CHECK(registry.published_format("shaders/sprite.nxb") ==
+        nx::nva::fourcc('S', 'H', 'D', 'R'));
+  CHECK(registry.published_format("shaders\\video\\yuv.nxb") ==
+        nx::nva::fourcc('S', 'H', 'D', 'R'));
+  CHECK_FALSE(registry.published_format("shadersx/sprite.nxb"));
+  CHECK_FALSE(registry.published_format("ui/shaders/sprite.nxb"));
+  CHECK_FALSE(registry.published_format("shaders"));
+
+  Registry other;
+  CHECK(other.add_directory({}, SHADER) == RegistryError::EmptyName);
+  constexpr Format raw{".raw", ".raw", nx::nva::fourcc('R', 'A', 'W', ' ')};
+  CHECK(other.add_directory("raw", raw) ==
+        RegistryError::InvalidPublishedSuffix);
+  REQUIRE(other.add_directory("shaders", SHADER) == RegistryError::None);
+  CHECK(other.add_directory("shaders", SHADER) == RegistryError::DuplicateName);
+  other.freeze();
+  CHECK(other.add_directory("late", SHADER) == RegistryError::Frozen);
 }
 
 TEST_CASE("asset contract: a cooked path takes the place of the source's "
@@ -102,9 +78,8 @@ TEST_CASE("asset contract: a cooked path takes the place of the source's "
 }
 
 TEST_CASE("asset contract: authoring and unsupported files cannot publish") {
-  const nx::asset_contract::Registry registry = core_registry();
-  using enum nx::asset_contract::SourceKind;
-  CHECK(registry.classify_source("hero.aseprite").kind == AuthoringOnly);
+  const Registry registry = sample_registry();
+  using enum SourceKind;
   CHECK(registry.classify_source("hero.png.meta").kind == AuthoringOnly);
   CHECK(registry.classify_source("sprite.slang").kind == AuthoringOnly);
   CHECK(registry.classify_source("LICENCE.md").kind == AuthoringOnly);
@@ -112,6 +87,9 @@ TEST_CASE("asset contract: authoring and unsupported files cannot publish") {
   CHECK(registry.classify_source("already.nxb").kind == PreCooked);
   CHECK_FALSE(registry.published_format("already.nxb"));
   CHECK_FALSE(registry.published_format("movie.webm"));
+
+  const Registry plain;
+  CHECK(plain.classify_source("sprite.slang").kind == Unsupported);
 }
 
 TEST_CASE("asset contract: module bundles own their embedded source suffixes") {
@@ -216,7 +194,7 @@ TEST_CASE("asset contract: malformed descriptors are rejected") {
       {".zero", ".zero.nxb", 0},
   };
 
-  Registry registry;
+  Registry registry(RESERVED);
   CHECK(registry.add({}, empty_source) == RegistryError::EmptyName);
   CHECK(registry.add("none", {}) == RegistryError::EmptyFormats);
   CHECK(registry.add("empty", empty_source) == RegistryError::EmptySuffix);

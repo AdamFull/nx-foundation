@@ -74,6 +74,7 @@ TEST_CASE("crash: a report carries the machine and the build it came from") {
   CHECK(text.find("a reason to write one") != nx::string::npos);
   CHECK(text.find("and a detail") != nx::string::npos);
   CHECK(text.find("nxtest") != nx::string::npos);
+  CHECK(text.find("=== nx2d") == nx::string::npos);
   CHECK(text.find("0.0.0-test") != nx::string::npos);
 
   CHECK(text.find(NX_PLATFORM_NAME) != nx::string::npos);

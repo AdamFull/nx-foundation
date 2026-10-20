@@ -811,17 +811,19 @@ TEST_CASE("fs: executable_dir points at a real directory") {
 }
 
 TEST_CASE("fs: application_data_dir is per-application and rejects paths") {
-  const auto r = fs::application_data_dir("foundation_path_test");
+  const auto r = fs::application_data_dir("nxfoundation", "path_test");
   REQUIRE(r.has_value());
   CHECK(fs::path_view(*r).is_absolute());
-  const bool expected_suffix = r->ends_with("nx2d/foundation_path_test") ||
-                               r->ends_with("nx2d\\foundation_path_test");
+  const bool expected_suffix = r->ends_with("nxfoundation/path_test") ||
+                               r->ends_with("nxfoundation\\path_test");
   CHECK(expected_suffix);
 
-  CHECK_FALSE(fs::application_data_dir("").has_value());
-  CHECK_FALSE(fs::application_data_dir("..").has_value());
-  CHECK_FALSE(fs::application_data_dir("nested/name").has_value());
-  CHECK_FALSE(fs::application_data_dir("nested\\name").has_value());
+  for (const nx::string_view bad :
+       {nx::string_view(""), nx::string_view(".."),
+        nx::string_view("nested/name"), nx::string_view("nested\\name")}) {
+    CHECK_FALSE(fs::application_data_dir("nxfoundation", bad).has_value());
+    CHECK_FALSE(fs::application_data_dir(bad, "path_test").has_value());
+  }
 }
 
 TEST_CASE("fs::stream_ptr: default is invalid and move transfers ownership") {

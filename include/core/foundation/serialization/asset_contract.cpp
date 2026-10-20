@@ -21,20 +21,22 @@ namespace {
   return suffix.size() > 1 && suffix.front() == '.';
 }
 
-inline constexpr string_view AUTHORING_ONLY_SUFFIXES[] = {
-    ".meta", ".aseprite", ".slang", ".spv", ".metallib", ".refl.json", ".md"};
+[[nodiscard]] bool under(const string_view path,
+                         const string_view directory) noexcept {
+  return path.size() > directory.size() && starts_with(path, directory) &&
+         (path[directory.size()] == '/' || path[directory.size()] == '\\');
+}
 
-[[nodiscard]] constexpr bool
-reserved_source_suffix(const string_view suffix) noexcept {
+} // namespace
+
+bool Registry::reserved_source_suffix(const string_view suffix) const noexcept {
   if (ends_with(suffix, ".nxb"))
     return true;
-  for (const string_view reserved : AUTHORING_ONLY_SUFFIXES)
+  for (const string_view reserved : m_authoring_only)
     if (ends_with(suffix, reserved))
       return true;
   return false;
 }
-
-} // namespace
 
 string cooked_path(const string_view path, const string_view kind_suffix) {
   const usize slash = path.find_last_of("/\\");
@@ -151,6 +153,25 @@ Registry::add(const string_view name, const std::span<const Format> formats,
   return RegistryError::None;
 }
 
+RegistryError Registry::add_directory(const string_view directory,
+                                      const Format &format) {
+  if (m_frozen)
+    return RegistryError::Frozen;
+  if (directory.empty())
+    return RegistryError::EmptyName;
+  if (format.published_suffix.empty())
+    return RegistryError::EmptySuffix;
+  if (!ends_with(format.published_suffix, ".nxb"))
+    return RegistryError::InvalidPublishedSuffix;
+  if (format.nva_format == 0)
+    return RegistryError::InvalidFormat;
+  for (const DirectoryFormat &registered : m_directories)
+    if (registered.directory == directory)
+      return RegistryError::DuplicateName;
+  m_directories.push_back({directory, format});
+  return RegistryError::None;
+}
+
 void Registry::freeze() {
   if (m_frozen)
     return;
@@ -189,7 +210,7 @@ string_view Registry::handler_name(const Handler handler) const noexcept {
 }
 
 SourceMatch Registry::classify_source(const string_view path) const noexcept {
-  for (const string_view suffix : AUTHORING_ONLY_SUFFIXES)
+  for (const string_view suffix : m_authoring_only)
     if (ends_with(path, suffix))
       return {.kind = SourceKind::AuthoringOnly};
   if (ends_with(path, ".nxb"))
@@ -213,13 +234,10 @@ std::optional<PublishedMatch>
 Registry::find_published(const string_view path) const noexcept {
   if (!m_frozen)
     return std::nullopt;
-  const bool shader =
-      starts_with(path, "shaders/") || starts_with(path, "shaders\\");
-  if (shader && ends_with(path, ".nxb")) {
-    static constexpr Format shader_format{".slang", ".nxb",
-                                          nva::fourcc('S', 'H', 'D', 'R')};
-    return PublishedMatch{.format = &shader_format};
-  }
+  for (const DirectoryFormat &registered : m_directories)
+    if (under(path, registered.directory) &&
+        ends_with(path, registered.format.published_suffix))
+      return PublishedMatch{.format = &registered.format};
   for (const usize index : m_published_order) {
     const RegisteredFormat &registered = m_formats[index];
     if (ends_with(path, registered.format.published_suffix))
