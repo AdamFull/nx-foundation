@@ -17,8 +17,8 @@ future_continuation *closed_continuations() noexcept {
 } // namespace
 
 void future_state_finish(future_state_base *state, const u32 status) noexcept {
-  assert(state != nullptr);
-  assert((status >= 1 && status <= 3) && "invalid future completion status");
+  NX_ASSERT(state != nullptr);
+  NX_ASSERT((status >= 1 && status <= 3) && "invalid future completion status");
 
   state->ready.store(status, std::memory_order_release);
   state->done.decrement();
@@ -47,9 +47,9 @@ void future_state_finish(future_state_base *state, const u32 status) noexcept {
 
 void future_state_continue(future_state_base *state,
                            future_continuation *continuation) noexcept {
-  assert(state != nullptr);
-  assert(continuation != nullptr);
-  assert(continuation->pool != nullptr);
+  NX_ASSERT(state != nullptr);
+  NX_ASSERT(continuation != nullptr);
+  NX_ASSERT(continuation->pool != nullptr);
 
   future_continuation *head =
       state->continuations.load(std::memory_order_acquire);
@@ -182,8 +182,8 @@ thread_pool_statistics thread_pool::statistics() const noexcept {
 }
 
 void thread_pool::reset_statistics() noexcept {
-  assert(m_unfinished.value() == 0 &&
-         "thread-pool statistics may only be reset while idle");
+  NX_ASSERT(m_unfinished.value() == 0 &&
+            "thread-pool statistics may only be reset while idle");
   if (!m_collect_statistics)
     return;
   for (lane_counters &counters : m_counters) {
@@ -256,7 +256,7 @@ void thread_pool::release_node(task_node *node) noexcept {
 void thread_pool::enqueue(detail::pool_task &&t) {
   if (static_cast<usize>(t.priority) >=
       static_cast<usize>(task_priority::Count)) {
-    assert(false && "invalid thread-pool task priority");
+    NX_ASSERT(false && "invalid thread-pool task priority");
     t.priority = task_priority::Normal;
   }
 
@@ -441,9 +441,9 @@ void thread_pool::run_node(void *arg) noexcept {
 }
 
 void thread_pool::wait_idle() noexcept {
-  assert(!is_execution_context() &&
-         "wait_idle from inside a pool task can never finish; wait on a "
-         "task_group instead");
+  NX_ASSERT(!is_execution_context() &&
+            "wait_idle from inside a pool task can never finish; wait on a "
+            "task_group instead");
   fiber::wait(m_unfinished);
 }
 

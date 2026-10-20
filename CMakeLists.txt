@@ -220,6 +220,7 @@ set(NX_FOUNDATION_SOURCES
   vfs/memory_device.cpp
   vfs/zip_device.cpp
   diagnostics/crash.cpp
+  diagnostics/diagnostic.cpp
   diagnostics/log.cpp
   serialization/json.cpp
   serialization/ini.cpp

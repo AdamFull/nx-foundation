@@ -5,8 +5,6 @@
 
 #include "core/foundation/core/foundation.h"
 
-#include <cassert>
-
 namespace nx {
 
 /// Stores @p N bits packed into 64-bit words, so 512 flags cost 64 bytes rather than the 512 a
@@ -76,7 +74,7 @@ public:
   [[nodiscard]] static constexpr usize size() noexcept { return N; }
 
   [[nodiscard]] constexpr bool test(const usize pos) const noexcept {
-    assert(pos < N && "bit_array: index out of range");
+    NX_ASSERT(pos < N && "bit_array: index out of range");
     return (m_words[pos / BITS_PER_WORD] &
             (word_type{1} << (pos % BITS_PER_WORD))) != 0;
   }
@@ -86,7 +84,7 @@ public:
   }
 
   [[nodiscard]] constexpr reference operator[](const usize pos) noexcept {
-    assert(pos < N && "bit_array: index out of range");
+    NX_ASSERT(pos < N && "bit_array: index out of range");
     return reference(*this, pos);
   }
 
@@ -98,7 +96,7 @@ public:
   }
 
   constexpr bit_array &set(const usize pos, const bool value = true) noexcept {
-    assert(pos < N && "bit_array: index out of range");
+    NX_ASSERT(pos < N && "bit_array: index out of range");
     const word_type bit = word_type{1} << (pos % BITS_PER_WORD);
     word_type &word = m_words[pos / BITS_PER_WORD];
     word = value ? (word | bit) : (word & ~bit);
@@ -123,7 +121,7 @@ public:
   }
 
   constexpr bit_array &flip(const usize pos) noexcept {
-    assert(pos < N && "bit_array: index out of range");
+    NX_ASSERT(pos < N && "bit_array: index out of range");
     m_words[pos / BITS_PER_WORD] ^= word_type{1} << (pos % BITS_PER_WORD);
     return *this;
   }

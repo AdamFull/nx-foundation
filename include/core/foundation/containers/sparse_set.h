@@ -10,8 +10,6 @@
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/handle.h"
 
-#include <cassert>
-
 namespace nx {
 
 namespace detail {
@@ -109,7 +107,7 @@ public:
   }
 
   [[nodiscard]] size_type index_of(Handle h) const noexcept {
-    assert(contains(h));
+    NX_ASSERT(contains(h));
     return sparse_lookup(h.index());
   }
 
@@ -121,7 +119,7 @@ public:
   static constexpr repr no_index = sentinel;
 
   [[nodiscard]] Handle handle_at(size_type dense_index) const noexcept {
-    assert(dense_index < m_dense.size());
+    NX_ASSERT(dense_index < m_dense.size());
     return m_dense[dense_index];
   }
 
@@ -131,8 +129,8 @@ public:
   reference emplace(Handle h, Args &&...args)
     requires has_value
   {
-    assert(h.valid() && "sparse_set::emplace: null handle");
-    assert(!contains(h) && "sparse_set::emplace: handle already present");
+    NX_ASSERT(h.valid() && "sparse_set::emplace: null handle");
+    NX_ASSERT(!contains(h) && "sparse_set::emplace: handle already present");
     drop_other_version(h);
     const repr pos = nx::cast<repr>(m_dense.size());
     m_dense.push_back(h);
@@ -186,7 +184,7 @@ public:
   bool insert(Handle h)
     requires(!has_value)
   {
-    assert(h.valid() && "sparse_set::insert: null handle");
+    NX_ASSERT(h.valid() && "sparse_set::insert: null handle");
     if (contains(h))
       return false;
     drop_other_version(h);
@@ -224,13 +222,13 @@ public:
   [[nodiscard]] reference operator[](Handle h) noexcept
     requires has_value
   {
-    assert(contains(h));
+    NX_ASSERT(contains(h));
     return m_values[sparse_lookup(h.index())];
   }
   [[nodiscard]] const_reference operator[](Handle h) const noexcept
     requires has_value
   {
-    assert(contains(h));
+    NX_ASSERT(contains(h));
     return m_values[sparse_lookup(h.index())];
   }
 

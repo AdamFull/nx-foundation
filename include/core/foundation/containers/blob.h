@@ -2,7 +2,6 @@
 
 #include "core/foundation/core/foundation.h"
 
-#include <cassert>
 #include <span>
 #include <stdexcept>
 
@@ -176,27 +175,27 @@ public:
   }
 
   [[nodiscard]] reference operator[](usize i) noexcept {
-    assert(i < m_size);
+    NX_ASSERT(i < m_size);
     return m_data[i];
   }
   [[nodiscard]] const_reference operator[](usize i) const noexcept {
-    assert(i < m_size);
+    NX_ASSERT(i < m_size);
     return m_data[i];
   }
   [[nodiscard]] reference front() noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return m_data[0];
   }
   [[nodiscard]] const_reference front() const noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return m_data[0];
   }
   [[nodiscard]] reference back() noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return m_data[m_size - 1];
   }
   [[nodiscard]] const_reference back() const noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return m_data[m_size - 1];
   }
 

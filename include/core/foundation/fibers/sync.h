@@ -3,7 +3,6 @@
 #include "core/foundation/fibers/wait.h"
 
 #include <atomic>
-#include <cassert>
 #include <chrono>
 
 // Synchronization that suspends the waiting fiber instead of its thread. On a
@@ -240,7 +239,8 @@ private:
   bool wait_deadline(Lock &lock,
                      const internal::clock::time_point deadline) noexcept {
     if constexpr (requires { lock.owns_lock(); })
-      assert(lock.owns_lock() && "cond_var: waiting without holding the lock");
+      NX_ASSERT(lock.owns_lock() &&
+                "cond_var: waiting without holding the lock");
     m_lock.lock();
     lock.unlock();
     const internal::WaitResult result =
@@ -258,7 +258,7 @@ private:
 class barrier {
 public:
   explicit barrier(u32 count) noexcept : m_threshold(count) {
-    assert(count > 0 && "barrier: count must be non-zero");
+    NX_ASSERT(count > 0 && "barrier: count must be non-zero");
   }
   barrier(const barrier &) = delete;
   barrier &operator=(const barrier &) = delete;

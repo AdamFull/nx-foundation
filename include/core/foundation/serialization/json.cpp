@@ -906,43 +906,43 @@ const value &value::null_value() noexcept {
 }
 
 bool value::as_bool() const noexcept {
-  assert(is_bool() && "json::value::as_bool on a non-boolean");
+  NX_ASSERT(is_bool() && "json::value::as_bool on a non-boolean");
   return m_u.boolean;
 }
 i64 value::as_i64() const noexcept {
-  assert(is_i64() && "json::value::as_i64 on a non-signed-integer");
+  NX_ASSERT(is_i64() && "json::value::as_i64 on a non-signed-integer");
   return m_u.signed_integer;
 }
 u64 value::as_u64() const noexcept {
-  assert(is_u64() && "json::value::as_u64 on a non-unsigned-integer");
+  NX_ASSERT(is_u64() && "json::value::as_u64 on a non-unsigned-integer");
   return m_u.unsigned_integer;
 }
 f64 value::as_double() const noexcept {
-  assert(is_double() && "json::value::as_double on a non-real");
+  NX_ASSERT(is_double() && "json::value::as_double on a non-real");
   return m_u.real;
 }
 const nx::string &value::as_string() const noexcept {
-  assert(is_string() && "json::value::as_string on a non-string");
+  NX_ASSERT(is_string() && "json::value::as_string on a non-string");
   return m_u.string;
 }
 nx::string &value::as_string() noexcept {
-  assert(is_string() && "json::value::as_string on a non-string");
+  NX_ASSERT(is_string() && "json::value::as_string on a non-string");
   return m_u.string;
 }
 const array &value::as_array() const noexcept {
-  assert(is_array() && "json::value::as_array on a non-array");
+  NX_ASSERT(is_array() && "json::value::as_array on a non-array");
   return m_u.m_array;
 }
 array &value::as_array() noexcept {
-  assert(is_array() && "json::value::as_array on a non-array");
+  NX_ASSERT(is_array() && "json::value::as_array on a non-array");
   return m_u.m_array;
 }
 const object &value::as_object() const noexcept {
-  assert(is_object() && "json::value::as_object on a non-object");
+  NX_ASSERT(is_object() && "json::value::as_object on a non-object");
   return m_u.m_object;
 }
 object &value::as_object() noexcept {
-  assert(is_object() && "json::value::as_object on a non-object");
+  NX_ASSERT(is_object() && "json::value::as_object on a non-object");
   return m_u.m_object;
 }
 
@@ -1037,13 +1037,13 @@ usize value::size() const noexcept {
 }
 
 const value &value::operator[](usize i) const noexcept {
-  assert(is_array() && i < m_u.m_array.size() &&
-         "json::value: index out of range");
+  NX_ASSERT(is_array() && i < m_u.m_array.size() &&
+            "json::value: index out of range");
   return m_u.m_array[i];
 }
 value &value::operator[](usize i) noexcept {
-  assert(is_array() && i < m_u.m_array.size() &&
-         "json::value: index out of range");
+  NX_ASSERT(is_array() && i < m_u.m_array.size() &&
+            "json::value: index out of range");
   return m_u.m_array[i];
 }
 

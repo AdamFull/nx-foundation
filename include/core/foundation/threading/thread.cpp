@@ -119,9 +119,9 @@ thread::thread(entry_fn fn, const thread_options &opts) {
 }
 
 void thread::join() {
-  assert(joinable() && "thread::join on a non-joinable thread");
+  NX_ASSERT(joinable() && "thread::join on a non-joinable thread");
   if (m_id == this_thread::id()) {
-    assert(false && "thread::join on itself");
+    NX_ASSERT(false && "thread::join on itself");
     detach();
     return;
   }
@@ -137,7 +137,7 @@ void thread::join() {
 }
 
 void thread::detach() {
-  assert(joinable() && "thread::detach on a non-joinable thread");
+  NX_ASSERT(joinable() && "thread::detach on a non-joinable thread");
 
 #if NX_HAS_WINDOWS_API
   CloseHandle(reinterpret_cast<HANDLE>(m_handle));

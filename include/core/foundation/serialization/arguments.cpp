@@ -3,7 +3,6 @@
 #include "core/foundation/strings/format.h"
 
 #include <algorithm>
-#include <cassert>
 
 namespace nx::cli {
 namespace {
@@ -63,14 +62,14 @@ Command::Command(const nx::string_view name, const nx::string_view description)
 Command &Command::flag(const nx::string_view name, bool &output,
                        const nx::string_view description,
                        const FlagOptions options) {
-  assert(valid_name(name));
-  assert(name != "help");
-  assert(valid_short_name(options.short_name));
-  assert(options.short_name != 'h');
+  NX_ASSERT(valid_name(name));
+  NX_ASSERT(name != "help");
+  NX_ASSERT(valid_short_name(options.short_name));
+  NX_ASSERT(options.short_name != 'h');
   for ([[maybe_unused]] const Argument &argument : m_arguments) {
-    assert(argument.name.view() != name);
-    assert(options.short_name == '\0' ||
-           argument.short_name != options.short_name);
+    NX_ASSERT(argument.name.view() != name);
+    NX_ASSERT(options.short_name == '\0' ||
+              argument.short_name != options.short_name);
   }
   Argument argument;
   argument.kind = Kind::Flag;
@@ -87,16 +86,16 @@ void Command::add_value(const nx::string_view name, void *const output,
                         const detail::AssignValue assign,
                         const nx::string_view description,
                         const ValueOptions &options, const bool repeatable) {
-  assert(valid_name(name));
-  assert(name != "help");
-  assert(valid_short_name(options.short_name));
-  assert(options.short_name != 'h');
-  assert(!options.value_name.empty());
-  assert(output != nullptr && assign != nullptr);
+  NX_ASSERT(valid_name(name));
+  NX_ASSERT(name != "help");
+  NX_ASSERT(valid_short_name(options.short_name));
+  NX_ASSERT(options.short_name != 'h');
+  NX_ASSERT(!options.value_name.empty());
+  NX_ASSERT(output != nullptr && assign != nullptr);
   for ([[maybe_unused]] const Argument &argument : m_arguments) {
-    assert(argument.name.view() != name);
-    assert(options.short_name == '\0' ||
-           argument.short_name != options.short_name);
+    NX_ASSERT(argument.name.view() != name);
+    NX_ASSERT(options.short_name == '\0' ||
+              argument.short_name != options.short_name);
   }
   Argument argument;
   argument.kind = Kind::Option;
@@ -110,7 +109,7 @@ void Command::add_value(const nx::string_view name, void *const output,
   argument.output = output;
   argument.assign = assign;
   for (const nx::string_view choice : options.choices) {
-    assert(!choice.empty());
+    NX_ASSERT(!choice.empty());
     argument.choices.emplace_back(choice);
   }
   m_arguments.push_back(std::move(argument));
@@ -121,18 +120,18 @@ void Command::add_positional(const nx::string_view name, void *const output,
                              const nx::string_view description,
                              const PositionalOptions &options,
                              const bool repeatable) {
-  assert(valid_positional_name(name));
-  assert(output != nullptr && assign != nullptr);
+  NX_ASSERT(valid_positional_name(name));
+  NX_ASSERT(output != nullptr && assign != nullptr);
   [[maybe_unused]] bool optional_seen = false;
   for (const Argument &argument : m_arguments) {
-    assert(argument.name.view() != name);
+    NX_ASSERT(argument.name.view() != name);
     if (argument.kind != Kind::Positional)
       continue;
-    assert(!argument.repeatable && "a repeated positional must be last");
+    NX_ASSERT(!argument.repeatable && "a repeated positional must be last");
     optional_seen |= !argument.required;
   }
-  assert(!(optional_seen && options.required) &&
-         "a required positional cannot follow an optional positional");
+  NX_ASSERT(!(optional_seen && options.required) &&
+            "a required positional cannot follow an optional positional");
 
   Argument argument;
   argument.kind = Kind::Positional;
@@ -145,7 +144,7 @@ void Command::add_positional(const nx::string_view name, void *const output,
   argument.output = output;
   argument.assign = assign;
   for (const nx::string_view choice : options.choices) {
-    assert(!choice.empty());
+    NX_ASSERT(!choice.empty());
     argument.choices.emplace_back(choice);
   }
   m_arguments.push_back(std::move(argument));
@@ -153,13 +152,13 @@ void Command::add_positional(const nx::string_view name, void *const output,
 
 Parser::Parser(const nx::string_view program, const nx::string_view description)
     : m_program(program), m_description(description) {
-  assert(!program.empty());
+  NX_ASSERT(!program.empty());
 }
 
 Command &Parser::command(const nx::string_view name,
                          const nx::string_view description) {
-  assert(valid_name(name));
-  assert(find_command(name) == nullptr);
+  NX_ASSERT(valid_name(name));
+  NX_ASSERT(find_command(name) == nullptr);
   m_commands.push_back(nx::make_unique<Command>(name, description));
   return *m_commands.back();
 }

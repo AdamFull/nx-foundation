@@ -181,8 +181,8 @@ class task_group {
 public:
   task_group() = default;
   ~task_group() {
-    assert(m_pending.value() == 0 &&
-           "task_group destroyed with tasks still pending");
+    NX_ASSERT(m_pending.value() == 0 &&
+              "task_group destroyed with tasks still pending");
   }
   task_group(const task_group &) = delete;
   task_group &operator=(const task_group &) = delete;
@@ -326,7 +326,7 @@ public:
   template <typename... Args>
     requires(!std::is_void_v<T>)
   void set_value(Args &&...args) {
-    assert(m_state != nullptr && "completion_source completed twice");
+    NX_ASSERT(m_state != nullptr && "completion_source completed twice");
     ::new (m_state->storage) T(std::forward<Args>(args)...);
     finish(1);
   }
@@ -334,18 +334,18 @@ public:
   void set_value()
     requires(std::is_void_v<T>)
   {
-    assert(m_state != nullptr && "completion_source completed twice");
+    NX_ASSERT(m_state != nullptr && "completion_source completed twice");
     finish(1);
   }
 
   void set_exception(std::exception_ptr error) noexcept {
-    assert(m_state != nullptr && "completion_source completed twice");
+    NX_ASSERT(m_state != nullptr && "completion_source completed twice");
     m_state->error = std::move(error);
     finish(2);
   }
 
   void set_cancelled() noexcept {
-    assert(m_state != nullptr && "completion_source completed twice");
+    NX_ASSERT(m_state != nullptr && "completion_source completed twice");
     finish(3);
   }
 
@@ -749,7 +749,7 @@ template <typename T> void future<T>::wait() noexcept {
 }
 
 template <typename T> T future<T>::get() {
-  assert(valid() && "future::get on an invalid future");
+  NX_ASSERT(valid() && "future::get on an invalid future");
   wait();
   if (m_state->ready.load(std::memory_order_acquire) == 2) {
     std::exception_ptr error = m_state->error;

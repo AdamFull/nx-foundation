@@ -8,8 +8,6 @@
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/handle.h"
 
-#include <cassert>
-
 namespace nx {
 
 /// A stale handle (to a recycled slot) reports as absent.
@@ -127,11 +125,11 @@ public:
   }
 
   [[nodiscard]] reference operator[](Handle h) noexcept {
-    assert(contains(h));
+    NX_ASSERT(contains(h));
     return m_dense[m_sparse[h.index()].dense];
   }
   [[nodiscard]] const_reference operator[](Handle h) const noexcept {
-    assert(contains(h));
+    NX_ASSERT(contains(h));
     return m_dense[m_sparse[h.index()].dense];
   }
 
@@ -147,7 +145,7 @@ public:
   }
 
   [[nodiscard]] Handle handle_at(usize dense_index) const noexcept {
-    assert(dense_index < m_dense.size());
+    NX_ASSERT(dense_index < m_dense.size());
     const repr idx = m_dense_to_sparse[dense_index];
     return Handle::from_parts(idx, m_sparse[idx].version);
   }
@@ -210,8 +208,8 @@ private:
       m_free.pop_back();
       return idx;
     }
-    assert(m_sparse.size() < Handle::null_index &&
-           "slot_map: index space exhausted");
+    NX_ASSERT(m_sparse.size() < Handle::null_index &&
+              "slot_map: index space exhausted");
     const repr idx = nx::cast<repr>(m_sparse.size());
     m_sparse.push_back(sparse_slot{0, free_sentinel});
     m_free.reserve(m_sparse.size());

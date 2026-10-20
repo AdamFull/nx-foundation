@@ -7,7 +7,6 @@
 #include "core/foundation/strings/utf8_string_view.h"
 #include "core/foundation/threading/sync.h"
 
-#include <cassert>
 #include <compare>
 #include <cstdio>
 #include <cstring>
@@ -45,15 +44,17 @@ public:
     {
       scoped_shared_lock read(m_mutex);
       if (const auto it = m_map.find(id); it != m_map.end()) {
-        assert(string_view(it->second.data, it->second.length) == s &&
-               "nx::id_string: 64-bit hash collision between distinct strings");
+        NX_ASSERT(
+            string_view(it->second.data, it->second.length) == s &&
+            "nx::id_string: 64-bit hash collision between distinct strings");
         return;
       }
     }
     scoped_lock write(m_mutex);
     if (const auto it = m_map.find(id); it != m_map.end()) {
-      assert(string_view(it->second.data, it->second.length) == s &&
-             "nx::id_string: 64-bit hash collision between distinct strings");
+      NX_ASSERT(
+          string_view(it->second.data, it->second.length) == s &&
+          "nx::id_string: 64-bit hash collision between distinct strings");
       return;
     }
     m_map.emplace(id, store(s));

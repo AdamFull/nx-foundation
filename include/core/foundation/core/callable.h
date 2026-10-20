@@ -2,7 +2,6 @@
 
 #include "core/foundation/core/foundation.h"
 
-#include <cassert>
 #include <cstddef>
 #include <cstring>
 #include <functional>
@@ -153,7 +152,7 @@ public:
   }
 
   NX_FORCE_INLINE R operator()(Args... args) const {
-    assert(m_invoke != nullptr && "inplace_function: called while empty");
+    NX_ASSERT(m_invoke != nullptr && "inplace_function: called while empty");
     return m_invoke(raw(), std::forward<Args>(args)...);
   }
 
@@ -355,7 +354,7 @@ public:
   }
 
   NX_FORCE_INLINE R operator()(Args... args) const {
-    assert(m_ops != nullptr && "unique_function: called while empty");
+    NX_ASSERT(m_ops != nullptr && "unique_function: called while empty");
     return m_ops->invoke(raw(), std::forward<Args>(args)...);
   }
 
@@ -467,7 +466,7 @@ public:
   }
 
   NX_FORCE_INLINE R operator()(Args... args) const {
-    assert(m_data != nullptr && "function: called while empty");
+    NX_ASSERT(m_data != nullptr && "function: called while empty");
     return m_invoke(m_data, std::forward<Args>(args)...);
   }
 
@@ -539,7 +538,7 @@ public:
   }
 
   R operator()(Args... args) const {
-    assert(m_call != nullptr && "function_ref: called while empty");
+    NX_ASSERT(m_call != nullptr && "function_ref: called while empty");
     return m_call(m_data, std::forward<Args>(args)...);
   }
 

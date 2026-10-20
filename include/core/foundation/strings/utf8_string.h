@@ -4,7 +4,6 @@
 #include "core/foundation/core/hash.h"
 #include "core/foundation/strings/utf8_string_view.h"
 
-#include <cassert>
 #include <cstring>
 #include <format>
 #include <iterator>
@@ -412,11 +411,11 @@ public:
 
   // Element access. Indices are byte offsets, not code points.
   [[nodiscard]] reference operator[](const usize i) noexcept {
-    assert(i < size());
+    NX_ASSERT(i < size());
     return data()[i];
   }
   [[nodiscard]] const_reference operator[](const usize i) const noexcept {
-    assert(i < size());
+    NX_ASSERT(i < size());
     return data()[i];
   }
   [[nodiscard]] reference at(const usize i) {
@@ -430,19 +429,19 @@ public:
     return data()[i];
   }
   [[nodiscard]] reference front() noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return data()[0];
   }
   [[nodiscard]] const_reference front() const noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return data()[0];
   }
   [[nodiscard]] reference back() noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return data()[size() - 1];
   }
   [[nodiscard]] const_reference back() const noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return data()[size() - 1];
   }
 
@@ -512,7 +511,7 @@ public:
     set_size(sz + 1);
   }
   NX_FORCE_INLINE void pop_back() noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     set_size(size() - 1);
   }
 
@@ -650,7 +649,7 @@ public:
   template <typename Op> void resize_and_overwrite(const usize count, Op op) {
     ensure_capacity(count);
     const usize kept = nx::cast<usize>(std::move(op)(data(), count));
-    assert(kept <= count);
+    NX_ASSERT(kept <= count);
     set_size(kept);
   }
 

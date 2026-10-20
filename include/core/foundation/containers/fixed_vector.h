@@ -13,8 +13,6 @@
 
 #include "core/foundation/core/foundation.h"
 
-#include <cassert>
-
 namespace nx {
 
 /// A vector with N elements of inline storage, like C++26's inplace_vector:
@@ -131,27 +129,27 @@ public:
   }
 
   [[nodiscard]] reference operator[](usize i) noexcept {
-    assert(i < m_size);
+    NX_ASSERT(i < m_size);
     return ptr()[i];
   }
   [[nodiscard]] const_reference operator[](usize i) const noexcept {
-    assert(i < m_size);
+    NX_ASSERT(i < m_size);
     return ptr()[i];
   }
   [[nodiscard]] reference front() noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return ptr()[0];
   }
   [[nodiscard]] const_reference front() const noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return ptr()[0];
   }
   [[nodiscard]] reference back() noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return ptr()[m_size - 1];
   }
   [[nodiscard]] const_reference back() const noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return ptr()[m_size - 1];
   }
   [[nodiscard]] pointer data() noexcept { return ptr(); }
@@ -216,7 +214,7 @@ public:
   pointer try_push_back(T &&v) { return try_emplace_back(std::move(v)); }
 
   void pop_back() noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     ptr()[--m_size].~T();
   }
 
@@ -353,7 +351,7 @@ private:
   }
 
   [[nodiscard]] usize offset_of(const const_iterator pos) const noexcept {
-    assert(pos >= ptr() && pos <= ptr() + m_size);
+    NX_ASSERT(pos >= ptr() && pos <= ptr() + m_size);
     return nx::cast<usize>(pos - ptr());
   }
 

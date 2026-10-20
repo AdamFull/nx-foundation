@@ -8,8 +8,6 @@
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/handle.h"
 
-#include <cassert>
-
 namespace nx {
 
 /// Handle-keyed pool whose element addresses stay valid until erased. Elements live in fixed-size
@@ -223,11 +221,11 @@ public:
   }
 
   [[nodiscard]] reference operator[](Handle h) noexcept {
-    assert(contains(h));
+    NX_ASSERT(contains(h));
     return *value_ptr(h.index());
   }
   [[nodiscard]] const_reference operator[](Handle h) const noexcept {
-    assert(contains(h));
+    NX_ASSERT(contains(h));
     return *value_ptr(h.index());
   }
 
@@ -314,7 +312,8 @@ private:
 
   void add_page() {
     const usize base = m_capacity;
-    assert(base < Handle::null_index && "stable_pool: index space exhausted");
+    NX_ASSERT(base < Handle::null_index &&
+              "stable_pool: index space exhausted");
     slot *page = slot_alloc_traits::allocate(m_salloc, page_size);
     for (usize i = 0; i < page_size; ++i) {
       slot &s = page[i];

@@ -12,8 +12,6 @@
 
 #include "core/foundation/core/foundation.h"
 
-#include <cassert>
-
 namespace nx {
 
 struct sorted_unique_t {
@@ -198,7 +196,7 @@ public:
   flat_map(key_container_type keys, mapped_container_type values,
            const key_compare &comp = key_compare())
       : m_c{std::move(keys), std::move(values)}, m_comp(comp) {
-    assert(m_c.keys.size() == m_c.values.size());
+    NX_ASSERT(m_c.keys.size() == m_c.values.size());
     sort_and_unique();
   }
 
@@ -206,8 +204,8 @@ public:
            mapped_container_type values,
            const key_compare &comp = key_compare())
       : m_c{std::move(keys), std::move(values)}, m_comp(comp) {
-    assert(m_c.keys.size() == m_c.values.size());
-    assert(is_sorted_unique());
+    NX_ASSERT(m_c.keys.size() == m_c.values.size());
+    NX_ASSERT(is_sorted_unique());
   }
 
   template <std::input_iterator It>
@@ -637,10 +635,10 @@ public:
   }
 
   void replace(key_container_type &&keys, mapped_container_type &&values) {
-    assert(keys.size() == values.size());
+    NX_ASSERT(keys.size() == values.size());
     m_c.keys = std::move(keys);
     m_c.values = std::move(values);
-    assert(is_sorted_unique());
+    NX_ASSERT(is_sorted_unique());
   }
 
   [[nodiscard]] const key_container_type &keys() const noexcept {

@@ -191,7 +191,7 @@ public:
   /// waits between pumps; it must outlive the pipeline's jobs.
   void bind(AsyncIoService &io, nx::thread_pool &workers,
             fiber::event *progress = nullptr) noexcept {
-    assert(m_entries.empty() && "cannot rebind an active asset pipeline");
+    NX_ASSERT(m_entries.empty() && "cannot rebind an active asset pipeline");
     m_io = &io;
     m_workers = &workers;
     m_progress = progress;
@@ -729,7 +729,7 @@ private:
           set_terminal(entry, AssetPipelineStage::Failed,
                        AssetFenceStatus::Failed);
       }
-      assert(m_acquiring != 0);
+      NX_ASSERT(m_acquiring != 0);
       --m_acquiring;
     }
   }
@@ -830,7 +830,7 @@ private:
           set_terminal(entry, AssetPipelineStage::Failed,
                        AssetFenceStatus::Failed);
       }
-      assert(m_preparing != 0);
+      NX_ASSERT(m_preparing != 0);
       --m_preparing;
     }
   }

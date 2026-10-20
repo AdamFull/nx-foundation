@@ -241,7 +241,8 @@ void barrier::arrive_and_wait() noexcept {
 
 void barrier::arrive_and_drop() noexcept {
   m_lock.lock();
-  assert(m_threshold > 0 && "barrier: more participants dropped than it had");
+  NX_ASSERT(m_threshold > 0 &&
+            "barrier: more participants dropped than it had");
   --m_threshold;
   if (m_arrived == 0 || m_arrived < m_threshold) {
     m_lock.unlock();

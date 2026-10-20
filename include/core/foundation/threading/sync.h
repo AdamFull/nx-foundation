@@ -3,7 +3,6 @@
 #include "core/foundation/core/foundation.h"
 
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <type_traits>
 #include <utility>
@@ -263,8 +262,8 @@ public:
   }
 
   void unlock() noexcept {
-    assert(m_owner.load(std::memory_order_relaxed) == this_thread::id() &&
-           "recursive_mutex: unlock from non-owning thread");
+    NX_ASSERT(m_owner.load(std::memory_order_relaxed) == this_thread::id() &&
+              "recursive_mutex: unlock from non-owning thread");
     if (--m_depth == 0) {
       m_owner.store(0, std::memory_order_relaxed);
       m_inner.unlock();
@@ -339,33 +338,34 @@ public:
   }
 
   void lock() noexcept {
-    assert(m_mutex != nullptr && !m_owns && "unique_lock: lock() misuse");
+    NX_ASSERT(m_mutex != nullptr && !m_owns && "unique_lock: lock() misuse");
     m_mutex->lock();
     m_owns = true;
   }
   [[nodiscard]] bool try_lock() noexcept {
-    assert(m_mutex != nullptr && !m_owns && "unique_lock: try_lock() misuse");
+    NX_ASSERT(m_mutex != nullptr && !m_owns &&
+              "unique_lock: try_lock() misuse");
     m_owns = m_mutex->try_lock();
     return m_owns;
   }
   template <class Rep, class Period>
   [[nodiscard]] bool
   try_lock_for(std::chrono::duration<Rep, Period> timeout) noexcept {
-    assert(m_mutex != nullptr && !m_owns &&
-           "unique_lock: try_lock_for() misuse");
+    NX_ASSERT(m_mutex != nullptr && !m_owns &&
+              "unique_lock: try_lock_for() misuse");
     m_owns = m_mutex->try_lock_for(timeout);
     return m_owns;
   }
   template <class Clock, class Duration>
   [[nodiscard]] bool
   try_lock_until(std::chrono::time_point<Clock, Duration> t) noexcept {
-    assert(m_mutex != nullptr && !m_owns &&
-           "unique_lock: try_lock_until() misuse");
+    NX_ASSERT(m_mutex != nullptr && !m_owns &&
+              "unique_lock: try_lock_until() misuse");
     m_owns = m_mutex->try_lock_until(t);
     return m_owns;
   }
   void unlock() noexcept {
-    assert(m_owns && "unique_lock: unlock() without ownership");
+    NX_ASSERT(m_owns && "unique_lock: unlock() without ownership");
     m_mutex->unlock();
     m_owns = false;
   }
@@ -439,33 +439,34 @@ public:
   }
 
   void lock() noexcept {
-    assert(m_mutex != nullptr && !m_owns && "shared_lock: lock() misuse");
+    NX_ASSERT(m_mutex != nullptr && !m_owns && "shared_lock: lock() misuse");
     m_mutex->lock_shared();
     m_owns = true;
   }
   [[nodiscard]] bool try_lock() noexcept {
-    assert(m_mutex != nullptr && !m_owns && "shared_lock: try_lock() misuse");
+    NX_ASSERT(m_mutex != nullptr && !m_owns &&
+              "shared_lock: try_lock() misuse");
     m_owns = m_mutex->try_lock_shared();
     return m_owns;
   }
   template <class Rep, class Period>
   [[nodiscard]] bool
   try_lock_for(std::chrono::duration<Rep, Period> timeout) noexcept {
-    assert(m_mutex != nullptr && !m_owns &&
-           "shared_lock: try_lock_for() misuse");
+    NX_ASSERT(m_mutex != nullptr && !m_owns &&
+              "shared_lock: try_lock_for() misuse");
     m_owns = m_mutex->try_lock_shared_for(timeout);
     return m_owns;
   }
   template <class Clock, class Duration>
   [[nodiscard]] bool
   try_lock_until(std::chrono::time_point<Clock, Duration> t) noexcept {
-    assert(m_mutex != nullptr && !m_owns &&
-           "shared_lock: try_lock_until() misuse");
+    NX_ASSERT(m_mutex != nullptr && !m_owns &&
+              "shared_lock: try_lock_until() misuse");
     m_owns = m_mutex->try_lock_shared_until(t);
     return m_owns;
   }
   void unlock() noexcept {
-    assert(m_owns && "shared_lock: unlock() without ownership");
+    NX_ASSERT(m_owns && "shared_lock: unlock() without ownership");
     m_mutex->unlock_shared();
     m_owns = false;
   }
@@ -549,7 +550,8 @@ public:
 private:
   template <typename Lock> static void check_owned(Lock &lock) noexcept {
     if constexpr (requires { lock.owns_lock(); })
-      assert(lock.owns_lock() && "cond_var: waiting without holding the lock");
+      NX_ASSERT(lock.owns_lock() &&
+                "cond_var: waiting without holding the lock");
     (void)lock;
   }
 
@@ -891,7 +893,7 @@ private:
 class barrier {
 public:
   explicit barrier(u32 count) noexcept : m_threshold(count) {
-    assert(count > 0 && "barrier: count must be non-zero");
+    NX_ASSERT(count > 0 && "barrier: count must be non-zero");
   }
   barrier(const barrier &) = delete;
   barrier &operator=(const barrier &) = delete;

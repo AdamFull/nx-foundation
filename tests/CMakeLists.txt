@@ -133,6 +133,7 @@ set(NX_FOUNDATION_TEST_SOURCES
   vfs/test_pack_manifest.cpp
 
   diagnostics/test_crash.cpp
+  diagnostics/test_diagnostic.cpp
   diagnostics/test_log.cpp
 
   ecs/test_registry.cpp)

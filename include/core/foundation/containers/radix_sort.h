@@ -4,7 +4,6 @@
 #include "core/foundation/core/time.h"
 #include "core/foundation/threading/thread_pool.h"
 
-#include <cassert>
 #include <chrono>
 #include <concepts>
 #include <cstring>
@@ -54,8 +53,9 @@ radix_buffers_fit(const usize count, const usize values,
   const bool fit = values >= count && key_scratch >= count &&
                    value_scratch >= count &&
                    count <= std::numeric_limits<u32>::max();
-  assert(fit && "radix sort: a buffer is shorter than the keys, or there are "
-                "more than 2^32 keys");
+  NX_ASSERT(fit &&
+            "radix sort: a buffer is shorter than the keys, or there are "
+            "more than 2^32 keys");
   return fit;
 }
 

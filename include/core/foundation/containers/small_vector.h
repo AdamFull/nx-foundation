@@ -14,8 +14,6 @@
 
 #include "core/foundation/core/foundation.h"
 
-#include <cassert>
-
 namespace nx {
 
 template <typename T, usize N, typename Alloc = Allocator<T>>
@@ -166,27 +164,27 @@ public:
   }
 
   [[nodiscard]] reference operator[](usize i) noexcept {
-    assert(i < m_size);
+    NX_ASSERT(i < m_size);
     return m_data[i];
   }
   [[nodiscard]] const_reference operator[](usize i) const noexcept {
-    assert(i < m_size);
+    NX_ASSERT(i < m_size);
     return m_data[i];
   }
   [[nodiscard]] reference front() noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return m_data[0];
   }
   [[nodiscard]] const_reference front() const noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return m_data[0];
   }
   [[nodiscard]] reference back() noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return m_data[m_size - 1];
   }
   [[nodiscard]] const_reference back() const noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     return m_data[m_size - 1];
   }
   [[nodiscard]] pointer data() noexcept { return m_data; }
@@ -265,7 +263,7 @@ public:
   }
 
   void pop_back() noexcept {
-    assert(!empty());
+    NX_ASSERT(!empty());
     alloc_traits::destroy(m_alloc, m_data + --m_size);
   }
 
@@ -369,8 +367,8 @@ public:
         using std::swap;
         swap(m_alloc, other.m_alloc);
       } else {
-        assert(m_alloc == other.m_alloc &&
-               "small_vector::swap: non-propagating unequal allocators");
+        NX_ASSERT(m_alloc == other.m_alloc &&
+                  "small_vector::swap: non-propagating unequal allocators");
       }
       std::swap(m_data, other.m_data);
       std::swap(m_size, other.m_size);
@@ -418,7 +416,7 @@ private:
   bool is_inline() const noexcept { return m_data == inline_ptr(); }
 
   [[nodiscard]] usize offset_of(const const_iterator pos) const noexcept {
-    assert(pos >= m_data && pos <= m_data + m_size);
+    NX_ASSERT(pos >= m_data && pos <= m_data + m_size);
     return nx::cast<usize>(pos - m_data);
   }
 

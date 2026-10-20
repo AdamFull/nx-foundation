@@ -138,6 +138,28 @@
 #define NX_BUILD_CONFIG "Release"
 #endif
 
+namespace nx::detail {
+/// Logs a failed NX_ASSERT, flushes the log, breaks into an attached debugger
+/// and aborts. A formatted message needs diagnostics/diagnostic.h.
+[[noreturn]] void assert_fail(const char *file, int line, const char *cond,
+                              const char *msg = nullptr) noexcept;
+} // namespace nx::detail
+
+// The one assertion for programmer invariants: active in NX_DEBUG builds,
+// compiled out (but still type-checked) otherwise. NX_ASSERT(ptr != nullptr);
+// NX_ASSERT(i < n, "index out of range"); with diagnostic.h,
+// NX_ASSERT(i < n, "index {} out of range {}", i, n). An expression, as assert
+// is, so a constant condition draws no warning.
+#if NX_DEBUG
+#define NX_ASSERT(cond, ...)                                                   \
+  (NX_LIKELY(cond)                                                             \
+       ? (void)0                                                               \
+       : ::nx::detail::assert_fail(__FILE__, __LINE__,                         \
+                                   #cond __VA_OPT__(, ) __VA_ARGS__))
+#else
+#define NX_ASSERT(cond, ...) ((void)sizeof(!(cond)))
+#endif
+
 #if defined(NX_COMPILER_MSVC)
 #define NX_FORCE_INLINE __forceinline
 #define NX_NO_INLINE __declspec(noinline)
@@ -334,7 +356,7 @@ template <typename To, typename From>
     if (from == nullptr)
       return nullptr;
     To result = dynamic_cast<To>(from);
-    assert(result != nullptr && "safe_cast: invalid downcast");
+    NX_ASSERT(result != nullptr && "safe_cast: invalid downcast");
     return result;
   } else {
     return static_cast<To>(from);
@@ -424,14 +446,14 @@ inline void heap_free(void *ptr) noexcept {
 
 [[nodiscard]] inline void *
 mem_alloc(usize size, usize align = alignof(max_align_t)) noexcept {
-  assert(allocation_allowed() && "allocation inside a scoped_no_alloc");
+  NX_ASSERT(allocation_allowed() && "allocation inside a scoped_no_alloc");
   return detail::heap_alloc(size, align);
 }
 
 [[nodiscard]] inline void *
 mem_realloc(void *ptr, usize newsize,
             usize align = alignof(max_align_t)) noexcept {
-  assert(allocation_allowed() && "reallocation inside a scoped_no_alloc");
+  NX_ASSERT(allocation_allowed() && "reallocation inside a scoped_no_alloc");
 #if NX_USE_MIMALLOC
   return mi_realloc_aligned(ptr, newsize, align);
 #elif defined(NX_PLATFORM_WINDOWS)
@@ -461,7 +483,7 @@ mem_realloc(void *ptr, usize newsize,
 // its allocate path, and a deadline thread that frees is a deadline thread
 // that was handed ownership of something it should only have borrowed.
 inline void mem_free(void *ptr) noexcept {
-  assert(allocation_allowed() && "free inside a scoped_no_alloc");
+  NX_ASSERT(allocation_allowed() && "free inside a scoped_no_alloc");
   detail::heap_free(ptr);
 }
 
@@ -810,7 +832,7 @@ template <typename T, typename Alloc, typename... Args>
                                             Args &&...args) {
   using Block = detail::SharedBlock<T, Alloc>;
   using Held = typename Block::chunks;
-  assert(allocation_allowed() && "allocation inside a scoped_no_alloc");
+  NX_ASSERT(allocation_allowed() && "allocation inside a scoped_no_alloc");
 
   Held source(alloc);
   detail::SharedChunk *const chunk =
@@ -925,7 +947,7 @@ template <typename T> struct AllocDeleter {
     static_assert(sizeof(T) > 0, "AllocDeleter: T must be complete");
     if (p == nullptr)
       return;
-    assert(detail::on_nx_heap(p) && "AllocDeleter: not allocated by nx");
+    NX_ASSERT(detail::on_nx_heap(p) && "AllocDeleter: not allocated by nx");
     void *const block = detail::heap_block(p);
     p->~T();
     mem_free(block);
@@ -1085,7 +1107,7 @@ template <typename T, typename... Args>
 /// Takes back ownership of a pointer that came from nx::make_unique (via
 /// release()) or nx::allocate. Debug builds check that it lives on the nx heap.
 template <typename T> [[nodiscard]] unique_ptr<T> adopt_unique(T *p) noexcept {
-  assert(detail::on_nx_heap(p) && "adopt_unique: not allocated by nx");
+  NX_ASSERT(detail::on_nx_heap(p) && "adopt_unique: not allocated by nx");
   return unique_ptr<T>(detail::AdoptUnique{}, p);
 }
 

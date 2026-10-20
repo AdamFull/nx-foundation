@@ -4,7 +4,6 @@
 #include "core/foundation/core/hash.h"
 
 #include <bit>
-#include <cassert>
 #include <cstring>
 #include <initializer_list>
 #include <iterator>
@@ -608,8 +607,8 @@ public:
     if constexpr (alloc_traits::propagate_on_container_swap::value) {
       swap(m_alloc, o.m_alloc);
     } else {
-      assert(m_alloc == o.m_alloc &&
-             "raw_hash_table::swap: non-propagating unequal allocators");
+      NX_ASSERT(m_alloc == o.m_alloc &&
+                "raw_hash_table::swap: non-propagating unequal allocators");
     }
     swap(m_ctrl, o.m_ctrl);
     swap(m_slots, o.m_slots);

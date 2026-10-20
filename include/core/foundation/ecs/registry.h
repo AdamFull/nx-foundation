@@ -18,8 +18,6 @@
 #include "core/foundation/reflection/aggregate.h"
 #include "core/foundation/strings/utf8_string_view.h"
 
-#include <cassert>
-
 namespace nx::ecs {
 
 template <typename Entity, typename Alloc> class basic_registry;
@@ -573,8 +571,8 @@ public:
       idx = m_free.back();
       m_free.pop_back();
     } else {
-      assert(m_slots.size() <= Entity::max_index &&
-             "registry: entity index space exhausted");
+      NX_ASSERT(m_slots.size() <= Entity::max_index &&
+                "registry: entity index space exhausted");
       idx = nx::cast<repr>(m_slots.size());
       m_slots.push_back(entity_slot{});
     }
@@ -664,7 +662,7 @@ public:
     const detail::component_id id = detail::component_id_of<T>();
     ensure_tables(id);
     if (m_storages[id] != nullptr) {
-      assert(false && "registry: component type registered more than once");
+      NX_ASSERT(false && "registry: component type registered more than once");
       return m_metadata[id];
     }
 
@@ -729,17 +727,17 @@ public:
   component_metadata_of() const noexcept {
     const detail::component_id id =
         detail::component_id_of<std::remove_cv_t<C>>();
-    assert(id < m_storages.size() && m_storages[id] != nullptr &&
-           "registry: component type not registered");
+    NX_ASSERT(id < m_storages.size() && m_storages[id] != nullptr &&
+              "registry: component type not registered");
     return m_metadata[id];
   }
 
   template <typename C, typename... Args> C &emplace(Entity e, Args &&...args) {
     using T = std::remove_cv_t<C>;
     auto &store = assure<T>();
-    assert(alive(e) && "registry::emplace: entity not alive");
-    assert(!store.contains(e) &&
-           "registry::emplace: entity already has the component");
+    NX_ASSERT(alive(e) && "registry::emplace: entity not alive");
+    NX_ASSERT(!store.contains(e) &&
+              "registry::emplace: entity already has the component");
     // Released, a second emplace replaces the component: observers see an
     // update, not a second construction with no destruction between.
     if (store.contains(e))
@@ -758,7 +756,7 @@ public:
   C &emplace_or_replace(Entity e, Args &&...args) {
     using T = std::remove_cv_t<C>;
     auto &store = assure<T>();
-    assert(alive(e) && "registry::emplace_or_replace: entity not alive");
+    NX_ASSERT(alive(e) && "registry::emplace_or_replace: entity not alive");
     if (T *p = store.try_get(e)) {
       *p = T(std::forward<Args>(args)...);
       if (store.m_on_update.empty())
@@ -790,7 +788,7 @@ public:
     using T = std::remove_cv_t<C>;
     auto &store = assure<T>();
     T *p = store.try_get(e);
-    assert(p && "registry::replace: entity does not have component");
+    NX_ASSERT(p && "registry::replace: entity does not have component");
     *p = T(std::forward<Args>(args)...);
     if (store.m_on_update.empty())
       return *p;
@@ -802,7 +800,7 @@ public:
     using T = std::remove_cv_t<C>;
     auto &store = assure<T>();
     T *p = store.try_get(e);
-    assert(p && "registry::patch: entity does not have component");
+    NX_ASSERT(p && "registry::patch: entity does not have component");
     fn(*p);
     if (store.m_on_update.empty())
       return *p;
@@ -858,7 +856,7 @@ public:
 
   template <typename C> void erase(Entity e) {
     const bool removed = remove<C>(e);
-    assert(removed && "registry::erase: entity does not have component");
+    NX_ASSERT(removed && "registry::erase: entity does not have component");
     (void)removed;
   }
 
@@ -1047,7 +1045,7 @@ public:
   component_statistics() const noexcept {
     using T = std::remove_cv_t<C>;
     const auto *store = raw_storage<T>();
-    assert(store && "registry::component_statistics: type not registered");
+    NX_ASSERT(store && "registry::component_statistics: type not registered");
     const component_metadata &md = component_metadata_of<T>();
     component_type_statistics st{};
     st.id = md.id;
@@ -1126,8 +1124,8 @@ private:
   }
 
   template <typename T> void assert_registered() const noexcept {
-    assert(is_component_registered<T>() &&
-           "registry: component type not registered");
+    NX_ASSERT(is_component_registered<T>() &&
+              "registry: component type not registered");
   }
 
   /// Throws in every build: an unregistered type has no storage to return.
@@ -1150,20 +1148,21 @@ private:
     } else {
       (void)before;
       T *now = store.try_get(e);
-      assert(now && "registry: a callback removed the component it was given");
+      NX_ASSERT(now &&
+                "registry: a callback removed the component it was given");
       return *now;
     }
   }
 
   template <typename T> T &get_single(Entity e) {
     auto &store = assure<T>();
-    assert(store.contains(e) && "registry::get: entity lacks component");
+    NX_ASSERT(store.contains(e) && "registry::get: entity lacks component");
     return store.get(e);
   }
   template <typename T> const T &get_single(Entity e) const {
     const auto *store = raw_storage<T>();
-    assert(store && "registry::get: component type not registered");
-    assert(store->contains(e) && "registry::get: entity lacks component");
+    NX_ASSERT(store && "registry::get: component type not registered");
+    NX_ASSERT(store->contains(e) && "registry::get: entity lacks component");
     return store->get(e);
   }
 

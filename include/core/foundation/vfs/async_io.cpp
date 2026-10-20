@@ -423,9 +423,9 @@ void AsyncIoService::complete_native(NativeRequest *request,
 
   {
     nx::scoped_lock lock(m_budget_lock);
-    assert(m_native_active != 0);
+    NX_ASSERT(m_native_active != 0);
     --m_native_active;
-    assert(request->charged <= m_bytes_in_flight);
+    NX_ASSERT(request->charged <= m_bytes_in_flight);
     m_bytes_in_flight -= request->charged;
     update_visible_budget_locked();
     wake_budget_waiters_locked();
@@ -601,7 +601,7 @@ void AsyncIoService::release_bytes(const u64 bytes) noexcept {
     return;
   {
     nx::scoped_lock lock(m_budget_lock);
-    assert(bytes <= m_bytes_in_flight);
+    NX_ASSERT(bytes <= m_bytes_in_flight);
     m_bytes_in_flight -= bytes;
     update_visible_budget_locked();
     wake_budget_waiters_locked();
