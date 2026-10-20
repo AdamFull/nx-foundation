@@ -810,3 +810,22 @@ TEST_CASE("fixed_vector: a throwing copy in the constructor leaks nothing") {
   Fragile::countdown = -1;
   CHECK(Fragile::alive == 3);
 }
+
+TEST_CASE("fixed_vector: vectors of different capacity compare") {
+  nx::fixed_vector<int, 4> a;
+  nx::fixed_vector<int, 8> b;
+  for (int i = 0; i < 3; ++i) {
+    a.push_back(i);
+    b.push_back(i);
+  }
+  CHECK(a == b);
+  CHECK(std::is_eq(b <=> a));
+  b[2] = 7;
+  CHECK(a != b);
+  b[2] = 2;
+  b.push_back(3);
+  CHECK(a != b);
+  CHECK(a < b);
+  b[1] = -1;
+  CHECK(b < a);
+}

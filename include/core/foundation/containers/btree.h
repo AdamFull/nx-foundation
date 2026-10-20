@@ -401,11 +401,11 @@ public:
     return erase_of(key);
   }
 
-  template <typename Pred> friend size_type erase_if(btree &tree, Pred pred) {
-    const size_type before = tree.size();
-    for (iterator at = tree.begin(); at != tree.end();)
-      at = pred(*at) ? tree.erase(at) : std::next(at);
-    return before - tree.size();
+  friend auto operator<=>(const btree &a, const btree &b)
+    requires std::three_way_comparable<value_type>
+  {
+    return std::lexicographical_compare_three_way(a.begin(), a.end(), b.begin(),
+                                                  b.end());
   }
 
   friend bool operator==(const btree &a, const btree &b) {
@@ -794,4 +794,15 @@ protected:
 };
 
 } // namespace detail
+
+/// Erases every element @p pred accepts from a map or set and returns how
+/// many it erased.
+template <typename Policy, typename Compare, typename Alloc, typename Pred>
+usize erase_if(detail::btree<Policy, Compare, Alloc> &tree, Pred pred) {
+  const usize before = tree.size();
+  for (auto at = tree.begin(); at != tree.end();)
+    at = pred(*at) ? tree.erase(at) : std::next(at);
+  return before - tree.size();
+}
+
 } // namespace nx

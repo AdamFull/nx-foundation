@@ -21,6 +21,11 @@ class flat_hash_set
 
 public:
   using base::base;
+
+  friend void swap(flat_hash_set &a,
+                   flat_hash_set &b) noexcept(noexcept(a.swap(b))) {
+    a.swap(b);
+  }
 };
 
 template <typename Key, typename Hasher = std::hash<Key>,

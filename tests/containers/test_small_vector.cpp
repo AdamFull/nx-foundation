@@ -919,3 +919,18 @@ TEST_CASE("small_vector: resize grows geometrically") {
   }
   CHECK(reallocations < 16);
 }
+
+TEST_CASE("small_vector: vectors of different inline capacity compare") {
+  const nx::small_vector<int, 2> a{1, 2, 3};
+  nx::small_vector<int, 8> b{1, 2, 3};
+  CHECK(a == b);
+  CHECK(b == a);
+  CHECK(std::is_eq(a <=> b));
+  CHECK(a != nx::small_vector<int, 8>{1, 2, 4});
+  b.push_back(4);
+  CHECK(a != b);
+  CHECK(a < b);
+  CHECK(b > a);
+  b[0] = 0;
+  CHECK(b < a);
+}

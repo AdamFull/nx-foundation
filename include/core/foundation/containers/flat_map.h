@@ -328,11 +328,25 @@ public:
     m_c.values.clear();
   }
 
+  /// With a transparent comparison, a key a Key is made from looks up
+  /// without making one, and becomes the Key only when it is inserted.
+  template <typename K>
+  static constexpr bool heterogeneous_key =
+      kTransparent && !std::is_same_v<std::remove_cvref_t<K>, Key> &&
+      std::is_constructible_v<Key, K &&> &&
+      !std::is_convertible_v<K &&, const_iterator> &&
+      !std::is_convertible_v<K &&, iterator>;
+
   [[nodiscard]] T &operator[](const Key &k) {
     return try_emplace(k).first->second;
   }
   [[nodiscard]] T &operator[](Key &&k) {
     return try_emplace(std::move(k)).first->second;
+  }
+  template <typename K>
+    requires heterogeneous_key<K>
+  [[nodiscard]] T &operator[](K &&k) {
+    return try_emplace(std::forward<K>(k)).first->second;
   }
 
   [[nodiscard]] T &at(const Key &k) {
@@ -342,6 +356,22 @@ public:
     return m_c.values[i];
   }
   [[nodiscard]] const T &at(const Key &k) const {
+    const size_type i = find_index(k);
+    if (i == size())
+      throw std::out_of_range("flat_map::at");
+    return m_c.values[i];
+  }
+  template <typename K>
+    requires heterogeneous_key<const K &>
+  [[nodiscard]] T &at(const K &k) {
+    const size_type i = find_index(k);
+    if (i == size())
+      throw std::out_of_range("flat_map::at");
+    return m_c.values[i];
+  }
+  template <typename K>
+    requires heterogeneous_key<const K &>
+  [[nodiscard]] const T &at(const K &k) const {
     const size_type i = find_index(k);
     if (i == size())
       throw std::out_of_range("flat_map::at");
@@ -370,6 +400,20 @@ public:
   iterator try_emplace(const_iterator, Key &&k, Args &&...args) {
     return try_emplace(std::move(k), std::forward<Args>(args)...).first;
   }
+  template <typename K, typename... Args>
+    requires heterogeneous_key<K>
+  std::pair<iterator, bool> try_emplace(K &&k, Args &&...args) {
+    const size_type i = lower_bound_index(k);
+    if (i < size() && key_equiv(k, m_c.keys[i]))
+      return {iterator_at(i), false};
+    return {insert_at(i, Key(std::forward<K>(k)), std::forward<Args>(args)...),
+            true};
+  }
+  template <typename K, typename... Args>
+    requires heterogeneous_key<K>
+  iterator try_emplace(const_iterator, K &&k, Args &&...args) {
+    return try_emplace(std::forward<K>(k), std::forward<Args>(args)...).first;
+  }
 
   template <typename M>
   std::pair<iterator, bool> insert_or_assign(const Key &k, M &&obj) {
@@ -396,6 +440,21 @@ public:
   template <typename M>
   iterator insert_or_assign(const_iterator, Key &&k, M &&obj) {
     return insert_or_assign(std::move(k), std::forward<M>(obj)).first;
+  }
+  template <typename K, typename M>
+    requires heterogeneous_key<K>
+  std::pair<iterator, bool> insert_or_assign(K &&k, M &&obj) {
+    const size_type i = lower_bound_index(k);
+    if (i < size() && key_equiv(k, m_c.keys[i])) {
+      m_c.values[i] = std::forward<M>(obj);
+      return {iterator_at(i), false};
+    }
+    return {insert_at(i, Key(std::forward<K>(k)), std::forward<M>(obj)), true};
+  }
+  template <typename K, typename M>
+    requires heterogeneous_key<K>
+  iterator insert_or_assign(const_iterator, K &&k, M &&obj) {
+    return insert_or_assign(std::forward<K>(k), std::forward<M>(obj)).first;
   }
 
   template <typename... Args>

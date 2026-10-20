@@ -478,6 +478,12 @@ public:
   std::pair<iterator, bool> insert(P &&v) {
     return emplace(std::forward<P>(v));
   }
+  iterator insert(const_iterator, const value_type &v) {
+    return insert(v).first;
+  }
+  iterator insert(const_iterator, value_type &&v) {
+    return insert(std::move(v)).first;
+  }
   template <typename It> void insert(It first, It last) {
     for (; first != last; ++first)
       insert(*first);
@@ -1012,4 +1018,17 @@ private:
 };
 
 } // namespace detail
+
+/// Erases every element @p pred accepts from a hash_map or hash_set and
+/// returns how many it erased.
+template <typename Policy, typename Hash, typename KeyEqual, typename Alloc,
+          typename Pred>
+usize erase_if(detail::raw_hash_table<Policy, Hash, KeyEqual, Alloc> &t,
+               Pred pred) {
+  const usize before = t.size();
+  for (auto at = t.begin(); at != t.end();)
+    at = pred(*at) ? t.erase(at) : std::next(at);
+  return before - t.size();
+}
+
 } // namespace nx

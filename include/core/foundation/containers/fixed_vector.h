@@ -404,6 +404,21 @@ private:
   }
 };
 
+/// Vectors of one element type compare whatever their capacities.
+template <typename T, usize N, usize M>
+  requires(N != M)
+[[nodiscard]] bool operator==(const fixed_vector<T, N> &a,
+                              const fixed_vector<T, M> &b) {
+  return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin());
+}
+template <typename T, usize N, usize M>
+  requires(N != M && std::three_way_comparable<T>)
+[[nodiscard]] auto operator<=>(const fixed_vector<T, N> &a,
+                               const fixed_vector<T, M> &b) {
+  return std::lexicographical_compare_three_way(a.begin(), a.end(), b.begin(),
+                                                b.end());
+}
+
 template <typename T, usize N>
 void swap(fixed_vector<T, N> &a,
           fixed_vector<T, N> &b) noexcept(noexcept(a.swap(b))) {

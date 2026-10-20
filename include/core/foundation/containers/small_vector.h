@@ -585,6 +585,22 @@ private:
   }
 };
 
+/// Vectors of one element type compare whatever their inline capacities and
+/// allocators.
+template <typename T, usize N, typename A, usize M, typename B>
+  requires(N != M || !std::is_same_v<A, B>)
+[[nodiscard]] bool operator==(const small_vector<T, N, A> &a,
+                              const small_vector<T, M, B> &b) {
+  return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin());
+}
+template <typename T, usize N, typename A, usize M, typename B>
+  requires((N != M || !std::is_same_v<A, B>) && std::three_way_comparable<T>)
+[[nodiscard]] auto operator<=>(const small_vector<T, N, A> &a,
+                               const small_vector<T, M, B> &b) {
+  return std::lexicographical_compare_three_way(a.begin(), a.end(), b.begin(),
+                                                b.end());
+}
+
 template <typename T, usize N, typename A>
 void swap(small_vector<T, N, A> &a,
           small_vector<T, N, A> &b) noexcept(noexcept(a.swap(b))) {

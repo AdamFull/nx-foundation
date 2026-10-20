@@ -8,9 +8,28 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <type_traits>
 
 namespace {
+
+/// A key made explicitly from a view, counting how often that happens.
+struct Name {
+  static inline int made = 0;
+  std::string text;
+  explicit Name(const std::string_view s) : text(s) { ++made; }
+  operator std::string_view() const noexcept { return text; }
+  bool operator==(const Name &) const = default;
+};
+
+struct NameLess {
+  using is_transparent = void;
+  bool operator()(const std::string_view a,
+                  const std::string_view b) const noexcept {
+    return a < b;
+  }
+};
 
 /// The tree's links, leaf depths, node fill and ends, checked from outside.
 template <typename Tree> struct probed : Tree {
@@ -380,4 +399,73 @@ TEST_CASE("map: a set's elements are keys and never mutable") {
   CHECK(*s.lower_bound(6) == 7u);
   CHECK(s.erase(5) == 1u);
   CHECK(s.count(5) == 0u);
+}
+
+TEST_CASE("map: a transparent key inserts without making a Key it finds") {
+  using namespace std::string_view_literals;
+  nx::map<Name, int, NameLess> m;
+  Name::made = 0;
+
+  CHECK(m.try_emplace("a"sv, 1).second);
+  CHECK(Name::made == 1);
+  CHECK_FALSE(m.try_emplace("a"sv, 2).second);
+  CHECK(Name::made == 1);
+  CHECK(m.at("a"sv) == 1);
+
+  m["b"sv] = 5;
+  CHECK(Name::made == 2);
+  m["b"sv] += 1;
+  CHECK(Name::made == 2);
+  CHECK(m.at("b"sv) == 6);
+
+  CHECK_FALSE(m.insert_or_assign("a"sv, 9).second);
+  CHECK(Name::made == 2);
+  CHECK(m.at("a"sv) == 9);
+  CHECK(m.insert_or_assign("d"sv, 7).second);
+  CHECK(Name::made == 3);
+
+  CHECK(m.try_emplace(m.cbegin(), "c"sv, 3)->second == 3);
+  CHECK(Name::made == 4);
+  CHECK(m.insert_or_assign(m.cend(), "c"sv, 4)->second == 4);
+  CHECK(m.try_emplace(m.cend(), "c"sv, 8)->second == 4);
+  CHECK(Name::made == 4);
+
+  const auto &cm = m;
+  CHECK(cm.at("c"sv) == 4);
+  CHECK_THROWS_AS(m.at("zz"sv), std::out_of_range);
+  CHECK_THROWS_AS(cm.at("zz"sv), std::out_of_range);
+  CHECK(m.size() == usize{4});
+}
+
+TEST_CASE("map: ordered maps and sets compare lexicographically") {
+  const nx::map<int, int> a{{1, 1}, {2, 2}};
+  const nx::map<int, int> b{{1, 1}, {3, 0}};
+  const nx::map<int, int> prefix{{1, 1}};
+  CHECK(a < b);
+  CHECK(prefix < a);
+  CHECK(std::is_eq(a <=> a));
+  CHECK(b > a);
+
+  const nx::set<int> s{1, 2};
+  const nx::set<int> t{1, 3};
+  CHECK(s < t);
+  CHECK(std::is_eq(t <=> t));
+}
+
+TEST_CASE("map: erase_if is callable qualified, and swap by ADL") {
+  nx::map<int, int> m{{1, 1}, {2, 2}, {3, 3}};
+  CHECK(nx::erase_if(m, [](const auto &kv) { return kv.first != 2; }) ==
+        usize{2});
+  CHECK(m.size() == usize{1});
+  nx::set<int> s{1, 2, 3};
+  CHECK(nx::erase_if(s, [](const int v) { return v > 1; }) == usize{2});
+
+  nx::map<int, int> other{{5, 5}, {6, 6}};
+  swap(m, other);
+  CHECK(m.size() == usize{2});
+  CHECK(other.contains(2));
+  nx::set<int> u{9};
+  swap(s, u);
+  CHECK(s.contains(9));
+  CHECK(u.contains(1));
 }

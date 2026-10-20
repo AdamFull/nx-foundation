@@ -101,6 +101,8 @@ ctest --test-dir build -C Debug
 | `nx::string_map` | `containers/string_map.h` | A `flat_hash_map` keyed by `nx::string` that looks up by `string_view` without building a string. |
 | `nx::sync_slot_map` | `containers/sync_slot_map.h` | A `slot_map` two threads share, such as render resources the main thread creates and the render thread reads. A pointer from `try_get` stays valid while other entries come and go; the caller must not erase one still in use. |
 
+The maps agree on their member set. Under a transparent hash and equality, or a transparent comparison, `find`, `contains`, `erase`, `try_emplace`, `insert_or_assign`, `[]` and `at` take any key a `Key` is made from, and build the `Key` only to insert it. Each map has the hinted `insert`, `try_emplace` and `insert_or_assign`, a free `swap` and a namespace-level `nx::erase_if`; the ordered ones compare with `<=>`, and `small_vector` and `fixed_vector` compare across capacities.
+
 ## Strings
 
 | Type | Header | Use it for |

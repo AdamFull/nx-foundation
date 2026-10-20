@@ -32,6 +32,15 @@ public:
   using typename base::size_type;
   using typename base::value_type;
 
+  /// With a transparent comparison, a key a Key is made from looks up
+  /// without making one, and becomes the Key only when it is inserted.
+  template <typename K>
+  static constexpr bool heterogeneous_key =
+      base::TRANSPARENT && !std::is_same_v<std::remove_cvref_t<K>, Key> &&
+      std::is_constructible_v<Key, K &&> &&
+      !std::is_convertible_v<K &&, const_iterator> &&
+      !std::is_convertible_v<K &&, iterator>;
+
   map() = default;
   explicit map(const Compare &comp, const Alloc &alloc = Alloc())
       : base(comp, alloc) {}
@@ -100,6 +109,13 @@ public:
         k, std::piecewise_construct, std::forward_as_tuple(std::move(k)),
         std::forward_as_tuple(std::forward<Args>(args)...));
   }
+  template <typename K, typename... Args>
+    requires heterogeneous_key<K>
+  std::pair<iterator, bool> try_emplace(K &&k, Args &&...args) {
+    return this->insert_unique(
+        k, std::piecewise_construct, std::forward_as_tuple(std::forward<K>(k)),
+        std::forward_as_tuple(std::forward<Args>(args)...));
+  }
   template <typename... Args>
   iterator try_emplace(const_iterator hint, const Key &k, Args &&...args) {
     return this
@@ -108,36 +124,109 @@ public:
                              std::forward_as_tuple(std::forward<Args>(args)...))
         .first;
   }
+  template <typename... Args>
+  iterator try_emplace(const_iterator hint, Key &&k, Args &&...args) {
+    return this
+        ->insert_hint_unique(hint, k, std::piecewise_construct,
+                             std::forward_as_tuple(std::move(k)),
+                             std::forward_as_tuple(std::forward<Args>(args)...))
+        .first;
+  }
+  template <typename K, typename... Args>
+    requires heterogeneous_key<K>
+  iterator try_emplace(const_iterator hint, K &&k, Args &&...args) {
+    return this
+        ->insert_hint_unique(hint, k, std::piecewise_construct,
+                             std::forward_as_tuple(std::forward<K>(k)),
+                             std::forward_as_tuple(std::forward<Args>(args)...))
+        .first;
+  }
 
   template <typename M>
   std::pair<iterator, bool> insert_or_assign(const Key &k, M &&obj) {
-    auto result = try_emplace(k, std::forward<M>(obj));
-    if (!result.second)
-      result.first->second = std::forward<M>(obj);
-    return result;
+    return assign_found(try_emplace(k, std::forward<M>(obj)),
+                        std::forward<M>(obj));
   }
   template <typename M>
   std::pair<iterator, bool> insert_or_assign(Key &&k, M &&obj) {
-    auto result = try_emplace(std::move(k), std::forward<M>(obj));
-    if (!result.second)
-      result.first->second = std::forward<M>(obj);
-    return result;
+    return assign_found(try_emplace(std::move(k), std::forward<M>(obj)),
+                        std::forward<M>(obj));
+  }
+  template <typename K, typename M>
+    requires heterogeneous_key<K>
+  std::pair<iterator, bool> insert_or_assign(K &&k, M &&obj) {
+    return assign_found(try_emplace(std::forward<K>(k), std::forward<M>(obj)),
+                        std::forward<M>(obj));
+  }
+  template <typename M>
+  iterator insert_or_assign(const_iterator hint, const Key &k, M &&obj) {
+    return assign_found(try_emplace_hinted(hint, k, std::forward<M>(obj)),
+                        std::forward<M>(obj))
+        .first;
+  }
+  template <typename M>
+  iterator insert_or_assign(const_iterator hint, Key &&k, M &&obj) {
+    return assign_found(
+               try_emplace_hinted(hint, std::move(k), std::forward<M>(obj)),
+               std::forward<M>(obj))
+        .first;
+  }
+  template <typename K, typename M>
+    requires heterogeneous_key<K>
+  iterator insert_or_assign(const_iterator hint, K &&k, M &&obj) {
+    return assign_found(try_emplace_hinted(hint, std::forward<K>(k),
+                                           std::forward<M>(obj)),
+                        std::forward<M>(obj))
+        .first;
   }
 
   T &operator[](const Key &k) { return try_emplace(k).first->second; }
   T &operator[](Key &&k) { return try_emplace(std::move(k)).first->second; }
+  template <typename K>
+    requires heterogeneous_key<K>
+  T &operator[](K &&k) {
+    return try_emplace(std::forward<K>(k)).first->second;
+  }
 
-  T &at(const Key &k) {
-    const iterator found = this->find(k);
-    if (found == this->end())
+  T &at(const Key &k) { return at_impl(*this, k); }
+  const T &at(const Key &k) const { return at_impl(*this, k); }
+  template <typename K>
+    requires heterogeneous_key<const K &>
+  T &at(const K &k) {
+    return at_impl(*this, k);
+  }
+  template <typename K>
+    requires heterogeneous_key<const K &>
+  const T &at(const K &k) const {
+    return at_impl(*this, k);
+  }
+
+  friend void swap(map &a, map &b) noexcept { a.swap(b); }
+
+private:
+  template <typename Self, typename K>
+  static auto &at_impl(Self &self, const K &k) {
+    const auto found = self.find(k);
+    if (found == self.end())
       throw std::out_of_range("nx::map::at");
     return found->second;
   }
-  const T &at(const Key &k) const {
-    const const_iterator found = this->find(k);
-    if (found == this->end())
-      throw std::out_of_range("nx::map::at");
-    return found->second;
+
+  template <typename K, typename M>
+  std::pair<iterator, bool> try_emplace_hinted(const_iterator hint, K &&k,
+                                               M &&obj) {
+    return this->insert_hint_unique(
+        hint, k, std::piecewise_construct,
+        std::forward_as_tuple(std::forward<K>(k)),
+        std::forward_as_tuple(std::forward<M>(obj)));
+  }
+
+  template <typename M>
+  static std::pair<iterator, bool> assign_found(std::pair<iterator, bool> at,
+                                                M &&obj) {
+    if (!at.second)
+      at.first->second = std::forward<M>(obj);
+    return at;
   }
 };
 
@@ -208,6 +297,8 @@ public:
     Key made(std::forward<Args>(args)...);
     return this->insert_hint_unique(hint, made, std::move(made)).first;
   }
+
+  friend void swap(set &a, set &b) noexcept { a.swap(b); }
 };
 
 } // namespace nx

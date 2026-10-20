@@ -13,6 +13,29 @@
 
 namespace {
 
+/// A key made explicitly from a view, counting how often that happens.
+struct Name {
+  static inline int made = 0;
+  std::string text;
+  explicit Name(const std::string_view s) : text(s) { ++made; }
+  operator std::string_view() const noexcept { return text; }
+  bool operator==(const Name &) const = default;
+};
+
+struct NameHash {
+  using is_transparent = void;
+  usize operator()(const std::string_view s) const noexcept {
+    return std::hash<std::string_view>{}(s);
+  }
+};
+struct NameEq {
+  using is_transparent = void;
+  bool operator()(const std::string_view a,
+                  const std::string_view b) const noexcept {
+    return a == b;
+  }
+};
+
 int g_live = 0;
 
 struct Counted {
@@ -928,4 +951,61 @@ TEST_CASE("hash_map: a move that throws while growing keeps a valid table") {
     CHECK(Brittle::alive == nx::cast<int>(m.size()));
   }
   CHECK(Brittle::alive == 0);
+}
+
+TEST_CASE("hash_map: a transparent key inserts without making a Key it finds") {
+  using namespace std::string_view_literals;
+  nx::hash_map<Name, int, NameHash, NameEq> m;
+  Name::made = 0;
+
+  CHECK(m.try_emplace("a"sv, 1).second);
+  CHECK(Name::made == 1);
+  CHECK_FALSE(m.try_emplace("a"sv, 2).second);
+  CHECK(Name::made == 1);
+  CHECK(m.at("a"sv) == 1);
+
+  m["b"sv] = 5;
+  CHECK(Name::made == 2);
+  m["b"sv] += 1;
+  CHECK(Name::made == 2);
+  CHECK(m.at("b"sv) == 6);
+
+  CHECK_FALSE(m.insert_or_assign("a"sv, 9).second);
+  CHECK(Name::made == 2);
+  CHECK(m.at("a"sv) == 9);
+  CHECK(m.insert_or_assign("d"sv, 7).second);
+  CHECK(Name::made == 3);
+
+  CHECK(m.try_emplace(m.cbegin(), "c"sv, 3)->second == 3);
+  CHECK(Name::made == 4);
+  CHECK(m.insert_or_assign(m.cend(), "c"sv, 4)->second == 4);
+  CHECK(m.try_emplace(m.cend(), "c"sv, 8)->second == 4);
+  CHECK(Name::made == 4);
+
+  const auto &cm = m;
+  CHECK(cm.at("c"sv) == 4);
+  CHECK_THROWS_AS(m.at("zz"sv), std::out_of_range);
+  CHECK_THROWS_AS(cm.at("zz"sv), std::out_of_range);
+  CHECK(m.size() == usize{4});
+}
+
+TEST_CASE("hash_map: erase_if, swap and a hinted insert") {
+  nx::hash_map<int, int> m;
+  for (int i = 0; i < 100; ++i)
+    m[i] = i;
+  CHECK(nx::erase_if(m, [](const auto &kv) { return kv.first % 3 == 0; }) ==
+        usize{34});
+  CHECK(m.size() == usize{66});
+  for (const auto &kv : m)
+    CHECK(kv.first % 3 != 0);
+  CHECK(erase_if(m, [](const auto &) { return false; }) == usize{0});
+
+  nx::hash_map<int, int> other{{7, 7}};
+  swap(m, other);
+  CHECK(m.size() == usize{1});
+  CHECK(other.size() == usize{66});
+
+  const auto at = m.insert(m.cend(), {8, 8});
+  CHECK(at->second == 8);
+  CHECK(m.insert(m.cbegin(), std::pair<const int, int>{8, 9})->second == 8);
 }

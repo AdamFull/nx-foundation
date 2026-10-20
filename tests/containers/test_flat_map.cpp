@@ -14,6 +14,23 @@
 
 namespace {
 
+/// A key made explicitly from a view, counting how often that happens.
+struct Name {
+  static inline int made = 0;
+  std::string text;
+  explicit Name(const std::string_view s) : text(s) { ++made; }
+  operator std::string_view() const noexcept { return text; }
+  bool operator==(const Name &) const = default;
+};
+
+struct NameLess {
+  using is_transparent = void;
+  bool operator()(const std::string_view a,
+                  const std::string_view b) const noexcept {
+    return a < b;
+  }
+};
+
 using map_t = nx::flat_map<int, int>;
 
 std::vector<std::pair<int, int>> entries(const map_t &m) {
@@ -762,4 +779,40 @@ TEST_CASE("flat_map: mirrors std::map under a long mixed workload") {
     CHECK((m.upper_bound(key) - m.begin()) ==
           std::distance(model.begin(), model.upper_bound(key)));
   }
+}
+
+TEST_CASE("flat_map: a transparent key inserts without making a Key it finds") {
+  using namespace std::string_view_literals;
+  nx::flat_map<Name, int, NameLess> m;
+  Name::made = 0;
+
+  CHECK(m.try_emplace("a"sv, 1).second);
+  CHECK(Name::made == 1);
+  CHECK_FALSE(m.try_emplace("a"sv, 2).second);
+  CHECK(Name::made == 1);
+  CHECK(m.at("a"sv) == 1);
+
+  m["b"sv] = 5;
+  CHECK(Name::made == 2);
+  m["b"sv] += 1;
+  CHECK(Name::made == 2);
+  CHECK(m.at("b"sv) == 6);
+
+  CHECK_FALSE(m.insert_or_assign("a"sv, 9).second);
+  CHECK(Name::made == 2);
+  CHECK(m.at("a"sv) == 9);
+  CHECK(m.insert_or_assign("d"sv, 7).second);
+  CHECK(Name::made == 3);
+
+  CHECK(m.try_emplace(m.cbegin(), "c"sv, 3)->second == 3);
+  CHECK(Name::made == 4);
+  CHECK(m.insert_or_assign(m.cend(), "c"sv, 4)->second == 4);
+  CHECK(m.try_emplace(m.cend(), "c"sv, 8)->second == 4);
+  CHECK(Name::made == 4);
+
+  const auto &cm = m;
+  CHECK(cm.at("c"sv) == 4);
+  CHECK_THROWS_AS(m.at("zz"sv), std::out_of_range);
+  CHECK_THROWS_AS(cm.at("zz"sv), std::out_of_range);
+  CHECK(m.size() == usize{4});
 }
