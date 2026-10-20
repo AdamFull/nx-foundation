@@ -35,7 +35,7 @@ TEST_CASE(
     "futex: wait returns when the word changes and wake reports a count") {
   std::atomic<u32> word{0};
 
-  const auto r = nx::futex::wait(&word, 1, nx::detail::WAIT_FOREVER);
+  const auto r = nx::futex::wait(&word, 1);
   CHECK(r != nx::futex::Result::Error);
 
   CHECK(nx::futex::wake(&word, 1) >= 0);
@@ -44,7 +44,7 @@ TEST_CASE(
   std::atomic<bool> woke{false};
   std::thread waiter([&] {
     while (word.load(std::memory_order_acquire) == 0)
-      nx::futex::wait(&word, 0, nx::detail::WAIT_FOREVER);
+      nx::futex::wait(&word, 0);
     woke.store(true, std::memory_order_release);
   });
 
@@ -1015,4 +1015,189 @@ TEST_CASE("rw_lock: the last owner may hand it to a thread that destroys it") {
     taker.join();
   }
   CHECK(true);
+}
+
+TEST_CASE("futex: a zero or negative timeout does not block") {
+  std::atomic<u32> word{0};
+  const auto start = std::chrono::steady_clock::now();
+  CHECK(nx::futex::wait(&word, 0, 0ns) == nx::futex::Result::TimedOut);
+  CHECK(nx::futex::wait(&word, 0, -5ms) == nx::futex::Result::TimedOut);
+  CHECK(std::chrono::steady_clock::now() - start < 500ms);
+  CHECK(nx::futex::wait(nullptr, 0, 0ns) == nx::futex::Result::Error);
+}
+
+TEST_CASE("mutex: try_lock_until waits for the deadline on any clock") {
+  nx::mutex m;
+  m.lock();
+  std::atomic<bool> steady_result{true};
+  std::atomic<bool> system_result{true};
+  std::chrono::steady_clock::duration waited{};
+  std::thread contender([&] {
+    const auto start = std::chrono::steady_clock::now();
+    steady_result = m.try_lock_until(start + 30ms);
+    waited = std::chrono::steady_clock::now() - start;
+    system_result = m.try_lock_until(std::chrono::system_clock::now() + 10ms);
+  });
+  contender.join();
+  CHECK_FALSE(steady_result.load());
+  CHECK_FALSE(system_result.load());
+  CHECK(waited >= 20ms);
+
+  std::atomic<bool> got{false};
+  std::thread waiter([&] {
+    got = m.try_lock_until(std::chrono::steady_clock::now() + 5s);
+    if (got)
+      m.unlock();
+  });
+  std::this_thread::sleep_for(10ms);
+  m.unlock();
+  waiter.join();
+  CHECK(got.load());
+  CHECK(m.try_lock_until(std::chrono::steady_clock::now() - 1s));
+  m.unlock();
+}
+
+TEST_CASE("recursive_mutex: timed locks re-enter for the owner only") {
+  nx::recursive_mutex m;
+  m.lock();
+  CHECK(m.try_lock_for(0ms));
+  CHECK(m.try_lock_until(std::chrono::steady_clock::now()));
+  std::atomic<bool> other{true};
+  std::thread([&] { other = m.try_lock_for(20ms); }).join();
+  CHECK_FALSE(other.load());
+  m.unlock();
+  m.unlock();
+  m.unlock();
+  std::thread([&] {
+    other = m.try_lock_for(1s);
+    if (other)
+      m.unlock();
+  }).join();
+  CHECK(other.load());
+}
+
+TEST_CASE("rw_lock: timed exclusive and shared locks") {
+  nx::rw_lock rw;
+  rw.lock();
+  std::atomic<int> results{0};
+  std::thread([&] {
+    results += rw.try_lock_for(20ms) ? 1 : 0;
+    results += rw.try_lock_shared_for(20ms) ? 1 : 0;
+    results += rw.try_lock_shared_until(std::chrono::system_clock::now() + 10ms)
+                   ? 1
+                   : 0;
+  }).join();
+  CHECK(results.load() == 0);
+  rw.unlock();
+
+  rw.lock_shared();
+  std::thread([&] {
+    results += rw.try_lock_for(20ms) ? 1 : 0;
+    if (rw.try_lock_shared_for(1s)) {
+      results += 10;
+      rw.unlock_shared();
+    }
+  }).join();
+  CHECK(results.load() == 10);
+  rw.unlock_shared();
+
+  CHECK(rw.try_lock_until(std::chrono::steady_clock::now() + 1s));
+  rw.unlock();
+}
+
+TEST_CASE("rw_lock: a timed writer does not hold readers back") {
+  nx::rw_lock rw;
+  rw.lock_shared();
+  std::atomic<bool> writer_started{false};
+  std::atomic<bool> writer_got{true};
+  std::thread writer([&] {
+    writer_started = true;
+    writer_got = rw.try_lock_for(300ms);
+  });
+  CHECK(wait_until_true([&] { return writer_started.load(); }));
+  std::this_thread::sleep_for(20ms);
+  std::chrono::steady_clock::duration waited{};
+  std::thread reader([&] {
+    const auto start = std::chrono::steady_clock::now();
+    rw.lock_shared();
+    waited = std::chrono::steady_clock::now() - start;
+    rw.unlock_shared();
+  });
+  reader.join();
+  CHECK(waited < 200ms);
+  writer.join();
+  CHECK_FALSE(writer_got.load());
+  rw.unlock_shared();
+}
+
+TEST_CASE("semaphore and event: the until forms") {
+  nx::semaphore permits(0);
+  CHECK_FALSE(permits.try_acquire_until(std::chrono::steady_clock::now()));
+  CHECK_FALSE(
+      permits.try_acquire_until(std::chrono::system_clock::now() + 10ms));
+  std::thread releaser([&] {
+    std::this_thread::sleep_for(10ms);
+    permits.release();
+  });
+  CHECK(permits.try_acquire_until(std::chrono::steady_clock::now() + 5s));
+  releaser.join();
+
+  nx::event signal;
+  const auto start = std::chrono::steady_clock::now();
+  CHECK_FALSE(signal.wait_until(start + 20ms));
+  CHECK(std::chrono::steady_clock::now() - start >= 15ms);
+  signal.set();
+  CHECK(signal.wait_until(std::chrono::system_clock::now() + 1s));
+  CHECK_FALSE(signal.is_set());
+}
+
+TEST_CASE("cond_var: waits under any lock the waiter holds") {
+  nx::rw_lock rw;
+  nx::cond_var cv;
+  bool ready = false;
+  std::thread setter([&] {
+    std::this_thread::sleep_for(10ms);
+    nx::unique_lock<nx::rw_lock> exclusive(rw);
+    ready = true;
+    cv.notify_all();
+  });
+  {
+    nx::shared_lock<nx::rw_lock> shared(rw);
+    cv.wait(shared, [&] { return ready; });
+    CHECK(shared.owns_lock());
+    CHECK(ready);
+  }
+  setter.join();
+
+  nx::spin_lock spin;
+  spin.lock();
+  CHECK_FALSE(cv.wait_for(spin, 5ms));
+  CHECK_FALSE(cv.wait_until(spin, std::chrono::system_clock::now() + 5ms,
+                            [] { return false; }));
+  spin.unlock();
+
+  nx::recursive_mutex rm;
+  nx::unique_lock<nx::recursive_mutex> held(rm);
+  CHECK_FALSE(cv.wait_until(held, std::chrono::steady_clock::now() + 5ms));
+  CHECK(held.owns_lock());
+}
+
+TEST_CASE("unique_lock and shared_lock: timed constructors and try_lock") {
+  nx::rw_lock rw;
+  rw.lock();
+  std::atomic<int> owned{0};
+  std::thread([&] {
+    nx::unique_lock<nx::rw_lock> a(rw, 10ms);
+    nx::unique_lock<nx::rw_lock> b(rw, std::chrono::steady_clock::now());
+    nx::shared_lock<nx::rw_lock> c(rw, 10ms);
+    nx::shared_lock<nx::rw_lock> d(rw, nx::defer_lock);
+    const bool late = d.try_lock_until(std::chrono::steady_clock::now() + 5ms);
+    owned = a.owns_lock() + b.owns_lock() + c.owns_lock() + late;
+  }).join();
+  CHECK(owned.load() == 0);
+  rw.unlock();
+  nx::shared_lock<nx::rw_lock> e(rw, std::chrono::steady_clock::now() + 1s);
+  CHECK(e.owns_lock());
+  e.unlock();
+  CHECK(e.try_lock_for(1s));
 }

@@ -507,3 +507,136 @@ TEST_CASE(
   }
   CHECK(true);
 }
+
+TEST_CASE("fiber sync: timed mutex locks give up at the deadline") {
+  nx::fiber::scheduler scheduler({.worker_count = 2});
+  nx::fiber::mutex m;
+  std::atomic<bool> held{false};
+  std::atomic<int> results{0};
+  auto holder = [&] {
+    m.lock();
+    held = true;
+    nx::fiber::sleep_for(80ms);
+    m.unlock();
+  };
+  auto contender = [&] {
+    while (!held.load())
+      nx::fiber::sleep_for(1ms);
+    results += m.try_lock_for(10ms) ? 1 : 0;
+    results +=
+        m.try_lock_until(std::chrono::system_clock::now() + 10ms) ? 1 : 0;
+    if (m.try_lock_until(steady::now() + 5s)) {
+      results += 10;
+      m.unlock();
+    }
+  };
+  const nx::fiber::job jobs[] = {job_of(holder), job_of(contender)};
+  nx::fiber::counter counter;
+  scheduler.run(jobs, &counter);
+  scheduler.wait(counter);
+  CHECK(results.load() == 10);
+}
+
+TEST_CASE("fiber sync: a writer that times out lets the readers behind it in") {
+  nx::fiber::scheduler scheduler({.worker_count = 3});
+  nx::fiber::rw_lock rw;
+  std::atomic<int> phase{0};
+  std::atomic<bool> writer_got{true};
+  steady::duration reader_waited{};
+  auto first_reader = [&] {
+    rw.lock_shared();
+    phase = 1;
+    nx::fiber::sleep_for(400ms);
+    rw.unlock_shared();
+  };
+  auto writer = [&] {
+    while (phase.load() < 1)
+      nx::fiber::sleep_for(1ms);
+    phase = 2;
+    writer_got = rw.try_lock_for(40ms);
+  };
+  auto late_reader = [&] {
+    while (phase.load() < 2)
+      nx::fiber::sleep_for(1ms);
+    nx::fiber::sleep_for(10ms);
+    const auto start = steady::now();
+    rw.lock_shared();
+    reader_waited = steady::now() - start;
+    rw.unlock_shared();
+  };
+  const nx::fiber::job jobs[] = {job_of(first_reader), job_of(writer),
+                                 job_of(late_reader)};
+  nx::fiber::counter counter;
+  scheduler.run(jobs, &counter);
+  scheduler.wait(counter);
+  CHECK_FALSE(writer_got.load());
+  CHECK(reader_waited < 300ms);
+}
+
+TEST_CASE("fiber sync: timed rw_lock shared and exclusive locks") {
+  nx::fiber::scheduler scheduler({.worker_count = 2});
+  nx::fiber::rw_lock rw;
+  std::atomic<int> results{0};
+  auto body = [&] {
+    rw.lock();
+    std::atomic<bool> done{false};
+    auto other = [&] {
+      results += rw.try_lock_shared_for(10ms) ? 1 : 0;
+      results += rw.try_lock_until(steady::now() + 10ms) ? 1 : 0;
+      done = true;
+    };
+    const nx::fiber::job inner[] = {job_of(other)};
+    nx::fiber::counter c;
+    scheduler.run(inner, &c);
+    scheduler.wait(c);
+    rw.unlock();
+    if (rw.try_lock_shared_until(std::chrono::system_clock::now() + 1s)) {
+      results += 10;
+      rw.unlock_shared();
+    }
+  };
+  const nx::fiber::job jobs[] = {job_of(body)};
+  nx::fiber::counter counter;
+  scheduler.run(jobs, &counter);
+  scheduler.wait(counter);
+  CHECK(results.load() == 10);
+}
+
+TEST_CASE("fiber sync: cond_var waits under any lock, and the until forms") {
+  nx::fiber::scheduler scheduler({.worker_count = 2});
+  nx::fiber::rw_lock rw;
+  nx::fiber::cond_var cv;
+  bool ready = false;
+  std::atomic<bool> saw_ready{false};
+  auto waiter = [&] {
+    nx::shared_lock<nx::fiber::rw_lock> shared(rw);
+    cv.wait(shared, [&] { return ready; });
+    saw_ready = ready && shared.owns_lock();
+  };
+  auto setter = [&] {
+    nx::fiber::sleep_for(10ms);
+    nx::unique_lock<nx::fiber::rw_lock> exclusive(rw);
+    ready = true;
+    cv.notify_all();
+  };
+  const nx::fiber::job jobs[] = {job_of(waiter), job_of(setter)};
+  nx::fiber::counter counter;
+  scheduler.run(jobs, &counter);
+  scheduler.wait(counter);
+  CHECK(saw_ready.load());
+
+  nx::mutex os_lock;
+  os_lock.lock();
+  CHECK_FALSE(cv.wait_until(os_lock, steady::now() + 5ms));
+  CHECK_FALSE(cv.wait_until(os_lock, std::chrono::system_clock::now() + 5ms,
+                            [] { return false; }));
+  os_lock.unlock();
+
+  nx::fiber::event signal;
+  CHECK_FALSE(signal.wait_until(std::chrono::system_clock::now() + 5ms));
+  signal.set();
+  CHECK(signal.wait_until(steady::now()));
+  nx::fiber::semaphore permits(1);
+  CHECK(permits.try_acquire_until(steady::now()));
+  CHECK_FALSE(permits.try_acquire_until(steady::now() + 5ms));
+}

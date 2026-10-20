@@ -29,23 +29,24 @@ void resume_all(const Woken &woken) noexcept {
 
 } // namespace
 
-void mutex::lock_slow() noexcept {
+bool mutex::lock_until(const internal::clock::time_point deadline) noexcept {
   for (i32 spin = 0; spin < nx::detail::SYNC_SPIN_COUNT; ++spin) {
     u32 expected = 0;
     if (m_state.load(std::memory_order_relaxed) == 0 &&
         m_state.compare_exchange_weak(expected, LOCKED,
                                       std::memory_order_acquire,
                                       std::memory_order_relaxed))
-      return;
+      return true;
     nx::detail::cpu_relax();
   }
   for (;;) {
     m_lock.lock();
     if (m_state.exchange(CONTENDED, std::memory_order_acquire) == 0) {
       m_lock.unlock();
-      return;
+      return true;
     }
-    block(&m_lock, &m_waiters, NO_DEADLINE);
+    if (block(&m_lock, &m_waiters, deadline) == WaitResult::TimedOut)
+      return false;
   }
 }
 
@@ -57,14 +58,28 @@ void mutex::wake_one() noexcept {
     resume(claimed);
 }
 
-void rw_lock::lock() noexcept {
+bool rw_lock::lock_until(const internal::clock::time_point deadline) noexcept {
   m_lock.lock();
   if (!m_writer && m_readers == 0) {
     m_writer = true;
     m_lock.unlock();
-    return;
+    return true;
   }
-  block(&m_lock, &m_waiting_writers, NO_DEADLINE);
+  if (block(&m_lock, &m_waiting_writers, deadline) == WaitResult::Woken)
+    return true;
+  // Readers queue behind a waiting writer, so one that gives up may have been
+  // all that held them.
+  Woken woken;
+  m_lock.lock();
+  if (!m_writer && m_waiting_writers.empty()) {
+    while (const Claimed reader = claim(m_waiting_readers)) {
+      ++m_readers;
+      woken.push_back(reader);
+    }
+  }
+  m_lock.unlock();
+  resume_all(woken);
+  return false;
 }
 
 bool rw_lock::try_lock() noexcept {
@@ -91,14 +106,15 @@ void rw_lock::unlock() noexcept {
   resume_all(woken);
 }
 
-void rw_lock::lock_shared() noexcept {
+bool rw_lock::lock_shared_until(
+    const internal::clock::time_point deadline) noexcept {
   m_lock.lock();
   if (!m_writer && m_waiting_writers.empty()) {
     ++m_readers;
     m_lock.unlock();
-    return;
+    return true;
   }
-  block(&m_lock, &m_waiting_readers, NO_DEADLINE);
+  return block(&m_lock, &m_waiting_readers, deadline) == WaitResult::Woken;
 }
 
 bool rw_lock::try_lock_shared() noexcept {
@@ -142,7 +158,7 @@ void event::reset() noexcept {
   m_set.store(false, std::memory_order_release);
 }
 
-bool event::wait_until(const internal::clock::time_point deadline) noexcept {
+bool event::wait_deadline(const internal::clock::time_point deadline) noexcept {
   m_lock.lock();
   if (m_set.load(std::memory_order_relaxed)) {
     if (!m_manual_reset)
@@ -208,15 +224,6 @@ void cond_var::notify_all() noexcept {
   claim_all(m_waiters, woken);
   m_lock.unlock();
   resume_all(woken);
-}
-
-bool cond_var::wait_until(mutex &m,
-                          const internal::clock::time_point deadline) noexcept {
-  m_lock.lock();
-  m.unlock();
-  const WaitResult result = block(&m_lock, &m_waiters, deadline);
-  m.lock();
-  return result == WaitResult::Woken;
 }
 
 void barrier::arrive_and_wait() noexcept {

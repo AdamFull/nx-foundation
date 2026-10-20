@@ -16,15 +16,16 @@
 #endif
 
 #if NX_PLATFORM_APPLE
-// Darwin has no futex syscall. __ulock is the kernel wait primitive underneath os_unfair_lock and
-// libc++'s atomic wait/notify - the same call libc++, Rust and Go all make for exactly this
-// purpose.
+// Darwin has no futex syscall. __ulock is the kernel wait primitive underneath
+// os_unfair_lock and libc++'s atomic wait/notify - the same call libc++, Rust
+// and Go all make for exactly this purpose.
 extern "C" int __ulock_wait(uint32_t operation, void *addr, uint64_t value,
                             uint32_t timeout_us);
-extern "C" int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
+extern "C" int __ulock_wake(uint32_t operation, void *addr,
+                            uint64_t wake_value);
 
 namespace {
-constexpr uint32_t UL_COMPARE_AND_WAIT = 1;  ///< compare 32 bits at addr
+constexpr uint32_t UL_COMPARE_AND_WAIT = 1; ///< compare 32 bits at addr
 constexpr uint32_t ULF_WAKE_ALL = 0x00000100;
 constexpr uint32_t ULF_NO_ERRNO = 0x01000000;
 }
@@ -45,12 +46,13 @@ static long futex_syscall(std::atomic<u32> *addr, i32 op, u32 val,
 }
 #endif
 
-Result wait(std::atomic<u32> *addr, u32 expected_value,
-            const std::chrono::nanoseconds timeout) {
+namespace {
+
+// A zero timeout here means no timeout.
+Result wait_impl(std::atomic<u32> *addr, u32 expected_value,
+                 const std::chrono::nanoseconds timeout) {
   if (!addr)
     return Result::Error;
-  if (timeout < std::chrono::nanoseconds::zero())
-    return Result::TimedOut;
 
 #if NX_HAS_WINDOWS_API
   DWORD timeout_ms = INFINITE;
@@ -117,6 +119,19 @@ Result wait(std::atomic<u32> *addr, u32 expected_value,
 #endif
 
   return Result::Success;
+}
+
+}
+
+Result wait(std::atomic<u32> *addr, const u32 expected_value) {
+  return wait_impl(addr, expected_value, std::chrono::nanoseconds::zero());
+}
+
+Result wait(std::atomic<u32> *addr, const u32 expected_value,
+            const std::chrono::nanoseconds timeout) {
+  if (timeout <= std::chrono::nanoseconds::zero())
+    return addr ? Result::TimedOut : Result::Error;
+  return wait_impl(addr, expected_value, timeout);
 }
 
 i32 wake(std::atomic<u32> *addr, const i32 count) {

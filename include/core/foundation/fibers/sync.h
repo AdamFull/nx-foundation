@@ -31,6 +31,17 @@ public:
         expected, LOCKED, std::memory_order_acquire, std::memory_order_relaxed);
   }
 
+  template <class Rep, class Period>
+  [[nodiscard]] bool
+  try_lock_for(std::chrono::duration<Rep, Period> timeout) noexcept {
+    return try_lock() || lock_until(nx::detail::deadline_after(timeout));
+  }
+  template <class Clock, class Duration>
+  [[nodiscard]] bool
+  try_lock_until(std::chrono::time_point<Clock, Duration> t) noexcept {
+    return try_lock() || lock_until(nx::detail::to_deadline(t));
+  }
+
   ~mutex() {
     while (m_unlocking.load(std::memory_order_acquire) != 0)
       nx::detail::cpu_relax();
@@ -54,7 +65,8 @@ private:
   static constexpr u32 LOCKED = 1;
   static constexpr u32 CONTENDED = 2;
 
-  void lock_slow() noexcept;
+  void lock_slow() noexcept { (void)lock_until(internal::NO_DEADLINE); }
+  bool lock_until(internal::clock::time_point deadline) noexcept;
   void wake_one() noexcept;
 
   std::atomic<u32> m_state{0};
@@ -71,15 +83,40 @@ public:
   rw_lock(const rw_lock &) = delete;
   rw_lock &operator=(const rw_lock &) = delete;
 
-  void lock() noexcept;
+  void lock() noexcept { (void)lock_until(internal::NO_DEADLINE); }
   [[nodiscard]] bool try_lock() noexcept;
+  template <class Rep, class Period>
+  [[nodiscard]] bool
+  try_lock_for(std::chrono::duration<Rep, Period> timeout) noexcept {
+    return lock_until(nx::detail::deadline_after(timeout));
+  }
+  template <class Clock, class Duration>
+  [[nodiscard]] bool
+  try_lock_until(std::chrono::time_point<Clock, Duration> t) noexcept {
+    return lock_until(nx::detail::to_deadline(t));
+  }
   void unlock() noexcept;
 
-  void lock_shared() noexcept;
+  void lock_shared() noexcept {
+    (void)lock_shared_until(internal::NO_DEADLINE);
+  }
   [[nodiscard]] bool try_lock_shared() noexcept;
+  template <class Rep, class Period>
+  [[nodiscard]] bool
+  try_lock_shared_for(std::chrono::duration<Rep, Period> timeout) noexcept {
+    return lock_shared_until(nx::detail::deadline_after(timeout));
+  }
+  template <class Clock, class Duration>
+  [[nodiscard]] bool
+  try_lock_shared_until(std::chrono::time_point<Clock, Duration> t) noexcept {
+    return lock_shared_until(nx::detail::to_deadline(t));
+  }
   void unlock_shared() noexcept;
 
 private:
+  bool lock_until(internal::clock::time_point deadline) noexcept;
+  bool lock_shared_until(internal::clock::time_point deadline) noexcept;
+
   spin_lock m_lock;
   u32 m_readers = 0;
   bool m_writer = false;
@@ -102,15 +139,20 @@ public:
     return m_set.load(std::memory_order_acquire);
   }
 
-  void wait() noexcept { wait_until(internal::NO_DEADLINE); }
+  void wait() noexcept { (void)wait_deadline(internal::NO_DEADLINE); }
   template <class Rep, class Period>
   [[nodiscard]] bool
   wait_for(std::chrono::duration<Rep, Period> timeout) noexcept {
-    return wait_until(nx::detail::deadline_after(timeout));
+    return wait_deadline(nx::detail::deadline_after(timeout));
+  }
+  template <class Clock, class Duration>
+  [[nodiscard]] bool
+  wait_until(std::chrono::time_point<Clock, Duration> t) noexcept {
+    return wait_deadline(nx::detail::to_deadline(t));
   }
 
 private:
-  bool wait_until(internal::clock::time_point deadline) noexcept;
+  bool wait_deadline(internal::clock::time_point deadline) noexcept;
 
   const bool m_manual_reset;
   std::atomic<bool> m_set;
@@ -124,12 +166,17 @@ public:
   semaphore(const semaphore &) = delete;
   semaphore &operator=(const semaphore &) = delete;
 
-  void acquire() noexcept { acquire_until(internal::NO_DEADLINE); }
+  void acquire() noexcept { (void)acquire_until(internal::NO_DEADLINE); }
   [[nodiscard]] bool try_acquire() noexcept;
   template <class Rep, class Period>
   [[nodiscard]] bool
   try_acquire_for(std::chrono::duration<Rep, Period> timeout) noexcept {
     return acquire_until(nx::detail::deadline_after(timeout));
+  }
+  template <class Clock, class Duration>
+  [[nodiscard]] bool
+  try_acquire_until(std::chrono::time_point<Clock, Duration> t) noexcept {
+    return acquire_until(nx::detail::to_deadline(t));
   }
   void release(u32 n = 1) noexcept;
 
@@ -150,51 +197,57 @@ public:
   void notify_one() noexcept;
   void notify_all() noexcept;
 
-  void wait(mutex &m) noexcept { (void)wait_until(m, internal::NO_DEADLINE); }
-  template <typename Pred> void wait(mutex &m, Pred pred) noexcept {
+  /// Waits under any lock the waiter holds, as nx::cond_var does. The timed
+  /// waits return false when the time passed first.
+  template <basic_lockable Lock> void wait(Lock &lock) noexcept {
+    (void)wait_deadline(lock, internal::NO_DEADLINE);
+  }
+  template <basic_lockable Lock, typename Pred>
+  void wait(Lock &lock, Pred pred) noexcept {
     while (!pred())
-      wait(m);
+      wait(lock);
   }
 
-  void wait(unique_lock<mutex> &lock) noexcept { wait(owned(lock)); }
-  template <typename Pred>
-  void wait(unique_lock<mutex> &lock, Pred pred) noexcept {
-    wait(owned(lock), std::move(pred));
-  }
-  template <class Rep, class Period>
-  bool wait_for(unique_lock<mutex> &lock,
+  template <basic_lockable Lock, class Rep, class Period>
+  bool wait_for(Lock &lock,
                 std::chrono::duration<Rep, Period> timeout) noexcept {
-    return wait_for(owned(lock), timeout);
+    return wait_deadline(lock, nx::detail::deadline_after(timeout));
   }
-  template <class Rep, class Period, typename Pred>
-  bool wait_for(unique_lock<mutex> &lock,
-                std::chrono::duration<Rep, Period> timeout,
+  template <basic_lockable Lock, class Rep, class Period, typename Pred>
+  bool wait_for(Lock &lock, std::chrono::duration<Rep, Period> timeout,
                 Pred pred) noexcept {
-    return wait_for(owned(lock), timeout, std::move(pred));
+    return wait_until(lock, nx::detail::deadline_after(timeout),
+                      std::move(pred));
   }
 
-  /// Returns false if the timeout passed first.
-  template <class Rep, class Period>
-  bool wait_for(mutex &m, std::chrono::duration<Rep, Period> timeout) noexcept {
-    return wait_until(m, nx::detail::deadline_after(timeout));
+  template <basic_lockable Lock, class Clock, class Duration>
+  bool wait_until(Lock &lock,
+                  std::chrono::time_point<Clock, Duration> t) noexcept {
+    return wait_deadline(lock, nx::detail::to_deadline(t));
   }
-  template <class Rep, class Period, typename Pred>
-  bool wait_for(mutex &m, std::chrono::duration<Rep, Period> timeout,
-                Pred pred) noexcept {
-    const auto deadline = nx::detail::deadline_after(timeout);
+  template <basic_lockable Lock, class Clock, class Duration, typename Pred>
+  bool wait_until(Lock &lock, std::chrono::time_point<Clock, Duration> t,
+                  Pred pred) noexcept {
+    const auto deadline = nx::detail::to_deadline(t);
     while (!pred())
-      if (!wait_until(m, deadline))
+      if (!wait_deadline(lock, deadline))
         return pred();
     return true;
   }
 
 private:
-  [[nodiscard]] static mutex &owned(unique_lock<mutex> &lock) noexcept {
-    assert(lock.owns_lock() && "cond_var: waiting without holding the lock");
-    return *lock.mutex();
+  template <typename Lock>
+  bool wait_deadline(Lock &lock,
+                     const internal::clock::time_point deadline) noexcept {
+    if constexpr (requires { lock.owns_lock(); })
+      assert(lock.owns_lock() && "cond_var: waiting without holding the lock");
+    m_lock.lock();
+    lock.unlock();
+    const internal::WaitResult result =
+        internal::block(&m_lock, &m_waiters, deadline);
+    lock.lock();
+    return result == internal::WaitResult::Woken;
   }
-
-  bool wait_until(mutex &m, internal::clock::time_point deadline) noexcept;
 
   spin_lock m_lock;
   internal::WaitList m_waiters;

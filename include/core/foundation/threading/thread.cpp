@@ -486,7 +486,7 @@ void thread_parker::park_until(
   if (m_state.exchange(0, std::memory_order_acquire) == 1)
     return;
   if (deadline == std::chrono::steady_clock::time_point::max()) {
-    futex::wait(&m_state, 0, detail::WAIT_FOREVER);
+    futex::wait(&m_state, 0);
   } else if (const auto now = std::chrono::steady_clock::now();
              now < deadline) {
     futex::wait(&m_state, 0, detail::to_ns(deadline - now));

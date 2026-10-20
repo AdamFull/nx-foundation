@@ -772,7 +772,7 @@ void SchedulerState::park_worker() noexcept {
   sleepers.fetch_add(1, std::memory_order_seq_cst);
   std::atomic_thread_fence(std::memory_order_seq_cst);
   if (!has_general_work() && !stopping.load(std::memory_order_seq_cst))
-    futex::wait(&worker_epoch, epoch, detail::WAIT_FOREVER);
+    futex::wait(&worker_epoch, epoch);
   sleepers.fetch_sub(1, std::memory_order_seq_cst);
 }
 
@@ -875,7 +875,7 @@ void SchedulerState::park_blocking() noexcept {
   std::atomic_thread_fence(std::memory_order_seq_cst);
   if (!blocking_ready.can_pop_approx() &&
       !stopping.load(std::memory_order_seq_cst))
-    futex::wait(&blocking_epoch, epoch, detail::WAIT_FOREVER);
+    futex::wait(&blocking_epoch, epoch);
   blocking_sleepers.fetch_sub(1, std::memory_order_seq_cst);
 }
 
@@ -1089,7 +1089,7 @@ WaitResult block_thread(Waiter &waiter, spin_lock *lock, WaitList *list,
     if (state != Waiter::WAITING)
       return WaitResult::Woken;
     if (deadline == NO_DEADLINE) {
-      futex::wait(&waiter.state, Waiter::WAITING, nx::detail::WAIT_FOREVER);
+      futex::wait(&waiter.state, Waiter::WAITING);
       continue;
     }
     const clock::time_point now = clock::now();
@@ -1249,7 +1249,7 @@ void wait(fiber::counter &counter, const u32 target) noexcept {
         counter.m_waiters.fetch_add(1, std::memory_order_seq_cst);
         const u32 value = counter.m_value.load(std::memory_order_seq_cst);
         if (value > target)
-          futex::wait(&counter.m_value, value, detail::WAIT_FOREVER);
+          futex::wait(&counter.m_value, value);
         counter.m_waiters.fetch_sub(1, std::memory_order_seq_cst);
       }
     }
