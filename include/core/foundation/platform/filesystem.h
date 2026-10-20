@@ -6,6 +6,7 @@
 #include "core/foundation/core/result.h"
 #include "core/foundation/strings/utf8_string.h"
 
+#include <compare>
 #include <cstdint>
 #include <span>
 #include <utility>
@@ -203,6 +204,8 @@ constexpr bool is_within(const string_view p, const string_view root) noexcept {
 
 /// Non-owning view over a UTF-8 filesystem path. It does not touch the
 /// filesystem and copies nothing; the referenced bytes must outlive the view.
+/// Each part of it is a path_view too; joining makes new bytes, so join and /
+/// return an nx::string. Comparison is of the bytes, not of normalized paths.
 class path_view {
 public:
   constexpr path_view() noexcept = default;
@@ -238,13 +241,13 @@ public:
   [[nodiscard]] constexpr path_view stem() const noexcept {
     return path::stem(m_p);
   }
-  [[nodiscard]] constexpr string_view extension() const noexcept {
+  [[nodiscard]] constexpr path_view extension() const noexcept {
     return path::extension(m_p);
   }
   [[nodiscard]] constexpr path_view parent_path() const noexcept {
     return path::parent_path(m_p);
   }
-  [[nodiscard]] constexpr string_view root_name() const noexcept {
+  [[nodiscard]] constexpr path_view root_name() const noexcept {
     return path::root_name(m_p);
   }
   [[nodiscard]] constexpr bool has_extension() const noexcept {
@@ -255,6 +258,15 @@ public:
   }
   [[nodiscard]] string operator/(const path_view tail) const {
     return path::join(m_p, tail.native());
+  }
+
+  [[nodiscard]] friend constexpr bool operator==(const path_view a,
+                                                 const path_view b) noexcept {
+    return a.m_p == b.m_p;
+  }
+  [[nodiscard]] friend constexpr std::strong_ordering
+  operator<=>(const path_view a, const path_view b) noexcept {
+    return a.m_p <=> b.m_p;
   }
 
 private:

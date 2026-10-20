@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #ifdef _WIN32
@@ -300,6 +301,26 @@ TEST_CASE("fs::path_view: wraps a view and forwards the lexical queries") {
   const auto bytes = p.as_bytes();
   CHECK(bytes.size() == p.native().size());
   CHECK(reinterpret_cast<const char *>(bytes.data()) == p.native().data());
+}
+
+TEST_CASE("fs::path_view: every part is a path_view, and views compare") {
+  const fs::path_view p("C:/data/sprite.atlas.png");
+  static_assert(std::is_same_v<decltype(p.filename()), fs::path_view>);
+  static_assert(std::is_same_v<decltype(p.stem()), fs::path_view>);
+  static_assert(std::is_same_v<decltype(p.extension()), fs::path_view>);
+  static_assert(std::is_same_v<decltype(p.parent_path()), fs::path_view>);
+  static_assert(std::is_same_v<decltype(p.root_name()), fs::path_view>);
+  CHECK(p.extension() == ".png");
+  CHECK(p.root_name() == "C:");
+  CHECK(".png" == p.extension());
+  CHECK(p.extension() == nx::string_view(".png"));
+  CHECK(p.filename() == nx::string("sprite.atlas.png"));
+  CHECK(p.stem() != "sprite");
+  CHECK(fs::path_view("a/b") < fs::path_view("a/c"));
+  CHECK(fs::path_view("a/b") == fs::path_view("a/b"));
+  CHECK(fs::path_view("a/b") != fs::path_view("a\\b"));
+  constexpr fs::path_view lit("x/y.z");
+  static_assert(lit.extension() == ".z");
 }
 
 TEST_CASE("fs::path_view: constructs from string_view, char* and nx::string") {
