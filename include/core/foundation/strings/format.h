@@ -6,9 +6,11 @@
 #include <format>
 
 namespace nx {
-template <usize N, typename... Args>
-const char *format_to(char (&buf)[N], string_view fmt,
-                      Args &&...args) noexcept {
+/// Formats into @p buf, cut at a whole character when it does not fit, and
+/// returns buf. A format that fails at run time writes "[format error]".
+template <usize N>
+const char *vformat_to(char (&buf)[N], const string_view fmt,
+                       const std::format_args args) noexcept {
   static_assert(N > 0);
   struct capped_out_it {
     char **cur;
@@ -30,8 +32,7 @@ const char *format_to(char (&buf)[N], string_view fmt,
   char *cur = buf;
   bool cut = false;
   try {
-    std::vformat_to(capped_out_it{&cur, buf + N - 1, &cut}, fmt,
-                    std::make_format_args(args...));
+    std::vformat_to(capped_out_it{&cur, buf + N - 1, &cut}, fmt, args);
     if (cut)
       cur = buf +
             utf8::complete_prefix(string_view(buf, nx::cast<usize>(cur - buf)));
@@ -44,6 +45,14 @@ const char *format_to(char (&buf)[N], string_view fmt,
   }
   *cur = '\0';
   return buf;
+}
+
+/// vformat_to with the format string checked at compile time, as nx::format
+/// and std::format check theirs.
+template <usize N, typename... Args>
+const char *format_to(char (&buf)[N], std::format_string<Args...> fmt,
+                      Args &&...args) noexcept {
+  return nx::vformat_to(buf, fmt.get(), std::make_format_args(args...));
 }
 
 } // namespace nx

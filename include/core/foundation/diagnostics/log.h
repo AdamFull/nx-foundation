@@ -165,8 +165,9 @@ namespace nx {
     if (!log::should_log(log::Level::LVL, cat))                                \
       return;                                                                  \
     char buf[log::LOG_MESSAGE_CAPACITY];                                       \
-    log::detail::submit(log::Level::LVL, cat,                                  \
-                        format_to(buf, fmt, std::forward<Args>(args)...));     \
+    log::detail::submit(                                                       \
+        log::Level::LVL, cat,                                                  \
+        nx::vformat_to(buf, fmt, std::make_format_args(args...)));             \
   }                                                                            \
   template <typename... Args>                                                  \
   void fn(string_view fmt, Args &&...args) noexcept {                          \

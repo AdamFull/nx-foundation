@@ -5,6 +5,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -1057,4 +1058,108 @@ TEST_CASE("string: insert and erase past the end throw out_of_range") {
   s.insert(3, nx::string_view("d"));
   s.erase(0, 1);
   CHECK(s == "bcd");
+}
+
+TEST_CASE("string: a lone character converts only explicitly") {
+  static_assert(std::is_constructible_v<nx::string, char>);
+  static_assert(!std::is_convertible_v<char, nx::string>);
+  static_assert(!std::is_convertible_v<char32_t, nx::string>);
+  CHECK(nx::string('q') == "q");
+}
+
+TEST_CASE("string: insert a run of one character") {
+  nx::string s("ad");
+  s.insert(1, 2, 'x');
+  CHECK(s == "axxd");
+  s.insert(4, 1, '!');
+  CHECK(s == "axxd!");
+  s.insert(0, 0, 'z');
+  CHECK(s == "axxd!");
+  s.insert(0, 40, '-');
+  CHECK(s.size() == usize{45});
+  CHECK(s.ends_with("-axxd!"));
+  CHECK_THROWS_AS(s.insert(s.size() + 1, 1, 'x'), std::out_of_range);
+}
+
+TEST_CASE("string: replace grows, shrinks and clamps the range") {
+  nx::string s("hello world");
+  s.replace(0, 5, "goodbye");
+  CHECK(s == "goodbye world");
+  s.replace(8, 5, "all");
+  CHECK(s == "goodbye all");
+  s.replace(7, nx::string::npos, "");
+  CHECK(s == "goodbye");
+  s.replace(4, 0, "-");
+  CHECK(s == "good-bye");
+  s.replace(s.size(), 3, "!");
+  CHECK(s == "good-bye!");
+  s.replace(0, 4, long_text(40, 'g'));
+  CHECK(s == long_text(40, 'g') + "-bye!");
+  s.replace(1, 39, 3, 'o');
+  CHECK(s == "gooo-bye!");
+  s.replace(1, 3, 0, 'x');
+  CHECK(s == "g-bye!");
+  CHECK_THROWS_AS(s.replace(s.size() + 1, 0, "x"), std::out_of_range);
+  CHECK_THROWS_AS(s.replace(s.size() + 1, 0, 1, 'x'), std::out_of_range);
+}
+
+TEST_CASE("string: replace with a piece of itself") {
+  nx::string s("abcdef");
+  s.replace(0, 2, nx::string_view(s).substr(2));
+  CHECK(s == "cdefcdef");
+
+  nx::string t(long_text(30, 'q') + "tail");
+  t.replace(30, 4, nx::string_view(t).substr(0, 30));
+  CHECK(t == long_text(60, 'q'));
+}
+
+TEST_CASE("string: resize_and_overwrite keeps what the writer reports") {
+  nx::string s("ab");
+  s.resize_and_overwrite(64, [](char *d, const usize n) {
+    CHECK(n == usize{64});
+    CHECK(d[0] == 'a');
+    for (usize i = 2; i < 10; ++i)
+      d[i] = static_cast<char>('0' + i - 2);
+    return usize{10};
+  });
+  CHECK(s == "ab01234567");
+  CHECK(s.capacity() >= usize{64});
+
+  s.resize_and_overwrite(3, [](char *, usize) { return 1; });
+  CHECK(s == "a");
+}
+
+TEST_CASE("string: + with a temporary reuses its buffer") {
+  nx::string left(long_text(40, 'l'));
+  left.reserve(200);
+  const char *buffer = left.data();
+  nx::string joined = std::move(left) + nx::string_view("-mid") + "-end" + '!';
+  CHECK(joined.data() == buffer);
+  CHECK(joined == long_text(40, 'l') + "-mid-end!");
+
+  nx::string right(long_text(40, 'r'));
+  right.reserve(200);
+  const char *rbuffer = right.data();
+  const nx::string prefixed = "<" + (nx::string_view("pre") + std::move(right));
+  CHECK(prefixed == "<pre" + long_text(40, 'r'));
+
+  nx::string tail(long_text(30, 't'));
+  tail.reserve(100);
+  const char *tbuffer = tail.data();
+  const nx::string head("head");
+  const nx::string both = head + std::move(tail);
+  CHECK(both.data() == tbuffer);
+  CHECK(both == "head" + long_text(30, 't'));
+
+  CHECK(prefixed.data() == rbuffer);
+  CHECK(nx::string("a") + nx::string("b") == "ab");
+}
+
+TEST_CASE("string: std::hash is transparent and agrees across key types") {
+  using hash = std::hash<nx::string>;
+  static_assert(requires { typename hash::is_transparent; });
+  const nx::string s("transparent");
+  CHECK(hash{}(s) == hash{}(nx::string_view("transparent")));
+  CHECK(hash{}(s) == hash{}("transparent"));
+  CHECK(hash{}(s) != hash{}("opaque"));
 }

@@ -105,12 +105,12 @@ ctest --test-dir build -C Debug
 
 | Type | Header | Use it for |
 | --- | --- | --- |
-| `nx::string` | `strings/utf8_string.h` | An owning UTF-8 string with small-string optimization. Transcodes from char/char8_t/char16_t/char32_t/wchar_t and converts to `nx::string_view`. |
+| `nx::string` | `strings/utf8_string.h` | An owning UTF-8 string with small-string optimization. Transcodes from char/char8_t/char16_t/char32_t/wchar_t and converts to `nx::string_view`. It has the `std::string` editing members, `replace` and `resize_and_overwrite` among them; `+` with a temporary reuses its buffer, and `std::hash<nx::string>` is transparent. A lone character converts only explicitly. |
 | `nx::string_view` | `strings/utf8_string_view.h` | A non-owning UTF-8 view (`std::string_view` alias). |
 | `nx::id_string` | `strings/id_string.h` | An 8-byte interned string identified by a 64-bit FNV-1a hash: integer compare/order/hash, computable at compile time, with the original bytes recoverable via a process-wide intern pool. A baked asset key and constant-expression switch label (Unreal `FName` / bitsquid `idstring` in spirit). |
 | `nx::base64_encode` | `strings/base64.h` | Standard RFC 4648 base64 with padding; `base64url_encode` is the URL-safe alphabet without padding, as URLs and PKCE want it. |
 | `nx::format` | `strings/utf8_string.h` | `std::format` returning `nx::string`. It and the `std::formatter` for `nx::string` come with `nx::string`. |
-| `nx::format_to` | `strings/format.h` | A bounded `format_to(char[N], ...)` for stack buffers that never allocates. |
+| `nx::format_to` / `nx::vformat_to` | `strings/format.h` | A bounded `format_to(char[N], ...)` for stack buffers that never allocates, with the format string checked at compile time; `vformat_to` takes a run-time format and `std::format_args`. |
 
 ## ECS registry
 

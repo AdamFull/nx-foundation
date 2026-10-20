@@ -58,9 +58,12 @@ TEST_CASE("format_to: writes into a fixed buffer and NUL-terminates") {
 TEST_CASE("format_to: formatting failures stay inside the fixed buffer API") {
   char buf[64];
   const nx::string_view invalid = "{";
-  static_assert(noexcept(nx::format_to(buf, invalid, 42)));
+  int value = 42;
+  auto store = std::make_format_args(value);
+  const std::format_args args = store;
+  static_assert(noexcept(nx::vformat_to(buf, invalid, args)));
 
-  CHECK(nx::format_to(buf, invalid, 42) == buf);
+  CHECK(nx::vformat_to(buf, invalid, args) == buf);
   CHECK(std::strcmp(buf, "[format error]") == 0);
 }
 

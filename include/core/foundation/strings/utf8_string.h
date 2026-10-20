@@ -304,7 +304,7 @@ public:
     append(count, c);
   }
   template <detail::char_like C>
-  basic_string(C c, const Alloc &a = Alloc()) : m_alloc(a) {
+  explicit basic_string(C c, const Alloc &a = Alloc()) : m_alloc(a) {
     init_empty();
     append_char(c);
   }
@@ -593,6 +593,65 @@ public:
     std::memcpy(d + pos, sv.data(), n);
     set_size(sz + n);
     return *this;
+  }
+
+  basic_string &insert(const usize pos, const usize count, const char c) {
+    if (pos > size())
+      throw std::out_of_range("nx::basic_string::insert");
+    if (count == 0)
+      return *this;
+    const usize sz = size();
+    ensure_capacity(grown(sz, count));
+    char *d = data();
+    std::memmove(d + pos + count, d + pos, sz - pos);
+    std::memset(d + pos, nx::cast<int>(c), count);
+    set_size(sz + count);
+    return *this;
+  }
+
+  /// Replaces the bytes [pos, pos + count), clamped to the end, with @p sv.
+  basic_string &replace(const usize pos, const usize count, string_view sv) {
+    const usize sz = size();
+    if (pos > sz)
+      throw std::out_of_range("nx::basic_string::replace");
+    if (NX_UNLIKELY(aliases(sv.data()))) {
+      basic_string tmp(sv, m_alloc);
+      return replace(pos, count, string_view(tmp.data(), tmp.size()));
+    }
+    const usize cut = count < sz - pos ? count : sz - pos;
+    const usize n = sv.size();
+    if (n > cut)
+      ensure_capacity(grown(sz - cut, n));
+    char *d = data();
+    std::memmove(d + pos + n, d + pos + cut, sz - pos - cut);
+    if (n)
+      std::memcpy(d + pos, sv.data(), n);
+    set_size(sz - cut + n);
+    return *this;
+  }
+  basic_string &replace(const usize pos, const usize count, const usize n,
+                        const char c) {
+    const usize sz = size();
+    if (pos > sz)
+      throw std::out_of_range("nx::basic_string::replace");
+    const usize cut = count < sz - pos ? count : sz - pos;
+    if (n > cut)
+      ensure_capacity(grown(sz - cut, n));
+    char *d = data();
+    std::memmove(d + pos + n, d + pos + cut, sz - pos - cut);
+    std::memset(d + pos, nx::cast<int>(c), n);
+    set_size(sz - cut + n);
+    return *this;
+  }
+
+  /// Gives @p op room for @p count bytes, as std::string does: op(data,
+  /// count) writes them and returns the size to keep, at most count. Bytes
+  /// past the old size are uninitialized until op writes them.
+  template <typename Op> void resize_and_overwrite(const usize count, Op op) {
+    ensure_capacity(count);
+    const usize kept = nx::cast<usize>(std::move(op)(data(), count));
+    assert(kept <= count);
+    set_size(kept);
   }
 
   basic_string &erase(const usize pos = 0, const usize count = npos) {
@@ -992,6 +1051,48 @@ template <class A> basic_string<A> operator+(const basic_string<A> &a, char b) {
   return r;
 }
 
+// A temporary on either side lends its buffer to the result, so a chain such
+// as a + b + c allocates once rather than at every +.
+template <class A>
+basic_string<A> operator+(basic_string<A> &&a, const string_view b) {
+  a.append(b);
+  return std::move(a);
+}
+template <class A>
+basic_string<A> operator+(basic_string<A> &&a, const basic_string<A> &b) {
+  a.append(b);
+  return std::move(a);
+}
+template <class A>
+basic_string<A> operator+(basic_string<A> &&a, basic_string<A> &&b) {
+  a.append(b);
+  return std::move(a);
+}
+template <class A>
+basic_string<A> operator+(basic_string<A> &&a, const char *b) {
+  a.append(b);
+  return std::move(a);
+}
+template <class A> basic_string<A> operator+(basic_string<A> &&a, char b) {
+  a.push_back(b);
+  return std::move(a);
+}
+template <class A>
+basic_string<A> operator+(const string_view a, basic_string<A> &&b) {
+  b.insert(0, a);
+  return std::move(b);
+}
+template <class A>
+basic_string<A> operator+(const basic_string<A> &a, basic_string<A> &&b) {
+  b.insert(0, a.view());
+  return std::move(b);
+}
+template <class A>
+basic_string<A> operator+(const char *a, basic_string<A> &&b) {
+  b.insert(0, string_view(a));
+  return std::move(b);
+}
+
 template <class A>
 NX_FORCE_INLINE void swap(basic_string<A> &a, basic_string<A> &b) noexcept {
   a.swap(b);
@@ -1008,11 +1109,19 @@ template <class... Args>
 } // namespace nx
 
 /// Hashes the raw UTF-8 bytes with the same function nx::id_string uses, so a
-/// string and its interned id agree on what identity means.
+/// string and its interned id agree on what identity means. Transparent: a
+/// view hashes as the string it names.
 template <class A> struct std::hash<nx::basic_string<A>> {
+  using is_transparent = void;
+  [[nodiscard]] std::size_t operator()(const nx::string_view s) const noexcept {
+    return nx::cast<std::size_t>(nx::hash_fnv1a64(s.data(), s.size()));
+  }
   [[nodiscard]] std::size_t
   operator()(const nx::basic_string<A> &s) const noexcept {
-    return nx::cast<std::size_t>(nx::hash_fnv1a64(s.data(), s.size()));
+    return (*this)(s.view());
+  }
+  [[nodiscard]] std::size_t operator()(const char *s) const noexcept {
+    return (*this)(nx::string_view(s));
   }
 };
 

@@ -94,7 +94,7 @@ template <typename... Args>
                                      Args &&...args) noexcept {
   char buf[512];
   assert_fail(file, line, cond,
-              nx::format_to(buf, fmt, std::forward<Args>(args)...));
+              nx::vformat_to(buf, fmt, std::make_format_args(args...)));
 }
 
 }
