@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/foundation/containers/string_map.h"
 #include "core/foundation/fibers/scheduler.h"
 #include "core/foundation/threading/cancellation.h"
 #include "core/foundation/threading/thread_pool.h"
@@ -73,6 +74,9 @@ struct AsyncIoStatistics {
   u64 native_reads = 0;
   u64 fallback_reads = 0;
   u64 native_cancellations = 0;
+  u64 writes = 0;
+  u64 bytes_written = 0;
+  u64 removals = 0;
   AsyncIoBackend backend = AsyncIoBackend::Blocking;
 };
 
@@ -248,6 +252,21 @@ public:
   [[nodiscard]] future<io_result<nx::blob<u8>>>
   read_range(path_view path, u64 offset, u64 size, AsyncIoRequest request = {});
 
+  /// Writes @p bytes to @p path as vfs::write does: through the first
+  /// writable mount, which for a host one replaces the file atomically and
+  /// on storage. Writes and removals of one path run one at a time, in the
+  /// order they were asked for. Cancellation stops one that has not
+  /// started; one that has finishes, and shutdown runs every one asked for
+  /// before it.
+  [[nodiscard]] future<io_result<void>>
+  write(path_view path, nx::blob<u8> bytes, AsyncIoRequest request = {});
+  /// Removes @p path as vfs::remove does, in order with its writes.
+  [[nodiscard]] future<io_result<void>> remove(path_view path,
+                                               AsyncIoRequest request = {});
+  /// The entries of directory @p path, as vfs::list gives them.
+  [[nodiscard]] future<io_result<nx::vector<DirEntry>>>
+  list(path_view path, AsyncIoRequest request = {});
+
   [[nodiscard]] AsyncIoStatistics statistics() const noexcept;
 
   /// Cancels native requests and service-owned waits, then drains all submitted
@@ -261,6 +280,15 @@ private:
 
   struct NativeRequest;
   struct BudgetWaiter;
+  struct PendingChange {
+    task_priority priority = task_priority::Normal;
+    nx::detail::task_fn job;
+  };
+  using ChangeFn = nx::unique_function<io_result<void>(path_view)>;
+
+  [[nodiscard]] future<io_result<void>>
+  submit_change(path_view path, AsyncIoRequest request, ChangeFn change);
+  void finish_change(nx::string_view path) noexcept;
 
   [[nodiscard]] u64 acquire_bytes(u64 bytes,
                                   const cancellation_token &cancellation);
@@ -313,6 +341,12 @@ private:
   nx::vector<fiber::counter *> m_readmit;
   /// Fallback requests submitted and not yet finished; shutdown waits on it.
   fiber::counter m_outstanding;
+  /// For each path a write or removal is running or queued for, under
+  /// m_budget_lock, those asked for after it.
+  nx::string_map<nx::vector<PendingChange>> m_changes;
+  std::atomic<u64> m_writes{0};
+  std::atomic<u64> m_bytes_written{0};
+  std::atomic<u64> m_removals{0};
 };
 
 } // namespace nx::vfs

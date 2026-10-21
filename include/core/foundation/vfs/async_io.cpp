@@ -298,6 +298,104 @@ AsyncIoService::read_range(const path_view path, const u64 offset,
   });
 }
 
+future<io_result<void>> AsyncIoService::write(const path_view path,
+                                              nx::blob<u8> bytes,
+                                              AsyncIoRequest request) {
+  return submit_change(
+      path, std::move(request),
+      [this, bytes = std::move(bytes)](const path_view at) {
+        io_result<void> written =
+            vfs::write(at, std::span<const u8>(bytes.data(), bytes.size()));
+        if (written) {
+          m_writes.fetch_add(1, std::memory_order_relaxed);
+          m_bytes_written.fetch_add(bytes.size(), std::memory_order_relaxed);
+        }
+        return written;
+      });
+}
+
+future<io_result<void>> AsyncIoService::remove(const path_view path,
+                                               AsyncIoRequest request) {
+  return submit_change(path, std::move(request), [this](const path_view at) {
+    io_result<void> removed = vfs::remove(at);
+    if (removed)
+      m_removals.fetch_add(1, std::memory_order_relaxed);
+    return removed;
+  });
+}
+
+future<io_result<nx::vector<DirEntry>>>
+AsyncIoService::list(const path_view path, AsyncIoRequest request) {
+  return async(std::move(request),
+               [path = nx::string(path.native())](AsyncIoContext &) {
+                 return vfs::list(path_view(path.view()));
+               });
+}
+
+// Not async(): a change does not see the service stopping, so one asked for
+// before shutdown is not lost, and it does not wait for read bytes, since
+// the caller holds them already.
+future<io_result<void>> AsyncIoService::submit_change(const path_view path,
+                                                      AsyncIoRequest request,
+                                                      ChangeFn change) {
+  if (m_workers == nullptr || m_stopping.load(std::memory_order_acquire))
+    return {};
+  completion_source<io_result<void>> source(m_workers);
+  future<io_result<void>> result = source.get_future();
+  if (!result.valid())
+    return {};
+  const workload_ticket ticket = m_workload.submit();
+  nx::string key(path.native());
+  nx::detail::task_fn job{[this, source = std::move(source), ticket, key,
+                           cancellation = std::move(request.cancellation),
+                           change = std::move(change)]() mutable {
+    fiber::run_blocking([&] {
+      try {
+        source.set_value(
+            measure_workload(m_workload, ticket, cancellation,
+                             [&] { return change(path_view(key.view())); }));
+      } catch (const task_cancelled &) {
+        source.set_cancelled();
+      } catch (...) {
+        source.set_exception(std::current_exception());
+      }
+    });
+    finish_change(key.view());
+  }};
+  if (!job) {
+    m_workload.reject(ticket);
+    return {};
+  }
+  {
+    nx::scoped_lock lock(m_budget_lock);
+    const auto [queued, first] = m_changes.try_emplace(std::move(key));
+    if (!first) {
+      queued->second.push_back(
+          {.priority = request.priority, .job = std::move(job)});
+      return result;
+    }
+  }
+  enqueue_fallback(request.priority, std::move(job));
+  return result;
+}
+
+void AsyncIoService::finish_change(const nx::string_view path) noexcept {
+  PendingChange next;
+  {
+    nx::scoped_lock lock(m_budget_lock);
+    const auto found = m_changes.find(path);
+    if (found == m_changes.end())
+      return;
+    if (found->second.empty()) {
+      m_changes.erase(found);
+      return;
+    }
+    next = std::move(found->second.front());
+    found->second.erase(found->second.begin());
+  }
+  enqueue_fallback(next.priority, std::move(next.job));
+}
+
 future<io_result<nx::blob<u8>>>
 AsyncIoService::enqueue_native(nx::string path, const u64 offset,
                                const u64 size, AsyncIoRequest request,
@@ -637,6 +735,9 @@ AsyncIoStatistics AsyncIoService::statistics() const noexcept {
       .fallback_reads = m_fallback_reads.load(std::memory_order_relaxed),
       .native_cancellations =
           m_native_cancellations.load(std::memory_order_relaxed),
+      .writes = m_writes.load(std::memory_order_relaxed),
+      .bytes_written = m_bytes_written.load(std::memory_order_relaxed),
+      .removals = m_removals.load(std::memory_order_relaxed),
       .backend = m_native ? m_native->backend() : AsyncIoBackend::Blocking,
   };
 }

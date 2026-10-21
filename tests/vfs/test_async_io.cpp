@@ -7,6 +7,7 @@
 #include "core/foundation/strings/format.h"
 #include "core/foundation/vfs/async_io.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -606,4 +607,162 @@ TEST_CASE("async vfs: a stream that fails part way fails the read") {
     CHECK(result.error().kind == nx::fs::io_error::ReadFailed);
     CHECK(result.error().native == 42);
   }
+}
+
+namespace {
+
+/// Writable; records each write and removal as "w:<path>:<bytes>" or
+/// "r:<path>", and holds the first write of "gated.bin" until released.
+class GatedDevice final : public nx::vfs::Device {
+public:
+  nx::vfs::io_result<nx::blob<u8>> read(nx::vfs::path_view) override {
+    return nx::err(nx::vfs::file_error{nx::vfs::io_error::NotFound, 0});
+  }
+  nx::vfs::io_result<nx::vfs::stream_ptr> open(nx::vfs::path_view) override {
+    return nx::err(nx::vfs::file_error{nx::vfs::io_error::NotFound, 0});
+  }
+  nx::vfs::FileInfo stat(nx::vfs::path_view) override { return {}; }
+  nx::vfs::io_result<void> list(nx::vfs::path_view,
+                                const nx::vfs::ListFn &) override {
+    return {};
+  }
+  [[nodiscard]] bool writable() const noexcept override { return true; }
+  nx::vfs::io_result<void> write(const nx::vfs::path_view rel,
+                                 const std::span<const u8> data) override {
+    if (rel.native() == "gated.bin" && !held.exchange(true)) {
+      holding.store(true, std::memory_order_release);
+      (void)wait_for_flag(release);
+    }
+    record(
+        nx::format("w:{}:{}", rel.native(),
+                   nx::string_view(reinterpret_cast<const char *>(data.data()),
+                                   data.size())));
+    return {};
+  }
+  nx::vfs::io_result<void> remove(const nx::vfs::path_view rel) override {
+    record(nx::format("r:{}", rel.native()));
+    return {};
+  }
+  [[nodiscard]] const char *name() const noexcept override { return "gated"; }
+
+  [[nodiscard]] nx::vector<nx::string> log() {
+    nx::scoped_lock lock(m_lock);
+    return m_log;
+  }
+
+  std::atomic<bool> held{false};
+  std::atomic<bool> holding{false};
+  std::atomic<bool> release{false};
+
+private:
+  void record(nx::string entry) {
+    nx::scoped_lock lock(m_lock);
+    m_log.push_back(std::move(entry));
+  }
+
+  nx::mutex m_lock;
+  nx::vector<nx::string> m_log;
+};
+
+[[nodiscard]] nx::blob<u8> text(const nx::string_view value) {
+  return nx::blob<u8>(std::span<const u8>(
+      reinterpret_cast<const u8 *>(value.data()), value.size()));
+}
+
+[[nodiscard]] usize count(const nx::vector<nx::string> &log,
+                          const nx::string_view entry) {
+  return nx::cast<usize>(std::count(log.begin(), log.end(), entry));
+}
+
+} // namespace
+
+TEST_CASE("async vfs: writes and removals of one path run in the order asked, "
+          "other paths' alongside") {
+  vfs_fixture::scoped_vfs guard;
+  GatedDevice *const device = nx::allocate<GatedDevice>();
+  REQUIRE(nx::vfs::mount("/save", device).valid());
+  nx::vfs::AsyncIoService io(io_workers(), {.max_concurrent_requests = 3});
+
+  auto first = io.write("/save/gated.bin", text("1"));
+  REQUIRE(wait_for_flag(device->holding));
+  auto second = io.write("/save/gated.bin", text("2"),
+                         {.priority = nx::task_priority::Critical});
+  auto removal = io.remove("/save/gated.bin");
+  auto third = io.write("/save/gated.bin", text("3"));
+  auto other = io.write("/save/other.bin", text("x"));
+  REQUIRE(other.valid());
+  CHECK(other.get());
+  // Nothing behind the held write has run, though slots were free.
+  CHECK(device->log() == nx::vector<nx::string>{"w:other.bin:x"});
+
+  device->release.store(true, std::memory_order_release);
+  CHECK(first.get());
+  CHECK(second.get());
+  CHECK(removal.get());
+  CHECK(third.get());
+  CHECK(device->log() == nx::vector<nx::string>{
+                             "w:other.bin:x", "w:gated.bin:1", "w:gated.bin:2",
+                             "r:gated.bin", "w:gated.bin:3"});
+  const nx::vfs::AsyncIoStatistics stats = io.statistics();
+  CHECK(stats.writes == 4u);
+  CHECK(stats.bytes_written == 4u);
+  CHECK(stats.removals == 1u);
+}
+
+TEST_CASE("async vfs: a write to a host mount replaces the file whole and a "
+          "listing sees it") {
+  vfs_fixture::scoped_vfs guard;
+  vfs_fixture::temp_dir dir("async_write");
+  REQUIRE(nx::vfs::mount("/data", nx::vfs::make_host_device(dir.view()), 0)
+              .valid());
+  nx::vfs::AsyncIoService io(io_workers());
+
+  CHECK(io.write("/data/region/r.0.0.bin", text("first version")).get());
+  CHECK(io.write("/data/region/r.0.0.bin", text("second")).get());
+  auto read = io.read("/data/region/r.0.0.bin").get();
+  REQUIRE(read);
+  CHECK(nx::string_view(reinterpret_cast<const char *>(read->data()),
+                        read->size()) == "second");
+  auto listed = io.list("/data/region").get();
+  REQUIRE(listed);
+  REQUIRE(listed->size() == 1u);
+  CHECK((*listed)[0].name == "r.0.0.bin");
+  CHECK((*listed)[0].info.size == 6u);
+
+  CHECK(io.remove("/data/region/r.0.0.bin").get());
+  CHECK_FALSE(nx::vfs::exists("/data/region/r.0.0.bin"));
+  CHECK_FALSE(io.write("/elsewhere/x.bin", text("x")).get());
+}
+
+TEST_CASE("async vfs: shutdown runs the writes asked for before it, but not "
+          "one cancelled before it started") {
+  vfs_fixture::scoped_vfs guard;
+  GatedDevice *const device = nx::allocate<GatedDevice>();
+  REQUIRE(nx::vfs::mount("/save", device).valid());
+  nx::thread_pool pool({.thread_count = 2, .blocking_threads = 3});
+  nx::vfs::AsyncIoService io(pool, {.max_concurrent_requests = 1});
+
+  auto held = io.write("/save/gated.bin", text("1"));
+  REQUIRE(wait_for_flag(device->holding));
+  nx::cancellation_source cancellation;
+  auto cancelled = io.write("/save/gated.bin", text("2"),
+                            {.cancellation = cancellation.token()});
+  auto queued = io.write("/save/gated.bin", text("3"));
+  auto elsewhere = io.write("/save/queued.bin", text("q"));
+  (void)cancellation.request_stop();
+  pool.submit([&] {
+    nx::this_thread::sleep_for(std::chrono::milliseconds(20));
+    device->release.store(true, std::memory_order_release);
+  });
+
+  io.shutdown();
+  CHECK(held.get());
+  CHECK_THROWS_AS(cancelled.get(), nx::task_cancelled);
+  CHECK(queued.get());
+  CHECK(elsewhere.get());
+  const nx::vector<nx::string> log = device->log();
+  CHECK(count(log, "w:gated.bin:2") == 0u);
+  CHECK(count(log, "w:gated.bin:3") == 1u);
+  CHECK(count(log, "w:queued.bin:q") == 1u);
+  CHECK_FALSE(io.write("/save/late.bin", text("l")).valid());
 }
