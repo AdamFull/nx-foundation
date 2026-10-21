@@ -579,6 +579,9 @@ template <typename T> inline constexpr bool stl_debug_proxy = false;
 template <typename T> struct DefaultAllocator {
   using value_type = T;
   using is_always_equal = std::true_type;
+  // Without it libc++ compiles an element-wise move into every container move
+  // assignment, which an element that cannot move (std::atomic) rejects.
+  using propagate_on_container_move_assignment = std::true_type;
 
   DefaultAllocator() = default;
   template <typename U>

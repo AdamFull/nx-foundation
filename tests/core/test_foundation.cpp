@@ -2,8 +2,10 @@
 
 #include "core/foundation/core/foundation.h"
 
+#include <atomic>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <thread>
 
 namespace {
@@ -367,6 +369,20 @@ TEST_CASE("foundation: DefaultAllocator round-trips through std::vector") {
   nx::DefaultAllocator<int> a;
   nx::DefaultAllocator<double> b(a);
   CHECK(a == nx::DefaultAllocator<int>(b));
+}
+
+TEST_CASE("foundation: an nx::vector move-assigns by taking the buffer, so "
+          "its elements need not move") {
+  static_assert(std::allocator_traits<nx::DefaultAllocator<int>>::
+                    propagate_on_container_move_assignment::value);
+  nx::vector<std::atomic<u32>> counters(3);
+  nx::vector<std::atomic<u32>> taken(5);
+  taken[4].store(7);
+  const std::atomic<u32> *const buffer = taken.data();
+  counters = std::move(taken);
+  CHECK(counters.size() == 5u);
+  CHECK(counters.data() == buffer);
+  CHECK(counters[4].load() == 7u);
 }
 
 TEST_CASE("foundation: nx::vector and nx::make_shared work with the engine "
