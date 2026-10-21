@@ -52,7 +52,7 @@ toolchain policy foundation itself is built with, for code that wants the same.
 | --- | --- |
 | mimalloc | The allocator (optional). |
 | Tracy | Profiler instrumentation (optional). |
-| minizip-ng, zlib-ng, Zstandard | ZIP archives in the VFS (`ZipDevice`). Their targets (`nx::minizip`, `nx::zstd`, `zlib-ng::zlibstatic`) are there for the parent project too. |
+| minizip-ng, zlib-ng, Zstandard | ZIP archives in the VFS (`ZipDevice`); Zstandard also backs `nx::zstd`. Their targets (`nx::minizip`, `nx::zstd`, `zlib-ng::zlibstatic`) are there for the parent project too. |
 
 Built as the top-level project, the tests run with CTest:
 
@@ -341,6 +341,18 @@ last assignment, a missing section at the end, in the text's own line
 endings, after any byte order mark. Text that does not parse is refused rather
 than rewritten. A key cannot start with `;` or `#`: it would read back as a
 comment.
+
+## Compression
+
+`serialization/zstd.h` reads and writes Zstandard frames (`nx::zstd`).
+`compress` and `decompress` take whole buffers; `compressor` and
+`decompressor` keep their context between calls, which saves setting one up
+for each of many small buffers, and also take a frame in pieces (`begin`,
+`feed`, `finish`). Every frame carries a checksum of its content, so a damaged
+one reads as `Corrupt` rather than as other bytes. Decompressing always names
+the most it may produce: a frame that records a larger size is refused before
+anything is allocated, one that does not is refused as soon as it passes the
+limit. Frames one after another read back as their contents joined.
 
 ## Threading
 

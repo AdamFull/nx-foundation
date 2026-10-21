@@ -139,6 +139,7 @@ set(NX_FOUNDATION_HEADERS
   serialization/resource_bundle.h
   serialization/json_util.h
   serialization/content_length.h
+  serialization/zstd.h
   serialization/nva.h
   serialization/reflect_json.h
   serialization/reflect_binary.h
@@ -231,6 +232,7 @@ set(NX_FOUNDATION_SOURCES
   serialization/json_document.cpp
   serialization/resource_bundle.cpp
   serialization/content_length.cpp
+  serialization/zstd.cpp
   reflection/layout.cpp
   reflection/registry.cpp
   serialization/reflect_json.cpp
@@ -314,7 +316,8 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   target_compile_options(nx_foundation PUBLIC $<$<COMPILE_LANGUAGE:CXX>:/GT>)
 endif()
 
-target_link_libraries(nx_foundation PRIVATE nx::foundation_options nx::minizip)
+target_link_libraries(nx_foundation PRIVATE nx::foundation_options nx::minizip
+  nx::zstd)
 if(NX_FOUNDATION_MIMALLOC)
   target_link_libraries(nx_foundation PUBLIC nx::mimalloc)
 endif()

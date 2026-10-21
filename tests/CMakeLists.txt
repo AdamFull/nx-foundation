@@ -113,6 +113,7 @@ set(NX_FOUNDATION_TEST_SOURCES
   serialization/test_json_util.cpp
   serialization/test_content_length.cpp
   serialization/test_reflect_binary.cpp
+  serialization/test_zstd.cpp
 
   simd/test_simd_arith.cpp
   simd/test_simd_bit.cpp
