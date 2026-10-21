@@ -85,6 +85,7 @@ set(NX_FOUNDATION_HEADERS
   core/foundation.h
   core/handle.h
   core/hash.h
+  core/noise.h
   core/random.h
   core/result.h
   core/scope_guard.h
@@ -198,6 +199,7 @@ set(NX_FOUNDATION_HEADERS
 
 set(NX_FOUNDATION_SOURCES
   core/foundation.cpp
+  core/noise.cpp
   core/random.cpp
   core/sha256.cpp
   fibers/context.cpp

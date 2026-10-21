@@ -426,6 +426,7 @@ non-inlined calls.
 | `nx::sha256` | `core/sha256.h` | The SHA-256 digest (FIPS 180-4) of a byte span, for identities and checks such as PKCE; not a password hash. |
 | `nx::duration` / `nx::timestamp` / `nx::stopwatch` | `core/time.h` | Signed nanosecond spans and monotonic time points, a stopwatch, and `scoped_micros` that writes a scope's length on exit. |
 | `nx::fixed` | `core/fixed.h` | Q16.16 fixed point whose overflow wraps as defined behaviour, so every peer of a rollback session computes the same bits. |
+| `nx::noise` | `core/noise.h` | Value, simplex and cellular noise in 2D and 3D in integer arithmetic only, so a seed gives the same world on every CPU; Q16.16 results, `fbm` for octaves. |
 | `nx::fixed_step` | `core/fixed_step.h` | A fixed-rate simulation clock: how many steps a frame runs, capped by measured step cost, with the remainder as an interpolation `alpha()`. |
 
 The owning callable wrappers convert implicitly from any callable invocable with their signature, a void signature discards the result, and a null function pointer or `nullptr` makes them empty (`valid()`, `== nullptr`, `reset()`).

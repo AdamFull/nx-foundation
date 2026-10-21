@@ -66,6 +66,7 @@ set(NX_FOUNDATION_TEST_SOURCES
   core/test_handle.cpp
   core/test_scope_guard.cpp
   core/test_callable.cpp
+  core/test_noise.cpp
   core/test_random.cpp
   core/test_sha256.cpp
   core/test_time.cpp
