@@ -46,10 +46,17 @@ else()
       endif()
     endif()
 
+    set(case_timeout ${TEST_TIMEOUT})
+    foreach(pattern IN LISTS TEST_SLOW)
+      if(case_name MATCHES "${pattern}")
+        set(case_timeout ${TEST_SLOW_TIMEOUT})
+      endif()
+    endforeach()
+
     string(APPEND content
       "add_test(\"${TEST_PREFIX}${case_name}\" \"${TEST_EXECUTABLE}\" \"--test-case=${case_name}\")\n")
     string(APPEND content
-      "set_tests_properties(\"${TEST_PREFIX}${case_name}\" PROPERTIES LABELS \"${TEST_LABELS}\" TIMEOUT ${TEST_TIMEOUT} SKIP_RETURN_CODE 77)\n")
+      "set_tests_properties(\"${TEST_PREFIX}${case_name}\" PROPERTIES LABELS \"${TEST_LABELS}\" TIMEOUT ${case_timeout} SKIP_RETURN_CODE 77)\n")
     if(NOT TEST_ENVIRONMENT STREQUAL "")
       string(APPEND content
         "set_tests_properties(\"${TEST_PREFIX}${case_name}\" PROPERTIES ENVIRONMENT \"${TEST_ENVIRONMENT}\")\n")

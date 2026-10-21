@@ -8,15 +8,19 @@ target_link_libraries(nxtest PRIVATE nx::foundation_options)
 set_target_properties(nxtest PROPERTIES FOLDER "tests")
 
 # nxtest_discover_tests(<target> [PREFIX <p>] [LABELS <l>...] [TIMEOUT <s>]
-#   [DISCOVERY_TIMEOUT <s>] [ENVIRONMENT <VAR=value>] [FILTER <regex>...]): one
-# ctest test per case of <target>, named <p><case>. A target may be registered
-# more than once under different prefixes, say to run its cases again with
-# ENVIRONMENT set; FILTER keeps only the cases whose names match one of its
-# patterns.
+#   [DISCOVERY_TIMEOUT <s>] [ENVIRONMENT <VAR=value>] [FILTER <regex>...]
+#   [SLOW <regex>...] [SLOW_TIMEOUT <s>]): one ctest test per case of <target>,
+# named <p><case>. A target may be registered more than once under different
+# prefixes, say to run its cases again with ENVIRONMENT set; FILTER keeps only
+# the cases whose names match one of its patterns. Cases matching a SLOW
+# pattern get SLOW_TIMEOUT (600 s unless given) instead of TIMEOUT.
 function(nxtest_discover_tests target)
-    cmake_parse_arguments(ARG "" "PREFIX;TIMEOUT;DISCOVERY_TIMEOUT;ENVIRONMENT" "LABELS;FILTER" ${ARGN})
+    cmake_parse_arguments(ARG "" "PREFIX;TIMEOUT;SLOW_TIMEOUT;DISCOVERY_TIMEOUT;ENVIRONMENT" "LABELS;FILTER;SLOW" ${ARGN})
     if (NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 120)
+    endif ()
+    if (NOT ARG_SLOW_TIMEOUT)
+        set(ARG_SLOW_TIMEOUT 600)
     endif ()
     if (NOT ARG_DISCOVERY_TIMEOUT)
         set(ARG_DISCOVERY_TIMEOUT 30)
@@ -40,6 +44,8 @@ function(nxtest_discover_tests target)
             -D "TEST_DISCOVERY_TIMEOUT=${ARG_DISCOVERY_TIMEOUT}"
             -D "TEST_ENVIRONMENT=${ARG_ENVIRONMENT}"
             -D "TEST_FILTER=${ARG_FILTER}"
+            -D "TEST_SLOW=${ARG_SLOW}"
+            -D "TEST_SLOW_TIMEOUT=${ARG_SLOW_TIMEOUT}"
             -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/framework/nxtest_discover.cmake"
             COMMENT "Discovering nxtest cases in ${target}${ARG_PREFIX}"
             VERBATIM)
