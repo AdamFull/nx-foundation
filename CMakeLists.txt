@@ -170,6 +170,7 @@ set(NX_FOUNDATION_HEADERS
   threading/cancellation.h
   threading/sync.h
   threading/thread.h
+  threading/completion_queue.h
   threading/serial_queue.h
   threading/thread_pool.h
   threading/workload.h

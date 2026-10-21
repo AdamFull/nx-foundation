@@ -135,6 +135,7 @@ set(NX_FOUNDATION_TEST_SOURCES
   threading/test_thread.cpp
   threading/test_thread_pool.cpp
   threading/test_serial_queue.cpp
+  threading/test_completion_queue.cpp
   threading/test_parallel_collect.cpp
 
   platform/test_filesystem.cpp
