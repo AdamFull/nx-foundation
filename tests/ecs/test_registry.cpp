@@ -1705,3 +1705,38 @@ TEST_CASE("ecs: an unregistered component type throws in every build") {
   CHECK_THROWS_AS(f.reg.emplace<Unregistered>(e, Unregistered{}),
                   std::logic_error);
 }
+
+TEST_CASE("ecs: a view walked in ranges visits what each visits, in order, "
+          "once") {
+  fixture f;
+  for (int i = 0; i < 300; ++i) {
+    const entity_t e = f.reg.create();
+    if (i % 3 != 0)
+      f.reg.emplace<Position>(e, Position{static_cast<float>(i), 0});
+    if (i % 2 == 0)
+      f.reg.emplace<Velocity>(e);
+    if (i % 7 == 0)
+      f.reg.emplace<Frozen>(e);
+  }
+  auto view = f.reg.view<Position, Velocity>();
+  view.exclude<Frozen>(f.reg);
+  std::vector<entity_t> whole;
+  view.each([&](entity_t e, Position &, Velocity &) { whole.push_back(e); });
+  REQUIRE_FALSE(whole.empty());
+
+  const usize count = view.size_hint();
+  for (const usize size : {usize{1}, usize{13}, count, count + 5}) {
+    std::vector<entity_t> pieces;
+    for (usize first = 0; first < count; first += size)
+      view.each_in(first, first + size,
+                   [&](entity_t e, Position &p, Velocity &) {
+                     CHECK(f.reg.get<Position>(e) == p);
+                     pieces.push_back(e);
+                   });
+    CHECK(pieces == whole);
+  }
+  std::vector<entity_t> past;
+  view.each_in(count, count + 10,
+               [&](entity_t e, Position &, Velocity &) { past.push_back(e); });
+  CHECK(past.empty());
+}

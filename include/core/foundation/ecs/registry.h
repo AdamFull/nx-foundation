@@ -356,6 +356,18 @@ public:
     walk_from(leading_index(), fn, std::index_sequence_for<T...>{});
   }
 
+  /// each() over positions [first, last) of the storage it walks, of which
+  /// there are size_hint(): disjoint ranges may be walked on several threads
+  /// at once. fn may not remove or destroy anything, which would move
+  /// entities between ranges.
+  template <typename Fn>
+  void each_in(const usize first, const usize last, Fn &&fn) const {
+    if (!all_present())
+      return;
+    range_from(leading_index(), first, last, fn,
+               std::index_sequence_for<T...>{});
+  }
+
 private:
   using exclude_alloc = typename std::allocator_traits<
       allocator_type>::template rebind_alloc<base_ptr>;
@@ -389,6 +401,22 @@ private:
   template <typename Fn, usize... I>
   void walk_from(const usize lead, Fn &fn, std::index_sequence<I...>) const {
     (void)((I == lead ? (walk<I>(fn), true) : false) || ...);
+  }
+
+  template <typename Fn, usize... I>
+  void range_from(const usize lead, const usize first, const usize last, Fn &fn,
+                  std::index_sequence<I...>) const {
+    (void)((I == lead ? (walk_range<I>(first, last, fn), true) : false) || ...);
+  }
+
+  template <usize L, typename Fn>
+  void walk_range(const usize first, const usize last, Fn &fn) const {
+    const auto &lead = std::get<L>(m_storages)->set();
+    for (usize i = first, n = nx::min(last, lead.size()); i < n; ++i) {
+      const entity_type e = lead.handle_at(i);
+      if (!excluded(e))
+        call<L>(fn, e, i, std::index_sequence_for<T...>{});
+    }
   }
 
   // In storage order, which callers rely on, over the entities there when it

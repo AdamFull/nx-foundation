@@ -123,8 +123,11 @@ add/get/remove, transient views and cached queries, a built-in parent-child
 hierarchy, and statistics. Built on `nx::sparse_set`. Components must be
 registered before use: an unregistered type throws `std::logic_error`. A
 view's or cached query's `each` callback may remove or destroy the entity it
-is given. See the header for the full API, invalidation rules, destroy
-policies, and thread-safety model.
+is given. A view's `each_in(first, last, fn)` walks positions of the storage
+`each` walks (`size_hint()` of them), so disjoint ranges may be walked on
+several threads at once; its callback may not remove or destroy. See the
+header for the full API, invalidation rules, destroy policies, and
+thread-safety model.
 
 ```cpp
 #include "core/foundation/ecs/registry.h"
