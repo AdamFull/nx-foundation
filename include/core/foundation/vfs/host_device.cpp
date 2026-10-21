@@ -52,6 +52,9 @@ public:
       FileInfo info;
       info.exists = true;
       info.is_directory = e.type == nx::fs::file_type::directory;
+      const nx::fs::file_stat s = nx::fs::stat_file(e.path.view());
+      info.size = info.is_directory ? 0 : s.size;
+      info.mtime_ns = s.mtime_ns;
       cb(nx::fs::path::filename(e.path.view()), info);
     }
     return {};
@@ -81,7 +84,8 @@ public:
       if (auto r = nx::fs::create_directories(parent); !r)
         return r;
     }
-    return nx::fs::file_write_atomic(path.view(), data);
+    return nx::fs::file_write_atomic(path.view(), data,
+                                     nx::fs::durability::flushed);
   }
 
   io_result<void> remove(const path_view rel) override {

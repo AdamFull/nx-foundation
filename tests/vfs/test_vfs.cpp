@@ -196,6 +196,30 @@ TEST_CASE("vfs host device writes atomically and reads back") {
   }
 }
 
+TEST_CASE("vfs host device lists its entries with their sizes and times") {
+  temp_dir dir("host_list");
+  scoped_vfs guard;
+  vfs::mount("/data", vfs::make_host_device(dir.str()), 0);
+  REQUIRE(vfs::write("/data/small.bin", bytes_of("abc")).has_value());
+  REQUIRE(vfs::write("/data/large.bin", bytes_of("abcdefghij")).has_value());
+  REQUIRE(vfs::create_directories("/data/folder").has_value());
+
+  const auto entries = vfs::list("/data");
+  REQUIRE(entries.has_value());
+  REQUIRE(entries->size() == 3u);
+  for (const vfs::DirEntry &entry : *entries) {
+    const vfs::FileInfo stat =
+        vfs::stat(nx::fs::path::join("/data", entry.name.view()).view());
+    CHECK(entry.info.exists);
+    CHECK(entry.info.is_directory == (entry.name == "folder"));
+    CHECK(entry.info.size == stat.size);
+    CHECK(entry.info.mtime_ns == stat.mtime_ns);
+    CHECK(entry.info.mtime_ns != 0u);
+    if (entry.name == "large.bin")
+      CHECK(entry.info.size == 10u);
+  }
+}
+
 TEST_CASE("vfs read-only host device serves files without accepting writes") {
   temp_dir dir("host_ro");
   REQUIRE(

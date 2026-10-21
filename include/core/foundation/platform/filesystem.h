@@ -377,13 +377,22 @@ private:
   std::intptr_t m_native = NONE;
 };
 
+/// How far a write goes before it returns.
+enum class durability : u8 {
+  /// To the operating system: the process may crash, the machine may not.
+  cached,
+  /// To storage: a power cut leaves the old file or the new one, whole.
+  flushed,
+};
+
 /// Stages a file beside its destination and publishes it with one rename.
 ///
 /// Write the complete output to temporary_path(), then call commit(). If the
 /// object is destroyed first, the temporary file is removed and any existing
 /// destination is left untouched. The destination's parent must already
-/// exist. Publication is atomic to readers on supported host filesystems, but
-/// does not imply crash-durable storage flushing.
+/// exist. Publication is atomic to readers on supported host filesystems;
+/// a flushed commit also puts the file, and on POSIX its directory entry,
+/// on storage.
 class [[nodiscard]] staged_file {
 public:
   explicit staged_file(path_view destination);
@@ -397,7 +406,7 @@ public:
   [[nodiscard]] path_view temporary_path() const noexcept {
     return m_temporary.view();
   }
-  [[nodiscard]] io_result<void> commit();
+  [[nodiscard]] io_result<void> commit(durability durable = durability::cached);
 
 private:
   string m_destination;
@@ -408,8 +417,9 @@ private:
                                          std::span<const u8> data);
 [[nodiscard]] io_result<void> file_write_text(path_view path, string_view text);
 /// Atomically replaces the destination after the complete payload is written.
-[[nodiscard]] io_result<void> file_write_atomic(path_view path,
-                                                std::span<const u8> data);
+[[nodiscard]] io_result<void>
+file_write_atomic(path_view path, std::span<const u8> data,
+                  durability durable = durability::cached);
 /// Text equivalent of file_write_atomic().
 [[nodiscard]] io_result<void> file_write_text_atomic(path_view path,
                                                      string_view text);

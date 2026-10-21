@@ -668,6 +668,31 @@ TEST_CASE("fs: staged files publish completely or preserve the destination") {
   CHECK(*fs::file_read_text(fs::path_view(destination)) == "replacement");
 }
 
+TEST_CASE("fs: a flushed atomic write publishes as a cached one does and "
+          "leaves nothing staged") {
+  const temp_dir dir("flushed_write");
+  const nx::string destination = dir.child("save.bin");
+  const u8 first[] = {1, 2, 3};
+  const u8 second[] = {4, 5};
+  REQUIRE(fs::file_write_atomic(fs::path_view(destination), first,
+                                fs::durability::flushed)
+              .has_value());
+  REQUIRE(fs::file_write_atomic(fs::path_view(destination), second,
+                                fs::durability::flushed)
+              .has_value());
+  const auto read = fs::file_read(fs::path_view(destination));
+  REQUIRE(read.has_value());
+  CHECK(read->size() == 2u);
+  CHECK((*read)[0] == 4u);
+  const auto entries = fs::directory_entries(dir.view());
+  REQUIRE(entries.has_value());
+  CHECK(entries->size() == 1u);
+
+  fs::staged_file missing{fs::path_view(destination)};
+  CHECK_FALSE(missing.commit(fs::durability::flushed).has_value());
+  CHECK(fs::file_read(fs::path_view(destination))->size() == 2u);
+}
+
 TEST_CASE("fs: atomic copy replaces only after the source is readable") {
   const temp_dir dir("atomic_copy");
   const nx::string source = dir.child("source.bin");

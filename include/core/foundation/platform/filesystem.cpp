@@ -221,6 +221,22 @@ struct wide_path {
   return nx::cast<usize>(s - path);
 }
 
+io_result<void> flush_file(const path_view path) {
+  const wide_path wp(path);
+  if (!wp.ok)
+    return err(file_error{io_error::InvalidArgument, 0});
+  handle_guard g{::CreateFileW(wp.ptr, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
+  if (g.get() == INVALID_HANDLE_VALUE)
+    return err(map_last_error(io_error::OpenFailed));
+  if (!::FlushFileBuffers(g.get()))
+    return err(map_last_error(io_error::WriteFailed));
+  return {};
+}
+
+// NTFS journals the rename itself.
+io_result<void> flush_directory(const path_view) { return {}; }
+
 #elif defined(NX_PLATFORM_POSIX)
 
 file_error map_errno(io_error fallback) noexcept {
@@ -311,6 +327,40 @@ i32 open_retry(const char *path, i32 flags, mode_t mode) noexcept {
       continue;
     return fd;
   }
+}
+
+/// Puts what @p fd holds on storage. EINVAL is a file system that keeps
+/// nothing to flush, for a directory.
+io_result<void> flush_descriptor(const i32 fd, const bool directory) {
+#if defined(NX_PLATFORM_APPLE)
+  // fsync stops at the drive's cache on Apple systems.
+  if (!directory && ::fcntl(fd, F_FULLFSYNC) == 0)
+    return {};
+#endif
+  while (::fsync(fd) != 0) {
+    if (errno == EINTR)
+      continue;
+    if (directory && errno == EINVAL)
+      return {};
+    return err(map_errno(io_error::WriteFailed));
+  }
+  return {};
+}
+
+io_result<void> flush_file(const path_view path) {
+  cpath cp(path);
+  fd_guard g{open_retry(cp.ptr, O_RDONLY | O_CLOEXEC, 0)};
+  if (g.get() < 0)
+    return err(map_errno(io_error::OpenFailed));
+  return flush_descriptor(g.get(), false);
+}
+
+io_result<void> flush_directory(const path_view path) {
+  cpath cp(path);
+  fd_guard g{open_retry(cp.ptr, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0)};
+  if (g.get() < 0)
+    return err(map_errno(io_error::OpenFailed));
+  return flush_descriptor(g.get(), true);
 }
 
 #endif
@@ -1464,21 +1514,30 @@ staged_file::~staged_file() {
     (void)remove(m_temporary.view());
 }
 
-io_result<void> staged_file::commit() {
+io_result<void> staged_file::commit(const durability durable) {
   if (m_temporary.empty() || m_destination.empty())
     return err(file_error{io_error::InvalidArgument, 0});
+  if (durable == durability::flushed)
+    if (auto flushed = flush_file(m_temporary.view()); !flushed)
+      return flushed;
   auto published = rename(m_temporary.view(), m_destination.view());
-  if (published)
-    m_temporary.clear();
-  return published;
+  if (!published)
+    return published;
+  m_temporary.clear();
+  if (durable == durability::flushed) {
+    const string_view parent = path::parent_path(m_destination.view());
+    return flush_directory(parent.empty() ? string_view(".") : parent);
+  }
+  return {};
 }
 
 io_result<void> file_write_atomic(const path_view path,
-                                  const std::span<const u8> data) {
+                                  const std::span<const u8> data,
+                                  const durability durable) {
   staged_file staged(path);
   if (auto written = file_write(staged.temporary_path(), data); !written)
     return written;
-  return staged.commit();
+  return staged.commit(durable);
 }
 
 io_result<void> copy_file_atomic(const path_view from, const path_view to) {
