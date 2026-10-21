@@ -34,11 +34,26 @@ else()
     if(case_name STREQUAL "")
       continue()
     endif()
+    if(NOT TEST_FILTER STREQUAL "")
+      set(matched FALSE)
+      foreach(pattern IN LISTS TEST_FILTER)
+        if(case_name MATCHES "${pattern}")
+          set(matched TRUE)
+        endif()
+      endforeach()
+      if(NOT matched)
+        continue()
+      endif()
+    endif()
 
     string(APPEND content
       "add_test(\"${TEST_PREFIX}${case_name}\" \"${TEST_EXECUTABLE}\" \"--test-case=${case_name}\")\n")
     string(APPEND content
       "set_tests_properties(\"${TEST_PREFIX}${case_name}\" PROPERTIES LABELS \"${TEST_LABELS}\" TIMEOUT ${TEST_TIMEOUT} SKIP_RETURN_CODE 77)\n")
+    if(NOT TEST_ENVIRONMENT STREQUAL "")
+      string(APPEND content
+        "set_tests_properties(\"${TEST_PREFIX}${case_name}\" PROPERTIES ENVIRONMENT \"${TEST_ENVIRONMENT}\")\n")
+    endif()
   endwhile()
 endif()
 

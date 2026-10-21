@@ -7,8 +7,14 @@ target_include_directories(nxtest PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(nxtest PRIVATE nx::foundation_options)
 set_target_properties(nxtest PROPERTIES FOLDER "tests")
 
+# nxtest_discover_tests(<target> [PREFIX <p>] [LABELS <l>...] [TIMEOUT <s>]
+#   [DISCOVERY_TIMEOUT <s>] [ENVIRONMENT <VAR=value>] [FILTER <regex>...]): one
+# ctest test per case of <target>, named <p><case>. A target may be registered
+# more than once under different prefixes, say to run its cases again with
+# ENVIRONMENT set; FILTER keeps only the cases whose names match one of its
+# patterns.
 function(nxtest_discover_tests target)
-    cmake_parse_arguments(ARG "" "PREFIX;TIMEOUT;DISCOVERY_TIMEOUT" "LABELS" ${ARGN})
+    cmake_parse_arguments(ARG "" "PREFIX;TIMEOUT;DISCOVERY_TIMEOUT;ENVIRONMENT" "LABELS;FILTER" ${ARGN})
     if (NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 120)
     endif ()
@@ -21,7 +27,8 @@ function(nxtest_discover_tests target)
         return()
     endif ()
 
-    set(ctest_file "${CMAKE_CURRENT_BINARY_DIR}/${target}_tests.cmake")
+    string(MAKE_C_IDENTIFIER "${ARG_PREFIX}" variant)
+    set(ctest_file "${CMAKE_CURRENT_BINARY_DIR}/${target}${variant}_tests.cmake")
 
     add_custom_command(TARGET ${target} POST_BUILD
             COMMAND "${CMAKE_COMMAND}"
@@ -31,8 +38,10 @@ function(nxtest_discover_tests target)
             -D "TEST_LABELS=${ARG_LABELS}"
             -D "TEST_TIMEOUT=${ARG_TIMEOUT}"
             -D "TEST_DISCOVERY_TIMEOUT=${ARG_DISCOVERY_TIMEOUT}"
+            -D "TEST_ENVIRONMENT=${ARG_ENVIRONMENT}"
+            -D "TEST_FILTER=${ARG_FILTER}"
             -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/framework/nxtest_discover.cmake"
-            COMMENT "Discovering nxtest cases in ${target}"
+            COMMENT "Discovering nxtest cases in ${target}${ARG_PREFIX}"
             VERBATIM)
 
     if (NOT EXISTS "${ctest_file}")
