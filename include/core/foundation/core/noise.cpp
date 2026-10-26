@@ -1,6 +1,7 @@
 #include "core/foundation/core/noise.h"
 
 #include <algorithm>
+#include <array>
 
 namespace nx::noise {
 
@@ -59,12 +60,44 @@ constexpr i64 HALF = ONE / 2;
   return root;
 }
 
-constexpr i8 GRADIENTS_2D[8][2] = {{1, 1}, {-1, 1}, {1, -1}, {-1, -1},
-                                   {1, 0}, {-1, 0}, {0, 1},  {0, -1}};
+// Unit gradients, Q16.16. Where both ends of a simplex edge have gradients
+// square to it, the noise is zero all along the edge, and a field cut near
+// zero draws it as a straight line. No gradient here is square to an edge:
+// in 2D the edges run at -15, 45 and 105 degrees, in 3D along (1, 1, 1),
+// (5, -1, -1) and (2, 2, -1) in any order and sign. The sums are scaled to
+// the spread the earlier, axis-bound gradients gave.
 
-constexpr i8 GRADIENTS_3D[12][3] = {
-    {1, 1, 0},  {-1, 1, 0},  {1, -1, 0}, {-1, -1, 0}, {1, 0, 1},  {-1, 0, 1},
-    {1, 0, -1}, {-1, 0, -1}, {0, 1, 1},  {0, -1, 1},  {0, 1, -1}, {0, -1, -1}};
+/// 24 directions, 7.5 degrees off the edges' normals.
+constexpr auto GRADIENTS_2D = [] {
+  constexpr i32 QUADRANT[6][2] = {{64975, 8554},  {60547, 25080},
+                                  {51993, 39896}, {39896, 51993},
+                                  {25080, 60547}, {8554, 64975}};
+  std::array<std::array<i32, 2>, 24> out{};
+  for (usize k = 0; k < 6; ++k) {
+    const i32 x = QUADRANT[k][0];
+    const i32 y = QUADRANT[k][1];
+    out[k] = {x, y};
+    out[k + 6] = {-y, x};
+    out[k + 12] = {-x, -y};
+    out[k + 18] = {y, -x};
+  }
+  return out;
+}();
+
+/// (1, 2, 4) in each order and sign.
+constexpr auto GRADIENTS_3D = [] {
+  constexpr i32 PARTS[3] = {14301, 28602, 57205};
+  constexpr usize ORDERS[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2},
+                                  {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+  std::array<std::array<i32, 3>, 48> out{};
+  for (usize order = 0; order < 6; ++order)
+    for (usize signs = 0; signs < 8; ++signs)
+      for (usize axis = 0; axis < 3; ++axis) {
+        const i32 part = PARTS[ORDERS[order][axis]];
+        out[order * 8 + signs][axis] = (signs >> axis & 1u) != 0 ? -part : part;
+      }
+  return out;
+}();
 
 [[nodiscard]] i64 corner(const u32 seed, const i64 i, const i64 j, const i64 dx,
                          const i64 dy) noexcept {
@@ -73,8 +106,9 @@ constexpr i8 GRADIENTS_3D[12][3] = {
     return 0;
   t = (t * t) >> 16;
   t = (t * t) >> 16;
-  const i8 *const g = GRADIENTS_2D[hash(seed, wrap(i), wrap(j)) & 7u];
-  return (t * (g[0] * dx + g[1] * dy)) >> 16;
+  const auto &g =
+      GRADIENTS_2D[hash(seed, wrap(i), wrap(j)) % GRADIENTS_2D.size()];
+  return (t * ((g[0] * dx + g[1] * dy) >> 16)) >> 16;
 }
 
 // 0.6 in Q16.16, the reach of a 3D simplex corner.
@@ -87,8 +121,9 @@ constexpr i64 REACH_3D = 39322;
     return 0;
   t = (t * t) >> 16;
   t = (t * t) >> 16;
-  const i8 *const g = GRADIENTS_3D[hash(seed, wrap(i), wrap(j), wrap(k)) % 12u];
-  return (t * (g[0] * dx + g[1] * dy + g[2] * dz)) >> 16;
+  const auto &g =
+      GRADIENTS_3D[hash(seed, wrap(i), wrap(j), wrap(k)) % GRADIENTS_3D.size()];
+  return (t * ((g[0] * dx + g[1] * dy + g[2] * dz) >> 16)) >> 16;
 }
 
 } // namespace
@@ -148,7 +183,7 @@ i32 simplex(const u32 seed, const i32 x, const i32 y,
       corner(seed, i + i1, j + j1, x0 - (i1 << 16) + UNSKEW,
              y0 - (j1 << 16) + UNSKEW) +
       corner(seed, i + 1, j + 1, x0 - ONE + 2 * UNSKEW, y0 - ONE + 2 * UNSKEW);
-  return clamp_one(70 * sum);
+  return clamp_one(86 * sum);
 }
 
 i32 simplex(const u32 seed, const i32 x, const i32 y, const i32 z,
@@ -190,7 +225,7 @@ i32 simplex(const u32 seed, const i32 x, const i32 y, const i32 z,
       corner(seed, i + i2, j + j2, k + k2, x0 - (i2 << 16) + 2 * SIXTH,
              y0 - (j2 << 16) + 2 * SIXTH, z0 - (k2 << 16) + 2 * SIXTH) +
       corner(seed, i + 1, j + 1, k + 1, x0 - HALF, y0 - HALF, z0 - HALF);
-  return clamp_one(32 * sum);
+  return clamp_one(45 * sum);
 }
 
 cell cellular(const u32 seed, const i32 x, const i32 y,

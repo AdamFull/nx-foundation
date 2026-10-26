@@ -3,7 +3,9 @@
 #include "core/foundation/containers/hash_set.h"
 #include "core/foundation/core/noise.h"
 
+#include <array>
 #include <cstdlib>
+#include <utility>
 
 namespace noise = nx::noise;
 
@@ -35,6 +37,21 @@ template <typename F> [[nodiscard]] i32 steepest(F &&f) {
   return most;
 }
 
+/// Whether @p f is near zero a quarter, half and three quarters of the way
+/// from @p from to @p to.
+template <usize N, typename F>
+[[nodiscard]] bool flat_between(const std::array<i64, N> &from,
+                                const std::array<i64, N> &to, F &&f) {
+  for (i64 q = 1; q < 4; ++q) {
+    std::array<i32, N> at{};
+    for (usize a = 0; a < N; ++a)
+      at[a] = static_cast<i32>(from[a] + (to[a] - from[a]) * q / 4);
+    if (std::abs(f(at)) >= noise::ONE / 64)
+      return false;
+  }
+  return true;
+}
+
 } // namespace
 
 TEST_CASE("noise: a seed and a coordinate give the same bits everywhere") {
@@ -47,10 +64,10 @@ TEST_CASE("noise: a seed and a coordinate give the same bits everywhere") {
         }) == 713502327121048357ull);
   CHECK(digest([](i32 x, i32 y, i32 p) {
           return noise::simplex(SEED, x, y, p);
-        }) == 10974252848251581710ull);
+        }) == 6749378938950155345ull);
   CHECK(digest([](i32 x, i32 y, i32 p) {
           return noise::simplex(SEED, x, y, x - y, p);
-        }) == 12676465757206159923ull);
+        }) == 7663130524761051966ull);
   CHECK(digest([](i32 x, i32 y, i32 p) {
           const noise::cell c = noise::cellular(SEED, x, y, p);
           return c.nearest ^ c.second ^ static_cast<i32>(c.id);
@@ -118,6 +135,42 @@ TEST_CASE("noise: neighbouring samples differ by little, across zero too") {
             }) <= distance_limit);
     }
   }
+}
+
+TEST_CASE("noise: no simplex edge lies near zero along its length") {
+  // At a period of ONE a coordinate is its own lattice position, Q16.16,
+  // so the samples fall on the edges exactly.
+  u32 flat_2d = 0;
+  for (i64 i = 0; i < 48; ++i)
+    for (i64 j = 0; j < 48; ++j) {
+      // (3 - sqrt(3)) / 6, Q16.16, as the noise unskews by.
+      const auto node = [&](const i64 di, const i64 dj) {
+        const i64 t = (i + di + j + dj) * 13849;
+        return std::array<i64, 2>{((i + di) << 16) - t, ((j + dj) << 16) - t};
+      };
+      for (const auto &[di, dj] : {std::pair{1, 0}, {0, 1}, {1, 1}})
+        flat_2d += flat_between(node(0, 0), node(di, dj), [](const auto &p) {
+          return noise::simplex(SEED, p[0], p[1], noise::ONE);
+        });
+    }
+  CHECK(flat_2d == 0u);
+  u32 flat_3d = 0;
+  for (i64 i = 0; i < 10; ++i)
+    for (i64 j = 0; j < 10; ++j)
+      for (i64 k = 0; k < 10; ++k) {
+        const auto node = [&](const i64 di, const i64 dj, const i64 dk) {
+          const i64 t = ((i + di + j + dj + k + dk) << 16) / 6;
+          return std::array<i64, 3>{((i + di) << 16) - t, ((j + dj) << 16) - t,
+                                    ((k + dk) << 16) - t};
+        };
+        for (i64 d = 1; d < 8; ++d)
+          flat_3d += flat_between(
+              node(0, 0, 0), node(d & 1, d >> 1 & 1, d >> 2 & 1),
+              [](const auto &p) {
+                return noise::simplex(SEED, p[0], p[1], p[2], noise::ONE);
+              });
+      }
+  CHECK(flat_3d == 0u);
 }
 
 TEST_CASE("noise: another seed gives another field") {
