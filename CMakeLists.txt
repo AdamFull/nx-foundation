@@ -79,6 +79,7 @@ add_subdirectory(third_party 3p)
 
 set(NX_FOUNDATION_HEADERS
   core/callable.h
+  core/config.h
   core/enum.h
   core/fixed.h
   core/fixed_step.h
