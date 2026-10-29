@@ -189,7 +189,8 @@ struct vec_ops<T, abi_vector<Bytes>>
   static constexpr bool sve_ok = false;
 #endif
 
-  static constexpr S broadcast(T x) { return S{} + static_cast<E>(x); }
+  // x - 0 is x exactly; 0 + x would turn -0 into +0.
+  static constexpr S broadcast(T x) { return static_cast<E>(x) - S{}; }
   static constexpr T get(const S &a, int i) { return static_cast<T>(a[i]); }
   template <class G> static constexpr S generate(G &&g) {
     return [&]<int... I>(std::integer_sequence<int, I...>) {

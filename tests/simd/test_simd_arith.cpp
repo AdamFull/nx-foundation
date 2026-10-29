@@ -229,3 +229,19 @@ TEST_CASE("simd: shifts by a count and by a vector are told apart") {
   check_lanes("i8 << 7", sd::vec<i8, 16>(i8(3)) << 7,
               [](int) { return i8(-128); });
 }
+
+template <class T, int N> void broadcast_negative_zero() {
+  const sd::vec<T, N> v(T(-0.0));
+  check_lanes("broadcast -0", v, [](int) { return T(-0.0); });
+  for (int i = 0; i < N; ++i)
+    CHECK(std::signbit(v[i]));
+}
+
+TEST_CASE("simd arith: a broadcast keeps the sign of zero") {
+  broadcast_negative_zero<float, 1>();
+  broadcast_negative_zero<float, 4>();
+  broadcast_negative_zero<float, 8>();
+  broadcast_negative_zero<float, 16>();
+  broadcast_negative_zero<double, 2>();
+  broadcast_negative_zero<double, 4>();
+}
