@@ -125,6 +125,13 @@ set(NX_FOUNDATION_TEST_SOURCES
   simd/test_simd_ops.cpp
   simd/test_simd_pipeline.cpp
 
+  math/test_math_determinism.cpp
+  math/test_math_matrix.cpp
+  math/test_math_quaternion.cpp
+  math/test_math_register.cpp
+  math/test_math_transform.cpp
+  math/test_math_vector.cpp
+
   fibers/test_context.cpp
   fibers/test_scheduler.cpp
   fibers/test_stack.cpp
@@ -195,11 +202,33 @@ function(nx_add_simd_tests target prefix)
   nxtest_discover_tests(${target} PREFIX "${prefix}" LABELS foundation TIMEOUT 120)
 endfunction()
 
+# The math tests again on the scalar backend, and wherever the simd tests run
+# on their own.
+set(NX_MATH_TEST_SOURCES
+  math/test_math_determinism.cpp
+  math/test_math_matrix.cpp
+  math/test_math_quaternion.cpp
+  math/test_math_register.cpp
+  math/test_math_transform.cpp
+  math/test_math_vector.cpp)
+
+function(nx_add_math_tests target prefix)
+  add_executable(${target} ${NX_MATH_TEST_SOURCES})
+  target_link_libraries(${target}
+    PRIVATE nx::test nx::foundation nx::foundation_options)
+  target_compile_options(${target} PRIVATE ${ARGN})
+  set_target_properties(${target} PROPERTIES FOLDER "tests")
+  nxtest_discover_tests(${target} PREFIX "${prefix}" LABELS foundation TIMEOUT 120)
+endfunction()
+
+nx_add_math_tests(nx_math_scalar_tests "scalar: " -DNX_MATH_FORCE_SCALAR=1)
+
 nx_add_simd_tests(nx_simd_fixed_tests "fixed: " -DNX_SIMD_FORCE_FIXED=1)
 # A target device may not run the whole foundation suite; give it the simd
 # tests on their own.
 if(CMAKE_CROSSCOMPILING)
   nx_add_simd_tests(nx_simd_tests "")
+  nx_add_math_tests(nx_math_tests "")
 endif()
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64|amd64)$" AND NOT CMAKE_CROSSCOMPILING)
@@ -230,6 +259,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64|amd64)$" AND NOT CMAKE_CROSSCO
   unset(CMAKE_REQUIRED_QUIET)
   if(NX_FOUNDATION_HOST_RUNS_AVX2)
     nx_add_simd_tests(nx_simd_avx2_tests "avx2: " ${_nx_avx2_flags})
+    nx_add_math_tests(nx_math_avx2_tests "math avx2: " ${_nx_avx2_flags})
   endif()
   unset(_nx_avx2_flags)
 endif()

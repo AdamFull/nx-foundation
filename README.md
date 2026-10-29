@@ -66,7 +66,7 @@ ctest --test-dir build -C Debug
 
 | Folder (under `include/core/foundation/`) | Scope |
 | --- | --- |
-| `core/` | Platform/compiler detection, allocators, and the primitives everything else builds on (`foundation.h`, `handle.h`, `hash.h`, `result.h`, `scope_guard.h`, `callable.h`, `enum.h`, `random.h`, `sha256.h`, `time.h`, `fixed.h`, `fixed_step.h`, `type_index.h`). |
+| `core/` | Platform/compiler detection (`config.h`, cheap to include), allocators, and the primitives everything else builds on (`foundation.h`, `handle.h`, `hash.h`, `result.h`, `scope_guard.h`, `callable.h`, `enum.h`, `random.h`, `sha256.h`, `time.h`, `fixed.h`, `fixed_step.h`, `type_index.h`). |
 | `containers/` | Custom container types. |
 | `strings/` | UTF-8 string, string view, `std::format` integration, interned ids. |
 | `fibers/` | Stackful context switching and fiber stacks, the base of the fiber job system. |
@@ -76,6 +76,7 @@ ctest --test-dir build -C Debug
 | `serialization/` | Data interchange helpers, including declarative command-line parsing. |
 | `ecs/` | The entity-component-system registry. |
 | `simd/` | Data-parallel types: C++26 `std::simd` for C++20. |
+| `math/` | Slang-named vectors, matrices and quaternions for graphics and games. |
 
 ## Containers
 
@@ -308,6 +309,61 @@ const size_t visible = sd::pipeline(sd::keep_if([](auto r) { return r > 0.f; }))
   fold of several values runs at about half Clang's speed there.
 - `sd::pipeline` is a function: as a class, `sd::pipeline(f)(in, sd::out(o));`
   would declare a variable `f`.
+
+## Math
+
+`math/math.h` is a vector math library under Slang's names, in `nx::math`:
+`float2`-`float4`, `int`, `uint`, `double` and `bool` vectors (`vec<T, N>`),
+matrices `float2x2` to `float4x4` and the non-square shapes (`mat<T, R, C>`),
+`quat`, HLSL's functions (`dot`, `cross`, `normalize`, `lerp`, `saturate`,
+`frac`, `rsqrt`, `select`, `mul`, ...), and transform builders
+(`translation`, `rotation`, `perspective_rh_zo`, `look_at_rh`, ...).
+
+```cpp
+#include "core/foundation/math/math.h"
+
+using namespace nx::math;
+
+float4x4 view_proj = mul(perspective_rh_zo(radians(60.f), aspect, 0.1f, 100.f),
+                         look_at_rh(eye, target, float3(0.f, 1.f, 0.f)));
+float3 p = transform_point(view_proj, float3(1.f, 2.f, 3.f));
+```
+
+- Storage is glm's: `float3` is 12 bytes, every type is 4-aligned, and a
+  matrix is its columns in order, so `float4x4` has `glm::mat4`'s bytes and
+  `float3x4` (three rows, four columns) `glm::mat4x3`'s.
+- Meaning is Slang's: `float3x4` has three rows, products are `mul(m, v)`
+  and `mul(a, b)`, `*` is per component. Where glm and Slang read the same
+  code differently there is nothing to call, so code ported from either
+  fails to compile instead of changing meaning: no `m[i]` (use `m.row(r)` or
+  `m.columns[c]`), no matrix `operator*`, no scalar or vector matrix
+  constructors (use `from_rows`, `from_columns`, `identity`), no
+  four-scalar `quat` constructor (glm's takes w first; use `quat(xyz, w)`).
+- `==` compares whole values; `less`, `equal` and the others compare
+  components into a `bool2`-`bool4`.
+- Results equal glm's bit for bit where both are built from `+`, `-`, `*`,
+  `/` and `sqrt`: the 4x4 products, `inverse`, `transpose`, quaternion
+  products and rotations, conversions and the camera builders sum in glm's
+  order. glm's own `dot` of `vec4` sums in a different order under MSVC; here
+  it is `(x + y) + (z + w)` everywhere.
+- Results are the same on every compiler and backend: the headers turn off
+  Clang's fusing of `a * b + c` (it would fuse wherever FMA exists, AVX2 and
+  every AArch64) for their own code only. GCC fuses only outside ISO mode
+  (`-std=gnu++20`).
+- `min(a, b)` is `a < b ? a : b` and `max(a, b)` is `a > b ? a : b`, NaN
+  included, on every path.
+- `f32x4` (`math/register.h`) is four floats in a register with the
+  operations the types are built from: SSE2 on x86-64, NEON on AArch64 with
+  GCC and Clang, plain arrays elsewhere and under `NX_MATH_FORCE_SCALAR`.
+  Each operation is one intrinsic or a short fixed sequence, so debug builds
+  stay fast; the 4x4, affine and quaternion products, `inverse` and
+  `transpose` use it, while per-component operations are plain code.
+- The headers include only `core/config.h` and small standard headers, not
+  `foundation.h`.
+- Tests: `tests/math/`, in `nx_foundation_tests` and again as
+  `nx_math_scalar_tests`, `nx_math_avx2_tests` (when the machine runs AVX2)
+  and `nx_math_tests` (cross builds, to run on the target). Their
+  determinism case hashes a fixed workload; every backend must match it.
 
 ## Command-line parsing
 

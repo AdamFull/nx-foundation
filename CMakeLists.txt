@@ -146,6 +146,12 @@ set(NX_FOUNDATION_HEADERS
   serialization/reflect_json.h
   serialization/reflect_binary.h
 
+  math/math.h
+  math/matrix.h
+  math/quaternion.h
+  math/register.h
+  math/transform.h
+  math/vector.h
   simd/algorithm.h
   simd/backend_arm.h
   simd/backend_complex.h

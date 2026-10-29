@@ -1,0 +1,95 @@
+#include "math/math_test_util.h"
+
+#include <cmath>
+
+using namespace math_test;
+
+static_assert(dot(float3(1.f, 2.f, 3.f), float3(4.f, 5.f, 6.f)) == 32.f);
+static_assert(cross(float3(1.f, 0.f, 0.f), float3(0.f, 1.f, 0.f)) ==
+              float3(0.f, 0.f, 1.f));
+static_assert(swizzle<2, 0>(float3(1.f, 2.f, 3.f)) == float2(3.f, 1.f));
+static_assert(float4(float2(1.f, 2.f), float2(3.f, 4.f)).zw() ==
+              float2(3.f, 4.f));
+static_assert(select(less(int3(1, 5, 3), int3(2, 2, 2)), int3(10), int3(-1)) ==
+              int3(10, -1, -1));
+static_assert(all(greater_equal(uint2(3u, 4u), uint2(3u))));
+static_assert(!any(equal(int4(1, 2, 3, 4), int4(0))));
+
+TEST_CASE("math vector: element access follows x, y, z, w") {
+  float4 v(1.f, 2.f, 3.f, 4.f);
+  v[2] = 7.f;
+  CHECK(v.z == 7.f);
+  CHECK(v[3] == 4.f);
+  CHECK(v.xyz() == float3(1.f, 2.f, 7.f));
+  CHECK(float3(v.xy(), 5.f) == float3(1.f, 2.f, 5.f));
+  CHECK(float3(int3(1, -2, 3)) == float3(1.f, -2.f, 3.f));
+}
+
+TEST_CASE("math vector: arithmetic is per component, scalars broadcast") {
+  CHECK(float3(1.f, 2.f, 3.f) * float3(2.f) == float3(2.f, 4.f, 6.f));
+  CHECK(2.f * float2(1.f, -1.f) == float2(2.f, -2.f));
+  CHECK(float2(1.f, -1.f) - 1.f == float2(0.f, -2.f));
+  CHECK(1.f / float2(2.f, 4.f) == float2(0.5f, 0.25f));
+  CHECK(-float3(1.f, -2.f, 0.f) == float3(-1.f, 2.f, -0.f));
+  float3 v(1.f);
+  v += float3(1.f, 2.f, 3.f);
+  v *= 2.f;
+  CHECK(v == float3(4.f, 6.f, 8.f));
+  CHECK(int3(7, -7, 8) % 3 == int3(1, -1, 2));
+  CHECK((uint2(1u, 3u) << 2u) == uint2(4u, 12u));
+  CHECK((int2(6, 5) & int2(3)) == int2(2, 1));
+  CHECK(~uint2(0u) == uint2(0xffffffffu));
+  CHECK(!bool2(true, false) == bool2(false, true));
+}
+
+TEST_CASE("math vector: == compares whole vectors, the named comparisons "
+          "components") {
+  CHECK(float3(1.f, 2.f, 3.f) == float3(1.f, 2.f, 3.f));
+  CHECK(float3(1.f, 2.f, 3.f) != float3(1.f, 2.f, 4.f));
+  CHECK(not_equal(float3(1.f, 2.f, 3.f), float3(1.f, 0.f, 3.f)) ==
+        bool3(false, true, false));
+  CHECK(less_equal(float2(1.f, 2.f), float2(1.f)) == bool2(true, false));
+}
+
+TEST_CASE("math vector: geometry") {
+  lcg g{11};
+  for (int i = 0; i < 64; ++i) {
+    const float3 a = g.next3(), b = g.next3();
+    const float3 n = normalize(a);
+    CHECK(length(n) == nxtest::Approx(1.0).margin(1e-6));
+    const float3 c = cross(a, b);
+    CHECK(dot(c, a) == nxtest::Approx(0.0).margin(1e-6));
+    CHECK(dot(c, b) == nxtest::Approx(0.0).margin(1e-6));
+    CHECK(distance(a, b) == nxtest::Approx(length(a - b)));
+    const float3 r = reflect(a, n);
+    CHECK(near(r, a - 2.f * dot(a, n) * n));
+    CHECK(length(r) == nxtest::Approx(length(a)).epsilon(1e-5));
+  }
+  CHECK(near(refract(float3(0.6f, -0.8f, 0.f), float3(0.f, 1.f, 0.f), 1.f),
+             float3(0.6f, -0.8f, 0.f)));
+  // Past the critical angle the ray reflects totally: zero.
+  CHECK(refract(float3(0.8f, -0.6f, 0.f), float3(0.f, 1.f, 0.f), 1.5f) ==
+        float3(0.f));
+  CHECK(faceforward(float3(0.f, 1.f, 0.f), float3(0.f, 1.f, 0.f),
+                    float3(0.f, 1.f, 0.f)) == float3(0.f, -1.f, 0.f));
+}
+
+TEST_CASE("math vector: HLSL's scalar functions") {
+  CHECK(round(float4(2.5f, 3.5f, -2.5f, 0.4f)) == float4(2.f, 4.f, -2.f, 0.f));
+  CHECK(frac(float2(-1.25f, 2.75f)) == float2(0.75f, 0.75f));
+  CHECK(sign(float3(-3.f, 0.f, 2.f)) == float3(-1.f, 0.f, 1.f));
+  CHECK(sign(int2(-3, 4)) == int2(-1, 1));
+  CHECK(saturate(float3(-1.f, 0.5f, 2.f)) == float3(0.f, 0.5f, 1.f));
+  CHECK(step(float2(1.f), float2(0.5f, 1.f)) == float2(0.f, 1.f));
+  CHECK(clamp(float3(-2.f, 0.5f, 3.f), -1.f, 1.f) == float3(-1.f, 0.5f, 1.f));
+  CHECK(lerp(float2(0.f, 10.f), float2(10.f, 20.f), 0.25f) ==
+        float2(2.5f, 12.5f));
+  CHECK(smoothstep(0.f, 1.f, 0.5f) == 0.5f);
+  CHECK(smoothstep(float2(0.f), float2(1.f), float2(-1.f, 2.f)) ==
+        float2(0.f, 1.f));
+  CHECK(rsqrt(4.f) == 0.5f);
+  CHECK(abs(int3(-1, 2, -3)) == int3(1, 2, 3));
+  CHECK(min(float2(1.f, 5.f), float2(2.f, 3.f)) == float2(1.f, 3.f));
+  CHECK(max(int2(1, 5), int2(2, 3)) == int2(2, 5));
+  CHECK(degrees(radians(90.f)) == nxtest::Approx(90.0));
+}
