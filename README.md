@@ -323,6 +323,34 @@ const size_t visible = sd::pipeline(sd::keep_if([](auto r) { return r > 0.f; }))
 - `sd::pipeline` is a function: as a class, `sd::pipeline(f)(in, sd::out(o));`
   would declare a variable `f`.
 
+### Linear algebra
+
+`simd/linalg.h` (an extension) has kernels over spans of `float` or
+`double`, in `nx::simd::linalg`: `dot`, `sum`, `sum_squares`, `max`, `axpy`
+(`y += a x`), `scale`, `add`, `mul`, `gemv` (`y = W x + b`, `W` row-major)
+and `gemv_t` (`y = W^T x`).
+
+```cpp
+#include "core/foundation/simd/linalg.h"
+
+namespace la = nx::simd::linalg;
+
+la::gemv(weights, input, bias, output); // output.size() rows of weights
+const float norm = std::sqrt(la::sum_squares(output));
+```
+
+- Results are the same bits on every backend and compiler. A sum keeps 16
+  lanes: lane k adds elements k, k + 16, k + 32, ... in turn, and the lanes
+  then fold as (k, k + 8), (k, k + 4), (k, k + 2), (k, k + 1). `gemv`'s row
+  i is `dot(row i, x) + b[i]` bit for bit; `gemv_t` adds the scaled rows in
+  turn. The element-wise kernels round once per operation.
+- The 16 lanes are four registers with SSE and NEON and two with AVX2.
+  Measured on x64, `dot` runs as fast as a free four-accumulator loop with
+  SSE and at memory-bound sizes, and up to a fifth slower in L1 with AVX2.
+- `max` returns NaN if any element is NaN, and -inf for an empty span.
+- The element-wise kernels allow their output to be one of their inputs.
+  `gemv_t`'s output must not overlap its inputs.
+
 ## Math
 
 `math/math.h` is a vector math library under Slang's names, in `nx::math`:

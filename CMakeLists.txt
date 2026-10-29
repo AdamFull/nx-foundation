@@ -164,6 +164,7 @@ set(NX_FOUNDATION_HEADERS
   simd/detail.h
   simd/float_math.h
   simd/interleave.h
+  simd/linalg.h
   simd/math.h
   simd/pipeline.h
   simd/simd.h
