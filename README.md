@@ -204,10 +204,23 @@ void scale(std::span<float> values, float factor) {
   `<cmath>` and `<complex>` functions do not, as C++20's `<cmath>` is not
   `constexpr`.
 - Exact operations (arithmetic, comparisons, `sqrt`, rounding, `fma`, `fmin`,
-  `fmax`, classification) run on whole registers. Transcendental and special
-  functions apply the scalar `<cmath>` function per element, so results equal
-  the scalar ones bit for bit. The special functions exist where the
-  standard library has them (`__cpp_lib_math_special_functions`; not libc++).
+  `fmax`, classification) run on whole registers.
+- For `float`, `exp`, `exp2`, `expm1`, `log`, `log2`, `log1p`, `tanh` and
+  `erf` run on whole registers too (`simd/float_math.h`). They are not
+  `<cmath>`'s bits, but they are the same bits on every backend and compiler
+  (no FMA), with every special value as `<cmath>` has it. Measured over all
+  2^32 inputs, the largest errors are 0.96 ulp (`exp`), 1.08 (`exp2`), 1.45
+  (`expm1`), 0.87 (`log`), 1.87 (`log2`), 1.44 (`log1p`), 1.33 (`tanh`) and
+  1.46 (`erf`). `tools/fit_float_math.py` regenerates their coefficients.
+- Extensions for `float`: `sigmoid` (2.4 ulp) and the fast forms `fast_exp`,
+  `fast_tanh`, `fast_sigmoid` and `fast_erf`, within a relative 1e-5 (3e-5
+  for `fast_erf`) of the exact value for normal results. The fast forms use
+  FMA where the build has it, so their last bits vary between targets, and
+  may flush a subnormal result to 0.
+- Every other transcendental and special function, and every `double` one,
+  applies the scalar `<cmath>` function per element, so its results equal the
+  scalar ones bit for bit. The special functions exist where the standard
+  library has them (`__cpp_lib_math_special_functions`; not libc++).
 - `vec<std::complex<T>>` keeps real and imaginary parts in separate
   registers; multiplication is the plain formula, division is
   `std::complex`'s.

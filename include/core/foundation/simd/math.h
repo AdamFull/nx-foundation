@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/foundation/simd/algorithm.h"
+#include "core/foundation/simd/float_math.h"
 
 #include <cmath>
 #include <version>
@@ -76,21 +77,56 @@ NX_SIMD_MATH_SCALAR(asinh)
 NX_SIMD_MATH_SCALAR(atanh)
 NX_SIMD_MATH_SCALAR(cosh)
 NX_SIMD_MATH_SCALAR(sinh)
-NX_SIMD_MATH_SCALAR(tanh)
-NX_SIMD_MATH_SCALAR(exp)
-NX_SIMD_MATH_SCALAR(exp2)
-NX_SIMD_MATH_SCALAR(expm1)
-NX_SIMD_MATH_SCALAR(log)
 NX_SIMD_MATH_SCALAR(log10)
-NX_SIMD_MATH_SCALAR(log1p)
-NX_SIMD_MATH_SCALAR(log2)
 NX_SIMD_MATH_SCALAR(logb)
 NX_SIMD_MATH_SCALAR(cbrt)
-NX_SIMD_MATH_SCALAR(erf)
 NX_SIMD_MATH_SCALAR(erfc)
 NX_SIMD_MATH_SCALAR(lgamma)
 NX_SIMD_MATH_SCALAR(tgamma)
 #undef NX_SIMD_MATH_SCALAR
+
+// float vectors run detail::float_math's register-wide kernels: within a few
+// ulp of <cmath>, and the same bits on every backend. double runs <cmath>.
+#define NX_SIMD_MATH_FLOAT(name)                                               \
+  template <class V>                                                           \
+    requires detail::math_floating_point<V>                                    \
+  detail::deduced_vec_t<V> name(const V &x) {                                  \
+    using D = detail::deduced_vec_t<V>;                                        \
+    const D d = x;                                                             \
+    if constexpr (std::is_same_v<typename D::value_type, float>)               \
+      return detail::float_math::name(d);                                      \
+    else                                                                       \
+      return detail::map_elements<D>(                                          \
+          [](typename D::value_type e) { return std::name(e); }, d);           \
+  }
+NX_SIMD_MATH_FLOAT(exp)
+NX_SIMD_MATH_FLOAT(exp2)
+NX_SIMD_MATH_FLOAT(expm1)
+NX_SIMD_MATH_FLOAT(log)
+NX_SIMD_MATH_FLOAT(log2)
+NX_SIMD_MATH_FLOAT(log1p)
+NX_SIMD_MATH_FLOAT(tanh)
+NX_SIMD_MATH_FLOAT(erf)
+#undef NX_SIMD_MATH_FLOAT
+
+// Extensions for float vectors. sigmoid(x) = 1 / (1 + e^-x) is as accurate as
+// exp. The fast_ forms trade accuracy for speed (relative error at most 1e-5,
+// fast_erf 3e-5) and use FMA where the build has it, so their last bits
+// depend on the target.
+#define NX_SIMD_MATH_FLOAT_ONLY(name)                                          \
+  template <class V>                                                           \
+    requires detail::math_floating_point<V> &&                                 \
+             std::is_same_v<typename detail::deduced_vec_t<V>::value_type,     \
+                            float>                                             \
+  detail::deduced_vec_t<V> name(const V &x) {                                  \
+    return detail::float_math::name(detail::deduced_vec_t<V>(x));              \
+  }
+NX_SIMD_MATH_FLOAT_ONLY(sigmoid)
+NX_SIMD_MATH_FLOAT_ONLY(fast_exp)
+NX_SIMD_MATH_FLOAT_ONLY(fast_tanh)
+NX_SIMD_MATH_FLOAT_ONLY(fast_sigmoid)
+NX_SIMD_MATH_FLOAT_ONLY(fast_erf)
+#undef NX_SIMD_MATH_FLOAT_ONLY
 
 #define NX_SIMD_MATH_REGISTER(name, op)                                        \
   template <class V>                                                           \

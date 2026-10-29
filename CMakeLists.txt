@@ -162,6 +162,7 @@ set(NX_FOUNDATION_HEADERS
   simd/bit_scalar.h
   simd/complex.h
   simd/detail.h
+  simd/float_math.h
   simd/interleave.h
   simd/math.h
   simd/pipeline.h

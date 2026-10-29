@@ -45,6 +45,11 @@ template <class V> V unit_input(rng<typename V::value_type> &r) {
 #define CHECK_UNARY(fn, input)                                                 \
   check_lanes(#fn, sd::fn(input), [&](int i) { return std::fn(input[i]); })
 
+// float runs the register-wide kernels that test_simd_float_math.cpp bounds.
+#define CHECK_DOUBLE_UNARY(fn, input)                                          \
+  if constexpr (std::is_same_v<T, double>)                                     \
+  CHECK_UNARY(fn, input)
+
 template <class T, int N> void math_unary() {
   using V = sd::vec<T, N>;
   rng<T> r(N * 101 + sizeof(T));
@@ -65,18 +70,18 @@ template <class T, int N> void math_unary() {
     CHECK_UNARY(atanh, u);
     CHECK_UNARY(cosh, u);
     CHECK_UNARY(sinh, u);
-    CHECK_UNARY(tanh, x);
-    CHECK_UNARY(exp, u);
-    CHECK_UNARY(exp2, u);
-    CHECK_UNARY(expm1, u);
-    CHECK_UNARY(log, p);
+    CHECK_DOUBLE_UNARY(tanh, x);
+    CHECK_DOUBLE_UNARY(exp, u);
+    CHECK_DOUBLE_UNARY(exp2, u);
+    CHECK_DOUBLE_UNARY(expm1, u);
+    CHECK_DOUBLE_UNARY(log, p);
     CHECK_UNARY(log10, p);
-    CHECK_UNARY(log1p, p);
-    CHECK_UNARY(log2, p);
+    CHECK_DOUBLE_UNARY(log1p, p);
+    CHECK_DOUBLE_UNARY(log2, p);
     CHECK_UNARY(logb, x);
     CHECK_UNARY(sqrt, x);
     CHECK_UNARY(cbrt, x);
-    CHECK_UNARY(erf, x);
+    CHECK_DOUBLE_UNARY(erf, x);
     CHECK_UNARY(erfc, x);
     CHECK_UNARY(lgamma, p);
     CHECK_UNARY(tgamma, u);
