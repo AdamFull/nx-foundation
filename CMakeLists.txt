@@ -148,6 +148,7 @@ set(NX_FOUNDATION_HEADERS
 
   math/math.h
   math/matrix.h
+  math/names.h
   math/quaternion.h
   math/register.h
   math/transform.h
