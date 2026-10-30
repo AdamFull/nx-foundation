@@ -1,6 +1,7 @@
 #include "math/math_test_util.h"
 
 #include <cmath>
+#include <cstring>
 
 using namespace math_test;
 
@@ -159,6 +160,37 @@ TEST_CASE("math matrix: affine products and transforms") {
     CHECK(near(transform_vector(a, v), mul(a, float4(v, 0.f))));
     CHECK(transform_point(ab, v) == mul(ab, float4(v, 1.f)).xyz());
     CHECK(near(transform_vector(ab, v), mul(ab, float4(v, 0.f)).xyz()));
+  }
+}
+
+TEST_CASE("math matrix: affine products over raw columns of either stride") {
+  lcg g{12};
+  for (int i = 0; i < 128; ++i) {
+    const float3x4 a =
+        float3x4::from_columns(g.next3(), g.next3(), g.next3(), g.next3());
+    const float3x4 b =
+        float3x4::from_columns(g.next3(), g.next3(), g.next3(), g.next3());
+    // The fourth row is never read.
+    const auto wide = [&](const float3x4 &m) {
+      return float4x4::from_columns(
+          float4(m.columns[0], g.next3().x), float4(m.columns[1], g.next3().x),
+          float4(m.columns[2], g.next3().x), float4(m.columns[3], g.next3().x));
+    };
+    const float4x4 wa = wide(a), wb = wide(b);
+    const float3x4 want = affine_mul(a, b);
+    const float *pa = &a.columns[0].x, *pb = &b.columns[0].x;
+    const float *qa = &wa.columns[0].x, *qb = &wb.columns[0].x;
+    const auto check = [&](auto &&run) {
+      float out[13];
+      out[12] = 1234.5f;
+      run(out);
+      CHECK(std::memcmp(out, &want.columns[0].x, 12 * sizeof(float)) == 0);
+      CHECK(out[12] == 1234.5f);
+    };
+    check([&](float *o) { affine_mul_columns<3, 3>(pa, pb, o); });
+    check([&](float *o) { affine_mul_columns<4, 3>(qa, pb, o); });
+    check([&](float *o) { affine_mul_columns<3, 4>(pa, qb, o); });
+    check([&](float *o) { affine_mul_columns<4, 4>(qa, qb, o); });
   }
 }
 

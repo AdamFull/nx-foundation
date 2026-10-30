@@ -177,20 +177,27 @@ inline float4 mul(const float4 &v, const float4x4 &a) {
   return r;
 }
 
+/// affine_mul over raw columns StrideA and StrideB floats apart: 3 for a
+/// float3x4's bytes, 4 for a float4x4's. Writes a float3x4's 12 floats to o,
+/// which overlaps neither. Copying o at once through wider moves defeats store
+/// forwarding (2.6x here), so write it where it is wanted.
+template <int StrideA, int StrideB>
+inline void affine_mul_columns(const float *a, const float *b, float *o) {
+  const f32x4 a0 = x4::load(a), a1 = x4::load(a + StrideA),
+              a2 = x4::load(a + 2 * StrideA), a3 = x4::load3(a + 3 * StrideA);
+  // Each 4-wide store's last lane is the next column's x, written after it.
+  x4::store(o, detail::combine3(a0, a1, a2, x4::load(b)));
+  x4::store(o + 3, detail::combine3(a0, a1, a2, x4::load(b + StrideB)));
+  x4::store(o + 6, detail::combine3(a0, a1, a2, x4::load(b + 2 * StrideB)));
+  x4::store3(
+      o + 9,
+      x4::add(detail::combine3(a0, a1, a2, x4::load3(b + 3 * StrideB)), a3));
+}
+
 /// The affine product of a and b, each taken to end in a row of 0 0 0 1.
 inline float3x4 affine_mul(const float3x4 &a, const float3x4 &b) {
-  const float *p = &a.columns[0].x;
-  const f32x4 a0 = x4::load(p), a1 = x4::load(p + 3), a2 = x4::load(p + 6),
-              a3 = x4::load3(p + 9);
   float3x4 m;
-  float *o = &m.columns[0].x;
-  const float *q = &b.columns[0].x;
-  // Each 4-wide store's last lane is the next column's x, written after it.
-  x4::store(o, detail::combine3(a0, a1, a2, x4::load(q)));
-  x4::store(o + 3, detail::combine3(a0, a1, a2, x4::load(q + 3)));
-  x4::store(o + 6, detail::combine3(a0, a1, a2, x4::load(q + 6)));
-  x4::store3(o + 9,
-             x4::add(detail::combine3(a0, a1, a2, x4::load3(q + 9)), a3));
+  affine_mul_columns<3, 3>(&a.columns[0].x, &b.columns[0].x, &m.columns[0].x);
   return m;
 }
 
