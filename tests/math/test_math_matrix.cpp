@@ -209,6 +209,29 @@ TEST_CASE("math matrix: a float3x4's rows, 4 floats each") {
   }
 }
 
+TEST_CASE("math matrix: a matrix as another shape") {
+  lcg g{22};
+  for (int i = 0; i < 64; ++i) {
+    const float4x4 m = g.next4x4();
+    const float3x4 a = to_float3x4(m);
+    const float3x3 b = to_float3x3(m);
+    for (int c = 0; c < 3; ++c) {
+      CHECK(a.columns[c] == m.columns[c].xyz());
+      CHECK(b.columns[c] == m.columns[c].xyz());
+      CHECK(to_float3x3(a).columns[c] == m.columns[c].xyz());
+      CHECK(to_float3x4(b).columns[c] == m.columns[c].xyz());
+      CHECK(to_float4x4(a).columns[c] == float4(m.columns[c].xyz(), 0.f));
+      CHECK(to_float4x4(b).columns[c] == float4(m.columns[c].xyz(), 0.f));
+    }
+    CHECK(a.columns[3] == m.columns[3].xyz());
+    CHECK(to_float3x4(b).columns[3] == float3(0.f));
+    CHECK(to_float4x4(a).columns[3] == float4(m.columns[3].xyz(), 1.f));
+    CHECK(to_float4x4(b).columns[3] == float4(0.f, 0.f, 0.f, 1.f));
+  }
+  static_assert(std::is_trivial_v<float4x4> && std::is_trivial_v<float3x4>);
+  CHECK(float3x4{}.columns[3] == float3(0.f));
+}
+
 TEST_CASE("math matrix: an affine product by a transform") {
   lcg g{13};
   for (int i = 0; i < 256; ++i) {

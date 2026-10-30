@@ -22,6 +22,8 @@ struct quat {
   constexpr float3 xyz() const { return {x, y, z}; }
   constexpr float4 xyzw() const { return {x, y, z, w}; }
   constexpr bool operator==(const quat &) const = default;
+
+  NX_MATH_QUAT_CONVERSIONS
 };
 
 static_assert(sizeof(quat) == 16 && std::is_trivially_copyable_v<quat>);
@@ -81,6 +83,24 @@ constexpr float3 rotate(const quat &q, const float3 &v) {
 /// The rotation by angle radians about the unit axis.
 inline quat axis_angle(const float3 &axis, float angle) {
   return quat(axis * std::sin(angle * 0.5f), std::cos(angle * 0.5f));
+}
+
+/// The angle of the rotation in radians, 0 to 2 pi.
+inline float angle(const quat &q) {
+  // cos(1/2): past it acos loses what asin keeps.
+  if (abs(q.w) > 0.877582561890372716130286068203503191f) {
+    const float a =
+        std::asin(std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z)) * 2.f;
+    return q.w < 0.f ? pi<float> * 2.f - a : a;
+  }
+  return std::acos(q.w) * 2.f;
+}
+/// The axis of the rotation; +z for the identity.
+inline float3 axis(const quat &q) {
+  const float t = 1.f - q.w * q.w;
+  if (t <= 0.f)
+    return float3(0.f, 0.f, 1.f);
+  return q.xyz() * (1.f / std::sqrt(t));
 }
 
 /// The short way round; linear where a and b are almost equal.
@@ -151,6 +171,15 @@ inline quat to_quat(const float3x3 &m) {
     return quat(float3((c[2][0] + c[0][2]) * k, (c[1][2] + c[2][1]) * k, v),
                 (c[0][1] - c[1][0]) * k);
   }
+}
+
+/// The rotation that points -z along direction, which is unit length, with +y
+/// as near up as it can be.
+inline quat look_at_quat_rh(const float3 &direction, const float3 &up) {
+  const float3 back = -direction;
+  const float3 side = cross(up, back);
+  const float3 right = side * rsqrt(max(0.00001f, dot(side, side)));
+  return to_quat(float3x3::from_columns(right, cross(back, right), back));
 }
 
 } // namespace nx::math

@@ -21,6 +21,8 @@ template <class T, int R, int C> struct mat {
 
   column_type columns[C];
 
+  mat() = default;
+
   static constexpr mat identity()
     requires(R <= C)
   {
@@ -32,7 +34,10 @@ template <class T, int R, int C> struct mat {
   template <class... V>
     requires(sizeof...(V) == C)
   static constexpr mat from_columns(const V &...c) {
-    return mat{{column_type(c)...}};
+    mat m{};
+    int i = 0;
+    ((m.columns[i++] = column_type(c)), ...);
+    return m;
   }
   template <class... V>
     requires(sizeof...(V) == R)
@@ -51,6 +56,8 @@ template <class T, int R, int C> struct mat {
     }(std::make_integer_sequence<int, C>{});
   }
   constexpr bool operator==(const mat &) const = default;
+
+  NX_MATH_MAT_CONVERSIONS(T, R, C)
 };
 
 using float2x2 = mat<float, 2, 2>;
@@ -297,6 +304,32 @@ inline float3 transform_vector(const float3x4 &m, const float3 &v) {
   float3 r;
   x4::store3(&r.x, x4::add(s, x4::mul(x4::load3(c + 6), x4::splat<2>(b))));
   return r;
+}
+
+constexpr float3x3 to_float3x3(const float4x4 &m) {
+  return float3x3::from_columns(m.columns[0].xyz(), m.columns[1].xyz(),
+                                m.columns[2].xyz());
+}
+constexpr float3x3 to_float3x3(const float3x4 &m) {
+  return float3x3::from_columns(m.columns[0], m.columns[1], m.columns[2]);
+}
+constexpr float3x4 to_float3x4(const float4x4 &m) {
+  return float3x4::from_columns(m.columns[0].xyz(), m.columns[1].xyz(),
+                                m.columns[2].xyz(), m.columns[3].xyz());
+}
+constexpr float3x4 to_float3x4(const float3x3 &m) {
+  return float3x4::from_columns(m.columns[0], m.columns[1], m.columns[2],
+                                float3(0.f));
+}
+constexpr float4x4 to_float4x4(const float3x3 &m) {
+  return float4x4::from_columns(
+      float4(m.columns[0], 0.f), float4(m.columns[1], 0.f),
+      float4(m.columns[2], 0.f), float4(0.f, 0.f, 0.f, 1.f));
+}
+constexpr float4x4 to_float4x4(const float3x4 &m) {
+  return float4x4::from_columns(
+      float4(m.columns[0], 0.f), float4(m.columns[1], 0.f),
+      float4(m.columns[2], 0.f), float4(m.columns[3], 1.f));
 }
 
 template <class T, int R, int C>

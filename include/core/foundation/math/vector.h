@@ -2,9 +2,25 @@
 
 #include "core/foundation/math/register.h"
 
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <type_traits>
+
+// A build may name a header that defines these, to convert to and from another
+// math library's types of the same bytes.
+#ifdef NX_MATH_CONVERSIONS_HEADER
+#include NX_MATH_CONVERSIONS_HEADER
+#endif
+#ifndef NX_MATH_VEC_CONVERSIONS
+#define NX_MATH_VEC_CONVERSIONS(T, N)
+#endif
+#ifndef NX_MATH_MAT_CONVERSIONS
+#define NX_MATH_MAT_CONVERSIONS(T, R, C)
+#endif
+#ifndef NX_MATH_QUAT_CONVERSIONS
+#define NX_MATH_QUAT_CONVERSIONS
+#endif
 
 NX_MATH_BEGIN
 
@@ -29,6 +45,8 @@ template <class T> struct vec<T, 2> {
   constexpr bool operator==(const vec &) const = default;
 
   constexpr vec yx() const { return {y, x}; }
+
+  NX_MATH_VEC_CONVERSIONS(T, 2)
 };
 
 template <class T> struct vec<T, 3> {
@@ -41,6 +59,7 @@ template <class T> struct vec<T, 3> {
   constexpr explicit vec(T s) : x(s), y(s), z(s) {}
   constexpr vec(T x_, T y_, T z_) : x(x_), y(y_), z(z_) {}
   constexpr vec(const vec<T, 2> &xy_, T z_) : x(xy_.x), y(xy_.y), z(z_) {}
+  constexpr vec(T x_, const vec<T, 2> &yz_) : x(x_), y(yz_.x), z(yz_.y) {}
   template <class U>
   constexpr explicit vec(const vec<U, 3> &v)
       : x(T(v.x)), y(T(v.y)), z(T(v.z)) {}
@@ -54,6 +73,8 @@ template <class T> struct vec<T, 3> {
   constexpr vec<T, 2> xy() const { return {x, y}; }
   constexpr vec<T, 2> xz() const { return {x, z}; }
   constexpr vec<T, 2> yz() const { return {y, z}; }
+
+  NX_MATH_VEC_CONVERSIONS(T, 3)
 };
 
 template <class T> struct vec<T, 4> {
@@ -67,6 +88,8 @@ template <class T> struct vec<T, 4> {
   constexpr vec(T x_, T y_, T z_, T w_) : x(x_), y(y_), z(z_), w(w_) {}
   constexpr vec(const vec<T, 3> &xyz_, T w_)
       : x(xyz_.x), y(xyz_.y), z(xyz_.z), w(w_) {}
+  constexpr vec(T x_, const vec<T, 3> &yzw_)
+      : x(x_), y(yzw_.x), z(yzw_.y), w(yzw_.z) {}
   constexpr vec(const vec<T, 2> &xy_, T z_, T w_)
       : x(xy_.x), y(xy_.y), z(z_), w(w_) {}
   constexpr vec(const vec<T, 2> &xy_, const vec<T, 2> &zw_)
@@ -86,6 +109,8 @@ template <class T> struct vec<T, 4> {
   constexpr vec<T, 2> xy() const { return {x, y}; }
   constexpr vec<T, 2> zw() const { return {z, w}; }
   constexpr vec<T, 3> xyz() const { return {x, y, z}; }
+
+  NX_MATH_VEC_CONVERSIONS(T, 4)
 };
 
 /// (v[I]...): swizzle<2, 1, 0>(v) is Slang's v.zyx.
@@ -115,6 +140,15 @@ static_assert(sizeof(float3) == 12 && alignof(float3) == 4);
 static_assert(sizeof(float4) == 16 && alignof(float4) == 4);
 static_assert(std::is_trivially_copyable_v<float4> &&
               std::is_standard_layout_v<float4>);
+
+template <class T>
+inline constexpr T pi = T(3.14159265358979323846264338327950288);
+template <class T>
+inline constexpr T two_pi = T(6.28318530717958647692528676655900576);
+template <class T>
+inline constexpr T half_pi = T(1.57079632679489661923132169163975144);
+template <class T>
+inline constexpr T quarter_pi = T(0.785398163397448309615660845819875721);
 
 template <class T> using scalar_of = std::type_identity_t<T>;
 
@@ -272,7 +306,7 @@ constexpr T saturate(T v) {
 template <class T>
   requires std::is_floating_point_v<T>
 constexpr T lerp(T a, T b, T t) {
-  return a + t * (b - a);
+  return a * (T(1) - t) + b * t;
 }
 template <class T>
   requires std::is_arithmetic_v<T>
@@ -320,6 +354,21 @@ template <class T>
 constexpr T abs(T v) {
   return v < T(0) ? T(-v) : v;
 }
+
+#define NX_MATH_SCALAR_MAP(name, f)                                            \
+  template <class T>                                                           \
+    requires std::is_floating_point_v<T>                                       \
+  T name(T v) {                                                                \
+    return f(v);                                                               \
+  }
+
+NX_MATH_SCALAR_MAP(floor, std::floor)
+NX_MATH_SCALAR_MAP(ceil, std::ceil)
+NX_MATH_SCALAR_MAP(trunc, std::trunc)
+// HLSL rounds halves to even.
+NX_MATH_SCALAR_MAP(round, std::nearbyint)
+NX_MATH_SCALAR_MAP(exp, std::exp)
+#undef NX_MATH_SCALAR_MAP
 
 #define NX_MATH_VEC_MAP(name, f)                                               \
   template <class T> vec<T, 2> name(const vec<T, 2> &v) {                      \
@@ -378,6 +427,15 @@ NX_MATH_VEC_ZIP(atan2, std::atan2)
 #undef NX_MATH_VEC_ZIP
 
 template <class T, int N>
+constexpr vec<T, N> min(const vec<T, N> &a, scalar_of<T> b) {
+  return min(a, vec<T, N>(b));
+}
+template <class T, int N>
+constexpr vec<T, N> max(const vec<T, N> &a, scalar_of<T> b) {
+  return max(a, vec<T, N>(b));
+}
+
+template <class T, int N>
 constexpr vec<T, N> clamp(const vec<T, N> &v, const vec<T, N> &lo,
                           const vec<T, N> &hi) {
   return min(max(v, lo), hi);
@@ -390,12 +448,12 @@ constexpr vec<T, N> clamp(const vec<T, N> &v, scalar_of<T> lo,
 template <class T, int N>
 constexpr vec<T, N> lerp(const vec<T, N> &a, const vec<T, N> &b,
                          scalar_of<T> t) {
-  return a + t * (b - a);
+  return a * (T(1) - t) + b * t;
 }
 template <class T, int N>
 constexpr vec<T, N> lerp(const vec<T, N> &a, const vec<T, N> &b,
                          const vec<T, N> &t) {
-  return a + t * (b - a);
+  return a * (T(1) - t) + b * t;
 }
 template <class T, int N>
 constexpr vec<T, N> smoothstep(const vec<T, N> &lo, const vec<T, N> &hi,
@@ -451,6 +509,57 @@ template <class T, int N>
 constexpr vec<T, N> faceforward(const vec<T, N> &n, const vec<T, N> &i,
                                 const vec<T, N> &ng) {
   return dot(ng, i) < T(0) ? n : -n;
+}
+
+/// f as a 16-bit float: nearest, halves up, a NaN stays a NaN.
+constexpr uint16_t f32tof16(float f) {
+  const auto i = std::bit_cast<int32_t>(f);
+  const int32_t s = (i >> 16) & 0x8000;
+  int32_t e = ((i >> 23) & 0xff) - (127 - 15);
+  int32_t m = i & 0x7fffff;
+  if (e <= 0) {
+    if (e < -10)
+      return uint16_t(s);
+    m = (m | 0x800000) >> (1 - e);
+    if (m & 0x1000)
+      m += 0x2000;
+    return uint16_t(s | (m >> 13));
+  }
+  if (e == 0xff - (127 - 15)) {
+    if (m == 0)
+      return uint16_t(s | 0x7c00);
+    m >>= 13;
+    return uint16_t(s | 0x7c00 | m | (m == 0));
+  }
+  if (m & 0x1000) {
+    m += 0x2000;
+    if (m & 0x800000) {
+      m = 0;
+      e += 1;
+    }
+  }
+  if (e > 30)
+    return uint16_t(s | 0x7c00);
+  return uint16_t(s | (e << 10) | (m >> 13));
+}
+constexpr float f16tof32(uint16_t h) {
+  const uint32_t s = uint32_t(h >> 15) << 31;
+  int32_t e = (h >> 10) & 0x1f;
+  int32_t m = h & 0x3ff;
+  if (e == 0) {
+    if (m == 0)
+      return std::bit_cast<float>(s);
+    while (!(m & 0x400)) {
+      m <<= 1;
+      e -= 1;
+    }
+    e += 1;
+    m &= ~0x400;
+  } else if (e == 31) {
+    return std::bit_cast<float>(s | 0x7f800000u | (uint32_t(m) << 13));
+  }
+  return std::bit_cast<float>(s | (uint32_t(e + (127 - 15)) << 23) |
+                              (uint32_t(m) << 13));
 }
 
 } // namespace nx::math

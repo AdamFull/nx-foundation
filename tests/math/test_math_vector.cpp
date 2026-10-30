@@ -93,3 +93,59 @@ TEST_CASE("math vector: HLSL's scalar functions") {
   CHECK(max(int2(1, 5), int2(2, 3)) == int2(2, 5));
   CHECK(degrees(radians(90.f)) == nxtest::Approx(90.0));
 }
+
+TEST_CASE("math vector: scalars with vectors, and rounding") {
+  CHECK(float3(1.f, float2(2.f, 3.f)) == float3(1.f, 2.f, 3.f));
+  CHECK(float4(1.f, float3(2.f, 3.f, 4.f)) == float4(1.f, 2.f, 3.f, 4.f));
+  CHECK(min(float2(1.f, 5.f), 3.f) == float2(1.f, 3.f));
+  CHECK(max(int2(1, 5), 3) == int2(3, 5));
+  CHECK(floor(-1.5f) == -2.f);
+  CHECK(ceil(-1.5f) == -1.f);
+  CHECK(trunc(-1.5f) == -1.f);
+  CHECK(nx::math::round(2.5f) == 2.f);
+  CHECK(exp(0.f) == 1.f);
+  CHECK(two_pi<float> == pi<float> * 2.f);
+  CHECK(half_pi<float> == pi<float> / 2.f);
+  CHECK(quarter_pi<float> == pi<float> / 4.f);
+}
+
+TEST_CASE("math vector: lerp reaches both ends exactly") {
+  lcg g{21};
+  for (int i = 0; i < 256; ++i) {
+    const float3 a = g.next3() * 100.f, b = g.next3() * 100.f;
+    CHECK(lerp(a, b, 0.f) == a);
+    CHECK(lerp(a, b, 1.f) == b);
+    CHECK(lerp(a.x, b.x, 1.f) == b.x);
+    CHECK(lerp(a, b, float3(1.f)) == b);
+  }
+}
+
+TEST_CASE("math vector: 16-bit floats") {
+  CHECK(f32tof16(0.f) == 0);
+  CHECK(f32tof16(-0.f) == 0x8000);
+  CHECK(f32tof16(1.f) == 0x3c00);
+  CHECK(f32tof16(-2.f) == 0xc000);
+  CHECK(f32tof16(65504.f) == 0x7bff);
+  // Rounds past the largest finite, and past the largest of an exponent.
+  CHECK(f32tof16(65520.f) == 0x7c00);
+  CHECK(f32tof16(1.9998779f) == 0x4000);
+  CHECK(f32tof16(1e10f) == 0x7c00);
+  CHECK(f32tof16(-1e10f) == 0xfc00);
+  // The smallest normal, a subnormal, and what rounds to the smallest of them.
+  CHECK(f32tof16(0x1p-14f) == 0x0400);
+  CHECK(f32tof16(0x1p-24f) == 0x0001);
+  CHECK(f32tof16(0x1.8p-25f) == 0x0001);
+  CHECK(f32tof16(0x1p-26f) == 0);
+  CHECK(f32tof16(std::bit_cast<float>(0x7f800001u)) == 0x7c01);
+  CHECK(f32tof16(std::bit_cast<float>(0xffc00000u)) == 0xfe00);
+  CHECK(f16tof32(0x3c00) == 1.f);
+  CHECK(f16tof32(0x0001) == 0x1p-24f);
+  CHECK(f16tof32(0x03ff) == 0x1.ff8p-15f);
+  CHECK(std::bit_cast<uint32_t>(f16tof32(0x8000)) == 0x80000000u);
+  CHECK(std::bit_cast<uint32_t>(f16tof32(0x7c00)) == 0x7f800000u);
+  CHECK(std::bit_cast<uint32_t>(f16tof32(0xfe01)) == 0xffc02000u);
+  int wrong = 0;
+  for (uint32_t h = 0; h <= 0xffffu; ++h)
+    wrong += f32tof16(f16tof32(uint16_t(h))) != h;
+  CHECK(wrong == 0);
+}

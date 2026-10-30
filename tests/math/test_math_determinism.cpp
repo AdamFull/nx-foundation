@@ -43,6 +43,12 @@ TEST_CASE("math determinism: every backend computes the same bits") {
     h.add(dot(v4, v4));
     h.add(length(v3));
     h.add(lerp(v3, w3, 0.3f));
+    h.add(f16tof32(f32tof16(v3.x)));
+    h.add(angle(p));
+    h.add(axis(p));
+    h.add(look_at_quat_rh(normalize(v3), float3(0.f, 1.f, 0.f)));
+    h.add(to_float3x4(a));
+    h.add(to_float4x4(af));
     h.add(reflect(v3, normalize(w3)));
     h.add(mul(p, q));
     h.add(rotate(p, v3));
@@ -55,5 +61,5 @@ TEST_CASE("math determinism: every backend computes the same bits") {
     h.add(orthographic_rh_zo(-1.f, v3.x + 2.f, -1.f, v3.y + 2.f, 0.1f, 10.f));
     h.add(look_at_rh(v3, w3 + float3(3.f), float3(0.f, 1.f, 0.f)));
   }
-  CHECK(h.h == 0xbf156a1aa09fa20eull);
+  CHECK(h.h == 0x84dc604125619fa2ull);
 }
