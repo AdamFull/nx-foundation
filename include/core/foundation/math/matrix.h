@@ -201,30 +201,55 @@ inline float3x4 affine_mul(const float3x4 &a, const float3x4 &b) {
   return m;
 }
 
-/// affine_mul_columns of a by a transform: a rotation (x, y, z, w) read as
-/// to_float3x3 reads it, each column times its scale, then the translation.
-/// o overlaps nothing it reads. The columns stay in registers: written out and
-/// loaded back wide they stall on store forwarding, 2.6x under MSVC.
-template <int StrideA>
-inline void affine_mul_trs(const float *a, const float *rotation,
-                           const float *scale, const float *translation,
-                           float *o) {
+namespace detail {
+
+/// A rotation (x, y, z, w) read as to_float3x3 reads it, each column times its
+/// scale.
+NX_FORCE_INLINE void trs_columns(const float *rotation, const float *scale,
+                                 f32x4 &c0, f32x4 &c1, f32x4 &c2) {
   const float x = rotation[0], y = rotation[1], z = rotation[2],
               w = rotation[3];
   const float xx = x * x, yy = y * y, zz = z * z;
   const float xz = x * z, xy = x * y, yz = y * z;
   const float wx = w * x, wy = w * y, wz = w * z;
-  const f32x4 a0 = x4::load(a), a1 = x4::load(a + StrideA),
-              a2 = x4::load(a + 2 * StrideA), a3 = x4::load3(a + 3 * StrideA);
-  const f32x4 c0 = x4::mul(
+  c0 = x4::mul(
       x4::set(1.f - 2.f * (yy + zz), 2.f * (xy + wz), 2.f * (xz - wy), 0.f),
       x4::splat(scale[0]));
-  const f32x4 c1 = x4::mul(
+  c1 = x4::mul(
       x4::set(2.f * (xy - wz), 1.f - 2.f * (xx + zz), 2.f * (yz + wx), 0.f),
       x4::splat(scale[1]));
-  const f32x4 c2 = x4::mul(
+  c2 = x4::mul(
       x4::set(2.f * (xz + wy), 2.f * (yz - wx), 1.f - 2.f * (xx + yy), 0.f),
       x4::splat(scale[2]));
+}
+
+} // namespace detail
+
+/// A transform's 12 floats at o: a rotation (x, y, z, w) read as to_float3x3
+/// reads it, each column times its scale, then the translation. o overlaps
+/// nothing it reads.
+inline void affine_trs(const float *rotation, const float *scale,
+                       const float *translation, float *o) {
+  f32x4 c0, c1, c2;
+  detail::trs_columns(rotation, scale, c0, c1, c2);
+  // Each 4-wide store's last lane is the next column's x, written after it.
+  x4::store(o, c0);
+  x4::store(o + 3, c1);
+  x4::store(o + 6, c2);
+  x4::store3(o + 9, x4::load3(translation));
+}
+
+/// affine_mul_columns of a by affine_trs's transform. o overlaps nothing it
+/// reads. The columns stay in registers: written out and loaded back wide they
+/// stall on store forwarding, 2.6x under MSVC.
+template <int StrideA>
+inline void affine_mul_trs(const float *a, const float *rotation,
+                           const float *scale, const float *translation,
+                           float *o) {
+  const f32x4 a0 = x4::load(a), a1 = x4::load(a + StrideA),
+              a2 = x4::load(a + 2 * StrideA), a3 = x4::load3(a + 3 * StrideA);
+  f32x4 c0, c1, c2;
+  detail::trs_columns(rotation, scale, c0, c1, c2);
   // Each 4-wide store's last lane is the next column's x, written after it.
   x4::store(o, detail::combine3(a0, a1, a2, c0));
   x4::store(o + 3, detail::combine3(a0, a1, a2, c1));

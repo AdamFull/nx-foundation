@@ -220,6 +220,9 @@ TEST_CASE("math matrix: an affine product by a transform") {
     affine_mul_trs<4>(&wide_a.columns[0].x, rotation, &s.x, &t.x, out);
     CHECK(std::memcmp(out, &want.columns[0].x, 12 * sizeof(float)) == 0);
     CHECK(out[12] == 1234.5f);
+    affine_trs(rotation, &s.x, &t.x, out);
+    CHECK(std::memcmp(out, &b.columns[0].x, 12 * sizeof(float)) == 0);
+    CHECK(out[12] == 1234.5f);
   }
 }
 
