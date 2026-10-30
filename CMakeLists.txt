@@ -167,6 +167,7 @@ set(NX_FOUNDATION_HEADERS
   simd/interleave.h
   simd/linalg.h
   simd/math.h
+  simd/nn.h
   simd/pipeline.h
   simd/simd.h
   simd/vec.h

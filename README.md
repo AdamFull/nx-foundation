@@ -365,6 +365,36 @@ const float norm = std::sqrt(la::sum_squares(output));
 - `options.pool` splits C's rows across a thread pool for products of about
   2^26 multiply-adds or more.
 
+### Neural-network kernels
+
+`simd/nn.h` (an extension) has float kernels over spans, in `nx::simd::nn`:
+`softmax`, `log_softmax`, `logsumexp`, `rmsnorm`, `layernorm`, `gelu` (the
+erf form), `gelu_tanh` (GPT-2's), `silu` and `swiglu` (`silu(gate) up`).
+
+```cpp
+#include "core/foundation/simd/nn.h"
+
+namespace nn = nx::simd::nn;
+
+nn::rmsnorm(hidden, weight, 1e-5f, hidden);
+nn::softmax(scores, scores);
+nn::gelu(mlp, mlp, nn::precision::fast);
+```
+
+- Sums run in linalg's 16-lane order, and `precision::exact` (the default)
+  computes exp, tanh, erf and sigmoid with the register-wide float math, so
+  exact results are the same bits on every backend. `precision::fast` uses
+  their `fast_` forms; its last bits depend on the target's FMA.
+- `softmax` and `log_softmax` subtract the maximum first, so large inputs do
+  not overflow. A -inf element (a masked score) gets 0, or -inf from
+  `log_softmax`; a NaN, a +inf or a row of -inf alone makes the whole row
+  NaN. `logsumexp` returns -inf for an empty row or one of -inf alone and
+  +inf with any +inf.
+- `layernorm` sums the variance as (x - mean)^2 after the mean, not as
+  E[x^2] - mean^2, and returns the mean and 1 / sqrt(var + eps) it
+  normalized with. Its gamma and beta, and `rmsnorm`'s gamma, may be empty.
+- Every kernel allows its output to be one of its inputs.
+
 ## Math
 
 `math/math.h` is a vector math library under Slang's names, in `nx::math`:

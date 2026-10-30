@@ -125,6 +125,7 @@ set(NX_FOUNDATION_TEST_SOURCES
   simd/test_simd_linalg.cpp
   simd/test_simd_math.cpp
   simd/test_simd_memory.cpp
+  simd/test_simd_nn.cpp
   simd/test_simd_ops.cpp
   simd/test_simd_pipeline.cpp
 
@@ -194,6 +195,7 @@ set(NX_SIMD_TEST_SOURCES
   simd/test_simd_linalg.cpp
   simd/test_simd_math.cpp
   simd/test_simd_memory.cpp
+  simd/test_simd_nn.cpp
   simd/test_simd_ops.cpp
   simd/test_simd_pipeline.cpp)
 

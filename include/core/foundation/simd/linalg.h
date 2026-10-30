@@ -35,21 +35,25 @@ template <class T> NX_FORCE_INLINE vec<T> load(const T *p) {
   return unchecked_load<vec<T>>(p, vec<T>::size());
 }
 /// The native vector at p with only the first `left` (possibly <= 0) lanes
-/// read, the rest 0.
+/// read, the rest `fill`.
 template <class T>
-NX_FORCE_INLINE vec<T> load_part(const T *p, ptrdiff_t left) {
+NX_FORCE_INLINE vec<T> load_part(const T *p, ptrdiff_t left, T fill = T(0)) {
   if (left >= ptrdiff_t(vec<T>::size()))
     return load(p);
-  return partial_load<vec<T>>(p, std::max<ptrdiff_t>(left, 0));
+  const vec<T> v = partial_load<vec<T>>(p, std::max<ptrdiff_t>(left, 0));
+  return fill == T(0) ? v : select((iota<vec<T>>) < T(left), v, vec<T>(fill));
 }
 
-template <class T, int N, class Op> T fold_lanes(const vec<T, N> &v, Op op) {
-  if constexpr (N == 1) {
-    return v[0];
-  } else {
-    const auto h = chunk<N / 2>(v);
-    return fold_lanes<T, N / 2>(op(h[0], h[1]), op);
-  }
+// Lane by lane in native vectors: MSVC builds each half of a chunk() as a
+// fixed-size vector on the stack, out of line.
+template <class T, int N, class Op>
+NX_FORCE_INLINE T fold_lanes(const vec<T, N> &v, Op op) {
+  T l[N];
+  unchecked_store(v, l, N);
+  for (int h = N / 2; h >= 1; h /= 2)
+    for (int k = 0; k < h; ++k)
+      l[k] = op(vec<T>(l[k]), vec<T>(l[k + h]))[0];
+  return l[0];
 }
 
 /// The 16-lane tree over s[0..C).
@@ -73,9 +77,10 @@ NX_FORCE_INLINE vec<T> term_at(Term term, size_t i, const P *...x) {
   return term(load(x + i + c * shape<T>::W)...);
 }
 template <int c, class T, class Term, class... P>
-NX_FORCE_INLINE vec<T> term_tail(Term term, size_t i, ptrdiff_t left,
+NX_FORCE_INLINE vec<T> term_tail(Term term, size_t i, ptrdiff_t left, T fill,
                                  const P *...x) {
-  return term(load_part(x + i + c * shape<T>::W, left - c * shape<T>::W)...);
+  return term(
+      load_part(x + i + c * shape<T>::W, left - c * shape<T>::W, fill)...);
 }
 
 // The steps over registers unroll in folds: through a loop over its index
@@ -88,16 +93,17 @@ NX_FORCE_INLINE void accumulate_block(registers<T> &s, Term term, size_t i,
 }
 template <class T, class Term, int... c, class... P>
 NX_FORCE_INLINE void
-accumulate_tail(registers<T> &s, Term term, size_t i, ptrdiff_t left,
+accumulate_tail(registers<T> &s, Term term, size_t i, ptrdiff_t left, T fill,
                 std::integer_sequence<int, c...>, const P *...x) {
-  ((s[c] += term_tail<c, T>(term, i, left, x...)), ...);
+  ((s[c] += term_tail<c, T>(term, i, left, fill, x...)), ...);
 }
 
-/// The sum of term(x0[i], x1[i]...) over i < n in the 16-lane order. term
-/// captures nothing and the pointers are plain locals: MSVC reloads anything
+/// The sum of term(x0[i], x1[i]...) over i < n in the 16-lane order; the
+/// lanes past n load `fill`, where term must give 0. term captures nothing
+/// by reference and the pointers are plain locals: MSVC reloads anything
 /// reached through a reference after every store.
 template <class T, class Term, class... P>
-NX_FORCE_INLINE T accumulate(size_t n, Term term, const P *...x) {
+NX_FORCE_INLINE T accumulate(size_t n, T fill, Term term, const P *...x) {
   constexpr int C = shape<T>::C;
   registers<T> s;
   size_t i = 0;
@@ -116,12 +122,12 @@ NX_FORCE_INLINE T accumulate(size_t n, Term term, const P *...x) {
     }
     if (i < n) {
       const ptrdiff_t left = ptrdiff_t(n - i);
-      s0 += term_tail<0, T>(term, i, left, x...);
+      s0 += term_tail<0, T>(term, i, left, fill, x...);
       if constexpr (C > 1)
-        s1 += term_tail<1, T>(term, i, left, x...);
+        s1 += term_tail<1, T>(term, i, left, fill, x...);
       if constexpr (C > 2) {
-        s2 += term_tail<2, T>(term, i, left, x...);
-        s3 += term_tail<3, T>(term, i, left, x...);
+        s2 += term_tail<2, T>(term, i, left, fill, x...);
+        s3 += term_tail<3, T>(term, i, left, fill, x...);
       }
     }
     const vec<T> named[] = {s0, s1, s2, s3};
@@ -134,7 +140,7 @@ NX_FORCE_INLINE T accumulate(size_t n, Term term, const P *...x) {
     for (; i + lanes <= n; i += lanes)
       accumulate_block<T>(s, term, i, each, x...);
     if (i < n)
-      accumulate_tail<T>(s, term, i, ptrdiff_t(n - i), each, x...);
+      accumulate_tail<T>(s, term, i, ptrdiff_t(n - i), fill, each, x...);
   }
   return fold<T>(s, plus);
 }
@@ -142,17 +148,18 @@ NX_FORCE_INLINE T accumulate(size_t n, Term term, const P *...x) {
 template <class T> T dot(std::span<const T> a, std::span<const T> b) {
   NX_ASSERT(a.size() == b.size(), "dot of spans of different sizes");
   return accumulate<T>(
-      a.size(), [](const vec<T> &p, const vec<T> &q) { return p * q; },
+      a.size(), T(0), [](const vec<T> &p, const vec<T> &q) { return p * q; },
       a.data(), b.data());
 }
 
 template <class T> T sum(std::span<const T> a) {
-  return accumulate<T>(a.size(), [](const vec<T> &p) { return p; }, a.data());
+  return accumulate<T>(
+      a.size(), T(0), [](const vec<T> &p) { return p; }, a.data());
 }
 
 template <class T> T sum_squares(std::span<const T> a) {
   return accumulate<T>(
-      a.size(), [](const vec<T> &p) { return p * p; }, a.data());
+      a.size(), T(0), [](const vec<T> &p) { return p * p; }, a.data());
 }
 
 template <class T> T max(std::span<const T> a) {

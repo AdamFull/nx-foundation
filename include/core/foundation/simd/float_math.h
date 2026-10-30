@@ -5,6 +5,7 @@
 #include <bit>
 #include <climits>
 #include <limits>
+#include <utility>
 
 // Register-wide float exp, log, tanh and erf: Cody-Waite reduction, minimax
 // polynomials and exponent arithmetic in plain +, -, * and /, so every backend
@@ -65,21 +66,31 @@ template <class D> NX_FORCE_INLINE D from_bits(const ints<D> &i) {
   return std::bit_cast<D>(i);
 }
 
+// The steps unroll in folds: MSVC keeps a loop over the coefficients.
+template <class D, size_t K, size_t... k>
+NX_FORCE_INLINE D horner(const D &x, const float (&c)[K],
+                         std::index_sequence<k...>) {
+  D p = c[K - 1];
+  ((p = p * x + c[K - 2 - k]), ...);
+  return p;
+}
 template <class D, size_t K>
 NX_FORCE_INLINE D horner(const D &x, const float (&c)[K]) {
+  return horner(x, c, std::make_index_sequence<K - 1>{});
+}
+template <class D, size_t K, size_t... k>
+NX_FORCE_INLINE D horner_fast(const D &x, const float (&c)[K],
+                              std::index_sequence<k...>) {
   D p = c[K - 1];
-  for (size_t k = K - 1; k-- > 0;)
-    p = p * x + c[k];
+  ((p = access::make<D>(vops<D>::fma(access::data(p), access::data(x),
+                                     access::data(D(c[K - 2 - k]))))),
+   ...);
   return p;
 }
 template <class D, size_t K>
 NX_FORCE_INLINE D horner_fast(const D &x, const float (&c)[K]) {
 #if defined(NX_SIMD_HAS_FMA)
-  D p = c[K - 1];
-  for (size_t k = K - 1; k-- > 0;)
-    p = access::make<D>(
-        vops<D>::fma(access::data(p), access::data(x), access::data(D(c[k]))));
-  return p;
+  return horner_fast(x, c, std::make_index_sequence<K - 1>{});
 #else
   return horner(x, c);
 #endif
