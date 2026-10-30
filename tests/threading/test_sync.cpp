@@ -988,9 +988,15 @@ TEST_CASE("rw_lock: a waiting writer holds back new readers") {
     writer_in.store(true);
     lock.unlock();
   });
-  REQUIRE(wait_until_true([&] { return !lock.try_lock(); }));
+  const auto reader_gets_in = [&] {
+    const bool in = lock.try_lock_shared();
+    if (in)
+      lock.unlock_shared();
+    return in;
+  };
+  CHECK(wait_until_true([&] { return !reader_gets_in(); }));
   std::this_thread::sleep_for(20ms);
-  CHECK_FALSE(lock.try_lock_shared());
+  CHECK_FALSE(reader_gets_in());
   CHECK_FALSE(writer_in.load());
   lock.unlock_shared();
   writer.join();
