@@ -306,6 +306,18 @@ constexpr mat<T, C, R> transpose(const mat<T, R, C> &a) {
     m.columns[r] = a.row(r);
   return m;
 }
+
+/// A float3x4's 12 floats at m as its three rows of 4 floats each at o, the
+/// layout a shader reads. o overlaps nothing it reads.
+inline void affine_rows(const float *m, float *o) {
+  f32x4 c0 = x4::load(m), c1 = x4::load(m + 3), c2 = x4::load(m + 6),
+        c3 = x4::load3(m + 9);
+  x4::transpose(c0, c1, c2, c3);
+  x4::store(o, c0);
+  x4::store(o + 4, c1);
+  x4::store(o + 8, c2);
+}
+
 inline float4x4 transpose(const float4x4 &a) {
   f32x4 c0 = x4::load(&a.columns[0].x), c1 = x4::load(&a.columns[1].x),
         c2 = x4::load(&a.columns[2].x), c3 = x4::load(&a.columns[3].x);

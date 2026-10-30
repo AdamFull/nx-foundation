@@ -194,6 +194,21 @@ TEST_CASE("math matrix: affine products over raw columns of either stride") {
   }
 }
 
+TEST_CASE("math matrix: a float3x4's rows, 4 floats each") {
+  lcg g{14};
+  for (int i = 0; i < 64; ++i) {
+    const float3x4 m =
+        float3x4::from_columns(g.next3(), g.next3(), g.next3(), g.next3());
+    float out[13];
+    out[12] = 1234.5f;
+    affine_rows(&m.columns[0].x, out);
+    for (int r = 0; r < 3; ++r)
+      for (int c = 0; c < 4; ++c)
+        CHECK(out[4 * r + c] == m.columns[c][r]);
+    CHECK(out[12] == 1234.5f);
+  }
+}
+
 TEST_CASE("math matrix: an affine product by a transform") {
   lcg g{13};
   for (int i = 0; i < 256; ++i) {
