@@ -163,6 +163,7 @@ set(NX_FOUNDATION_HEADERS
   simd/complex.h
   simd/detail.h
   simd/float_math.h
+  simd/gemm_kernel.h
   simd/interleave.h
   simd/linalg.h
   simd/math.h
@@ -248,7 +249,15 @@ set(NX_FOUNDATION_SOURCES
   reflection/layout.cpp
   reflection/registry.cpp
   serialization/reflect_json.cpp
-  serialization/reflect_binary.cpp)
+  serialization/reflect_binary.cpp
+  simd/gemm.cpp)
+
+# gemm's AVX2 and FMA kernel, compiled for them alone and chosen at run time.
+set(NX_FOUNDATION_X86_64 OFF)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64|amd64)$")
+  set(NX_FOUNDATION_X86_64 ON)
+  list(APPEND NX_FOUNDATION_SOURCES simd/gemm_avx2.cpp)
+endif()
 
 list(TRANSFORM NX_FOUNDATION_HEADERS PREPEND "include/core/foundation/")
 list(TRANSFORM NX_FOUNDATION_SOURCES PREPEND "include/core/foundation/")
@@ -291,6 +300,10 @@ if(APPLE)
 endif()
 
 add_library(nx_foundation STATIC ${NX_FOUNDATION_SOURCES} ${NX_FOUNDATION_HEADERS})
+if(NX_FOUNDATION_X86_64)
+  set_source_files_properties(include/core/foundation/simd/gemm_avx2.cpp
+    PROPERTIES COMPILE_OPTIONS "$<IF:$<BOOL:${MSVC}>,/arch:AVX2,-mavx2;-mfma>")
+endif()
 add_library(nx::foundation ALIAS nx_foundation)
 
 if(MSVC)

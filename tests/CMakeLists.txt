@@ -120,6 +120,7 @@ set(NX_FOUNDATION_TEST_SOURCES
   simd/test_simd_bit.cpp
   simd/test_simd_complex.cpp
   simd/test_simd_float_math.cpp
+  simd/test_simd_gemm.cpp
   simd/test_simd_interleave.cpp
   simd/test_simd_linalg.cpp
   simd/test_simd_math.cpp
@@ -188,6 +189,7 @@ set(NX_SIMD_TEST_SOURCES
   simd/test_simd_bit.cpp
   simd/test_simd_complex.cpp
   simd/test_simd_float_math.cpp
+  simd/test_simd_gemm.cpp
   simd/test_simd_interleave.cpp
   simd/test_simd_linalg.cpp
   simd/test_simd_math.cpp

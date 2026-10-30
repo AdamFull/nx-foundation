@@ -7,6 +7,10 @@
 #include <span>
 #include <utility>
 
+namespace nx {
+class thread_pool;
+} // namespace nx
+
 // Vector and matrix-vector kernels over spans of float or double. Every sum
 // runs in one order on every backend, so results are the same bits
 // everywhere: lane k of a 16-lane accumulator sums elements k, k + 16, k + 32,
@@ -343,5 +347,33 @@ inline double max(std::span<const double> a) { return impl::max(a); }
 NX_SIMD_LINALG_ELEMENTWISE(float)
 NX_SIMD_LINALG_ELEMENTWISE(double)
 #undef NX_SIMD_LINALG_ELEMENTWISE
+
+enum class gemm_kernel {
+  /// The fastest the CPU runs: AVX2 and FMA where x86-64 has them.
+  best,
+  /// The one built for the target's baseline: SSE2, NEON.
+  baseline,
+};
+
+struct gemm_options {
+  /// C += A B instead of C = A B.
+  bool accumulate = false;
+  /// Fuse each multiply-add where the kernel's CPU can: faster, and the
+  /// results then depend on the kernel.
+  bool fused = false;
+  /// Splits C's rows across the pool's workers once the product is large
+  /// enough to gain; the results do not change.
+  thread_pool *pool = nullptr;
+  gemm_kernel kernel = gemm_kernel::best;
+};
+
+/// C = A B, or C += A B: A is m x k, B is k x n and C is m x n, row-major with
+/// row strides lda, ldb and ldc. Element (i, j) starts at 0 (or C) and adds
+/// a[i][p] b[p][j] for p = 0, 1, ... in turn, each product and sum rounded
+/// on its own unless fused, so every kernel, CPU and pool gives the same bits.
+/// C must not overlap A or B.
+void gemm(size_t m, size_t n, size_t k, const float *a, size_t lda,
+          const float *b, size_t ldb, float *c, size_t ldc,
+          const gemm_options &options = {});
 
 } // namespace nx::simd::linalg

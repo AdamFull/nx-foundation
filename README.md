@@ -350,6 +350,20 @@ const float norm = std::sqrt(la::sum_squares(output));
 - `max` returns NaN if any element is NaN, and -inf for an empty span.
 - The element-wise kernels allow their output to be one of their inputs.
   `gemv_t`'s output must not overlap its inputs.
+- `gemm(m, n, k, a, lda, b, ldb, c, ldc, options)` multiplies row-major
+  matrices: `C = A B`, or `C += A B` with `options.accumulate`. Element
+  (i, j) starts at 0 (or C) and adds `a[i][p] b[p][j]` for p = 0, 1, ... in
+  turn, so every kernel, CPU and thread count gives the same bits.
+  `options.fused` fuses each multiply-add where the kernel's CPU can: faster,
+  and then the bits depend on the kernel.
+- `gemm` packs blocks of A and B (GotoBLAS-style) and runs a register-tile
+  micro-kernel: 4 x 8 on SSE2, 6 x 8 on NEON, and 6 x 16 with AVX2 and FMA,
+  which `simd/gemm_avx2.cpp` compiles for those alone and which runs when
+  CPUID and the OS allow it. That file uses raw intrinsics only, so no inline
+  function compiled for AVX2 can replace a baseline one at link time.
+  `options.kernel = gemm_kernel::baseline` forces the baseline kernel.
+- `options.pool` splits C's rows across a thread pool for products of about
+  2^26 multiply-adds or more.
 
 ## Math
 
