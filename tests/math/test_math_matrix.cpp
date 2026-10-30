@@ -194,6 +194,35 @@ TEST_CASE("math matrix: affine products over raw columns of either stride") {
   }
 }
 
+TEST_CASE("math matrix: an affine product by a transform") {
+  lcg g{13};
+  for (int i = 0; i < 256; ++i) {
+    const float3x4 a =
+        float3x4::from_columns(g.next3(), g.next3(), g.next3(), g.next3());
+    const float4x4 wide_a = float4x4::from_columns(
+        float4(a.columns[0], g.next3().x), float4(a.columns[1], g.next3().x),
+        float4(a.columns[2], g.next3().x), float4(a.columns[3], g.next3().x));
+    // Not unit length: the formula's bits hold for any quaternion.
+    const float3 v = g.next3();
+    const quat q(v, g.next3().x);
+    const float rotation[4] = {q.x, q.y, q.z, q.w};
+    const float3 s = g.next3(), t = g.next3();
+
+    const float3x3 r = to_float3x3(q);
+    const float3x4 b = float3x4::from_columns(
+        r.columns[0] * s.x, r.columns[1] * s.y, r.columns[2] * s.z, t);
+    const float3x4 want = affine_mul(a, b);
+    float out[13];
+    out[12] = 1234.5f;
+    affine_mul_trs<3>(&a.columns[0].x, rotation, &s.x, &t.x, out);
+    CHECK(std::memcmp(out, &want.columns[0].x, 12 * sizeof(float)) == 0);
+    CHECK(out[12] == 1234.5f);
+    affine_mul_trs<4>(&wide_a.columns[0].x, rotation, &s.x, &t.x, out);
+    CHECK(std::memcmp(out, &want.columns[0].x, 12 * sizeof(float)) == 0);
+    CHECK(out[12] == 1234.5f);
+  }
+}
+
 TEST_CASE("math matrix: the 4x4 inverse is glm's") {
   lcg g{3};
   for (int i = 0; i < 256; ++i) {
