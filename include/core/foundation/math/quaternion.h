@@ -139,38 +139,55 @@ constexpr float4x4 to_float4x4(const quat &q) {
       float4(r.columns[2], 0.f), float4(0.f, 0.f, 0.f, 1.f));
 }
 
-/// The rotation of an orthonormal matrix.
-inline quat to_quat(const float3x3 &m) {
+namespace detail {
+
+/// The x, y, z and w of an orthonormal matrix's rotation.
+template <typename T> inline vec<T, 4> rotation_of(const mat<T, 3, 3> &m) {
   const auto &c = m.columns;
-  const float fx = c[0][0] - c[1][1] - c[2][2];
-  const float fy = c[1][1] - c[0][0] - c[2][2];
-  const float fz = c[2][2] - c[0][0] - c[1][1];
-  const float fw = c[0][0] + c[1][1] + c[2][2];
+  const T fx = c[0][0] - c[1][1] - c[2][2];
+  const T fy = c[1][1] - c[0][0] - c[2][2];
+  const T fz = c[2][2] - c[0][0] - c[1][1];
+  const T fw = c[0][0] + c[1][1] + c[2][2];
   int biggest = 0;
-  float f = fw;
+  T f = fw;
   if (fx > f)
     f = fx, biggest = 1;
   if (fy > f)
     f = fy, biggest = 2;
   if (fz > f)
     f = fz, biggest = 3;
-  const float v = std::sqrt(f + 1.f) * 0.5f;
-  const float k = 0.25f / v;
+  const T v = std::sqrt(f + T(1)) * T(0.5);
+  const T k = T(0.25) / v;
   switch (biggest) {
   case 0:
-    return quat(float3((c[1][2] - c[2][1]) * k, (c[2][0] - c[0][2]) * k,
-                       (c[0][1] - c[1][0]) * k),
-                v);
+    return vec<T, 4>((c[1][2] - c[2][1]) * k, (c[2][0] - c[0][2]) * k,
+                     (c[0][1] - c[1][0]) * k, v);
   case 1:
-    return quat(float3(v, (c[0][1] + c[1][0]) * k, (c[2][0] + c[0][2]) * k),
-                (c[1][2] - c[2][1]) * k);
+    return vec<T, 4>(v, (c[0][1] + c[1][0]) * k, (c[2][0] + c[0][2]) * k,
+                     (c[1][2] - c[2][1]) * k);
   case 2:
-    return quat(float3((c[0][1] + c[1][0]) * k, v, (c[1][2] + c[2][1]) * k),
-                (c[2][0] - c[0][2]) * k);
+    return vec<T, 4>((c[0][1] + c[1][0]) * k, v, (c[1][2] + c[2][1]) * k,
+                     (c[2][0] - c[0][2]) * k);
   default:
-    return quat(float3((c[2][0] + c[0][2]) * k, (c[1][2] + c[2][1]) * k, v),
-                (c[0][1] - c[1][0]) * k);
+    return vec<T, 4>((c[2][0] + c[0][2]) * k, (c[1][2] + c[2][1]) * k, v,
+                     (c[0][1] - c[1][0]) * k);
   }
+}
+
+} // namespace detail
+
+/// The rotation of an orthonormal matrix.
+inline quat to_quat(const float3x3 &m) { return quat(detail::rotation_of(m)); }
+
+/// The same worked out and normalized in double, for a cooker's source
+/// matrices.
+inline quat to_quat(const double3x3 &m) {
+  const double4 q = detail::rotation_of(m);
+  const double scale =
+      1.0 / std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  return quat(
+      float4(static_cast<float>(q.x * scale), static_cast<float>(q.y * scale),
+             static_cast<float>(q.z * scale), static_cast<float>(q.w * scale)));
 }
 
 /// The rotation that points -z along direction, which is unit length, with +y
