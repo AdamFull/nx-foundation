@@ -7,20 +7,6 @@
 #include <cstdint>
 #include <type_traits>
 
-// A build may name a header that defines these, to convert to and from another
-// math library's types of the same bytes.
-#ifdef NX_MATH_CONVERSIONS_HEADER
-#include NX_MATH_CONVERSIONS_HEADER
-#endif
-#ifndef NX_MATH_VEC_CONVERSIONS
-#define NX_MATH_VEC_CONVERSIONS(T, N)
-#endif
-#ifndef NX_MATH_MAT_CONVERSIONS
-#define NX_MATH_MAT_CONVERSIONS(T, R, C)
-#endif
-#ifndef NX_MATH_QUAT_CONVERSIONS
-#define NX_MATH_QUAT_CONVERSIONS
-#endif
 
 NX_MATH_BEGIN
 
@@ -46,7 +32,6 @@ template <class T> struct vec<T, 2> {
 
   constexpr vec yx() const { return {y, x}; }
 
-  NX_MATH_VEC_CONVERSIONS(T, 2)
 };
 
 template <class T> struct vec<T, 3> {
@@ -74,7 +59,6 @@ template <class T> struct vec<T, 3> {
   constexpr vec<T, 2> xz() const { return {x, z}; }
   constexpr vec<T, 2> yz() const { return {y, z}; }
 
-  NX_MATH_VEC_CONVERSIONS(T, 3)
 };
 
 template <class T> struct vec<T, 4> {
@@ -110,7 +94,6 @@ template <class T> struct vec<T, 4> {
   constexpr vec<T, 2> zw() const { return {z, w}; }
   constexpr vec<T, 3> xyz() const { return {x, y, z}; }
 
-  NX_MATH_VEC_CONVERSIONS(T, 4)
 };
 
 /// (v[I]...): swizzle<2, 1, 0>(v) is Slang's v.zyx.
@@ -560,6 +543,15 @@ constexpr float f16tof32(uint16_t h) {
   }
   return std::bit_cast<float>(s | (uint32_t(e + (127 - 15)) << 23) |
                               (uint32_t(m) << 13));
+}
+
+/// Two halves in one word, x in the low bits.
+constexpr uint32_t pack_half2x16(const float2 &v) {
+  return uint32_t(f32tof16(v.x)) | uint32_t(f32tof16(v.y)) << 16;
+}
+constexpr float2 unpack_half2x16(uint32_t packed) {
+  return float2(f16tof32(uint16_t(packed & 0xFFFFu)),
+                f16tof32(uint16_t(packed >> 16)));
 }
 
 } // namespace nx::math

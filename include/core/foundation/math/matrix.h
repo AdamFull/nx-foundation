@@ -57,7 +57,6 @@ template <class T, int R, int C> struct mat {
   }
   constexpr bool operator==(const mat &) const = default;
 
-  NX_MATH_MAT_CONVERSIONS(T, R, C)
 };
 
 using float2x2 = mat<float, 2, 2>;

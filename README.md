@@ -404,11 +404,6 @@ matrices `float2x2` to `float4x4` and the non-square shapes (`mat<T, R, C>`),
 `frac`, `rsqrt`, `select`, `mul`, ...), and transform builders
 (`translation`, `rotation`, `perspective_rh_zo`, `look_at_rh`, ...).
 
-A build can define `NX_MATH_CONVERSIONS_HEADER` as a header that defines
-`NX_MATH_VEC_CONVERSIONS(T, N)`, `NX_MATH_MAT_CONVERSIONS(T, R, C)` and
-`NX_MATH_QUAT_CONVERSIONS`, whose text goes inside the types: conversions to
-and from another math library's types of the same bytes.
-
 ```cpp
 #include "core/foundation/math/math.h"
 

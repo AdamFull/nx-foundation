@@ -23,7 +23,6 @@ struct quat {
   constexpr float4 xyzw() const { return {x, y, z, w}; }
   constexpr bool operator==(const quat &) const = default;
 
-  NX_MATH_QUAT_CONVERSIONS
 };
 
 static_assert(sizeof(quat) == 16 && std::is_trivially_copyable_v<quat>);

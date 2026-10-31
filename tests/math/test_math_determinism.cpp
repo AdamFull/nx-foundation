@@ -63,3 +63,10 @@ TEST_CASE("math determinism: every backend computes the same bits") {
   }
   CHECK(h.h == 0x84dc604125619fa2ull);
 }
+
+TEST_CASE("math half: two halves share a word, x in the low bits") {
+  CHECK(nx::math::pack_half2x16(nx::math::float2(1.f, -2.f)) == 0xC0003C00u);
+  const nx::math::float2 back = nx::math::unpack_half2x16(0xC0003C00u);
+  CHECK(back.x == 1.f);
+  CHECK(back.y == -2.f);
+}
