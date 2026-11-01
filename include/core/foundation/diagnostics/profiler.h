@@ -38,6 +38,9 @@ struct hooks {
   void (*zone_end)() noexcept;
   void (*frame_mark)(const char *name) noexcept;
   void (*plot)(const char *name, f64 value) noexcept;
+  /// The calling thread now runs fiber @p fiber, whichever thread it ran on
+  /// before; 0 is the thread's own fiber, which runs no job.
+  void (*fiber_switch)(u32 fiber) noexcept;
 };
 
 namespace detail {

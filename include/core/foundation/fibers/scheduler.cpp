@@ -56,6 +56,8 @@ struct Fiber {
   void *local[nx::cast<usize>(local_slot::Count)] = {};
 #if NX_PROFILE_ENABLED
   const char *profile_name = nullptr;
+#elif NX_PROFILE_HOOKS
+  u32 profile_id = 0;
 #endif
   internal::Waiter waiter;
   u32 target = 0;
@@ -397,6 +399,9 @@ Fiber *SchedulerState::acquire_fiber() noexcept {
   fiber->context.reset(fiber->stack, &fiber_entry);
 #if NX_PROFILE_ENABLED
   fiber->profile_name = profile_fiber_name();
+#elif NX_PROFILE_HOOKS
+  static std::atomic<u32> next_profile_id{1};
+  fiber->profile_id = next_profile_id.fetch_add(1, std::memory_order_relaxed);
 #endif
   fibers[index] = fiber;
   return fiber;
@@ -576,6 +581,9 @@ void SchedulerState::complete(const Handoff handoff) noexcept {
   current_worker()->current = handoff.to;
 #if NX_PROFILE_ENABLED
   profile_switch(*current_worker(), *handoff.to);
+#elif NX_PROFILE_HOOKS
+  if (const nx::profile::hooks *const hooks = nx::profile::active_hooks())
+    hooks->fiber_switch(handoff.to->profile_id);
 #endif
   switch (handoff.after) {
   case After::Nothing:

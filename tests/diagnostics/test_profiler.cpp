@@ -1,4 +1,5 @@
 #include "core/foundation/diagnostics/profiler.h"
+#include "core/foundation/fibers/scheduler.h"
 #include "core/foundation/strings/utf8_string_view.h"
 
 #include "framework/nxtest.h"
@@ -20,6 +21,9 @@ struct Seen {
   const char *plot_name = nullptr;
   f64 plot_value = 0.0;
 } g_seen;
+
+std::atomic<u32> g_switches{0};
+std::atomic<u32> g_job_fibers{0};
 
 constexpr nx::profile::hooks HOOKS{
     .zone_begin =
@@ -44,6 +48,12 @@ constexpr nx::profile::hooks HOOKS{
         [](const char *const name, const f64 value) noexcept {
           g_seen.plot_name = name;
           g_seen.plot_value = value;
+        },
+    .fiber_switch =
+        [](const u32 fiber) noexcept {
+          g_switches.fetch_add(1, std::memory_order_relaxed);
+          if (fiber != 0)
+            g_job_fibers.fetch_add(1, std::memory_order_relaxed);
         },
 };
 
@@ -146,6 +156,21 @@ TEST_CASE("profile macros: a site is one object per zone") {
   }
   CHECK(g_seen.site != first);
   CHECK(alignof(nx::profile::zone_site) >= 8);
+}
+
+TEST_CASE("profile hooks: the scheduler reports the fibers it switches to") {
+  g_switches = 0;
+  g_job_fibers = 0;
+  nx::fiber::scheduler scheduler({.worker_count = 2, .blocking_threads = 1});
+  const Installed installed;
+  const nx::fiber::job job{[](void *) { nx::fiber::run_blocking([] {}); },
+                           nullptr};
+  nx::fiber::counter done;
+  scheduler.run({&job, 1}, &done);
+  scheduler.wait(done);
+  nx::profile::set_hooks(nullptr);
+  CHECK(g_switches.load() > 0);
+  CHECK(g_job_fibers.load() > 0);
 }
 
 TEST_CASE("profile macros: a thread's name waits for a recorder") {
