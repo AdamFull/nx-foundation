@@ -92,7 +92,7 @@ NX_FORCE_INLINE void cpu_relax() noexcept {
 #endif
 #endif
 }
-}
+} // namespace detail
 
 template <typename T>
 concept UnsignedArithmetic = std::is_unsigned_v<T> && std::is_arithmetic_v<T>;
@@ -189,8 +189,8 @@ template <typename To, typename From>
 #endif
 }
 
-// A thread with a deadline can declare that it must not allocate, and be held to it in debug
-// builds.
+// A thread with a deadline can declare that it must not allocate, and be held
+// to it in debug builds.
 #if !defined(NX_ALLOC_GUARD)
 #define NX_ALLOC_GUARD NX_DEBUG
 #endif
@@ -227,9 +227,31 @@ public:
 };
 #endif
 
+#if !defined(NX_BUILD_SHIPPING) || !NX_BUILD_SHIPPING
+#define NX_HEAP_OBSERVER 1
+/// Told the size of every allocation through mem_alloc, on the allocating
+/// thread. It must not allocate. Nothing is told in a Shipping build, where
+/// this is absent.
+using heap_observer = void (*)(usize size) noexcept;
+namespace detail {
+inline std::atomic<heap_observer> g_heap_observer{nullptr};
+}
+inline void set_heap_observer(const heap_observer observer) noexcept {
+  detail::g_heap_observer.store(observer, std::memory_order_release);
+}
+#else
+#define NX_HEAP_OBSERVER 0
+#endif
+
 namespace detail {
 
 [[nodiscard]] inline void *heap_alloc(usize size, usize align) noexcept {
+#if NX_HEAP_OBSERVER
+  if (const heap_observer observer =
+          g_heap_observer.load(std::memory_order_relaxed);
+      observer != nullptr) [[unlikely]]
+    observer(size);
+#endif
 #if NX_USE_MIMALLOC
   return mi_aligned_alloc(align, size);
 #elif defined(NX_PLATFORM_WINDOWS)
@@ -518,7 +540,7 @@ concept SharedRebindable =
 
 struct AdoptShared {};
 
-}
+} // namespace detail
 
 template <typename T> class shared_ptr {
 public:

@@ -8,6 +8,14 @@
 
 namespace {
 
+std::atomic<u64> g_heap_bytes{0};
+std::atomic<u64> g_heap_calls{0};
+
+void count_heap(const usize size) noexcept {
+  g_heap_bytes.fetch_add(size, std::memory_order_relaxed);
+  g_heap_calls.fetch_add(1, std::memory_order_relaxed);
+}
+
 struct Seen {
   int begins = 0;
   int text_begins = 0;
@@ -179,6 +187,22 @@ TEST_CASE("profile macros: a thread's name waits for a recorder") {
   NX_PROFILE_SET_THREAD_NAME("worker");
   CHECK(nx::string_view(nx::profile::thread_name()) == "worker");
   nx::profile::set_thread_name(nullptr);
+}
+
+TEST_CASE("heap observer: told each allocation's size until it is taken off") {
+  g_heap_bytes = 0;
+  g_heap_calls = 0;
+  nx::set_heap_observer(count_heap);
+  void *const first = nx::mem_alloc(100);
+  void *const second = nx::mem_alloc(28, 64);
+  nx::set_heap_observer(nullptr);
+  CHECK(g_heap_bytes.load() == 128);
+  CHECK(g_heap_calls.load() == 2);
+  void *const third = nx::mem_alloc(1000);
+  CHECK(g_heap_bytes.load() == 128);
+  nx::mem_free(first);
+  nx::mem_free(second);
+  nx::mem_free(third);
 }
 
 #endif
