@@ -164,6 +164,8 @@ set(NX_FOUNDATION_TEST_SOURCES
   diagnostics/test_crash.cpp
   diagnostics/test_diagnostic.cpp
   diagnostics/test_log.cpp
+  diagnostics/test_profiler.cpp
+  diagnostics/test_profiler_shipping.cpp
 
   ecs/test_registry.cpp)
 

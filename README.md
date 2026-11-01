@@ -43,7 +43,7 @@ toolchain policy foundation itself is built with, for code that wants the same.
 | --- | --- | --- |
 | `NX_FOUNDATION_MIMALLOC` | `ON` | Allocate through mimalloc; off, the system allocator (`NX_USE_MIMALLOC=0`). |
 | `NX_FOUNDATION_TRACY` | `ON` | Build Tracy's client, the profiler backend. |
-| `NX_ENABLE_PROFILER` | `OFF` | Compile the `NX_PROFILE_*` instrumentation (`NX_PROFILE_ENABLED=1`); needs Tracy. |
+| `NX_ENABLE_PROFILER` | `OFF` | Send the `NX_PROFILE_*` instrumentation to Tracy (`NX_PROFILE_ENABLED=1`); needs Tracy. |
 | `NX_SHIPPING` | `OFF` | A sealed release build (`NX_BUILD_SHIPPING=1`): quieter logs, cooked assets only. |
 | `NX_WARNINGS_AS_ERRORS` | `OFF` | `/WX` or `-Werror` in `nx::foundation_options`. |
 | `NX_FOUNDATION_TESTS` | on when top level | The tests under `tests/` and nxtest (`nx::test`, `nxtest_discover_tests`). |
@@ -549,7 +549,7 @@ non-inlined calls.
 | `nx::log` | `diagnostics/log.h` | Asynchronous multi-sink logger: `nx::logv/logd/logi/logw/loge/logc` helpers, runtime-interned string categories (`log::category("name")`, predefined `app`/`gpu`/`render`/`system`), per-category and global level filtering, and console (colored) / debugger / rotating-file sinks. Records format on the caller. Once `log::attach_drain_pool(pool)` is called (the engine attaches its pool), they queue and a low-priority job on that pool writes them. Otherwise, and whenever the queue is full, the caller writes them itself. `log::flush()` writes whatever is queued on the calling thread, and a fatal report calls it before copying the log tail. `log::init()`/`shutdown()` bracket its lifetime; outside them records go to stderr, and a sink added then, such as the engine's in-game console, observes them beside it. |
 | `nx::crash` | `diagnostics/crash.h` | Cross-platform fatal-report installation, bounded runtime notes and log tail, native minidumps where supported, and explicit non-signal reports. A `Fatal` report may include bounded binary attachments; they are atomically written as sanitized sidecars beside the text report and pruned with their owner. |
 | `NX_ASSERT` | `core/foundation.h` | The one contract check, used throughout foundation in place of `assert`: logs, flushes and breaks in `NX_DEBUG` builds, and compiles out (still type-checked) otherwise. A formatted message, `NX_ASSERT(i < n, "index {} of {}", i, n)`, needs `diagnostics/diagnostic.h`, which also declares the `nx::dbg_*` helpers (break, is-present, wait-for-attach; active in `NX_DEBUG` builds) without pulling in `<windows.h>`. |
-| `NX_PROFILE_*` | `diagnostics/profiler.h` | Zone/frame/thread-name/plot instrumentation macros, forwarding to the Tracy client; `NX_PROFILE_ZONE_TEXT` names a zone at run time. No-ops unless the profile configuration is built (`NX_ENABLE_PROFILER` / `NX_PROFILE_ENABLED`). |
+| `NX_PROFILE_*` | `diagnostics/profiler.h` | Zone/frame/thread-name/plot instrumentation macros; `NX_PROFILE_ZONE_TEXT` names a zone at run time. With `NX_ENABLE_PROFILER` (`NX_PROFILE_ENABLED`) they forward to the Tracy client, and in `NX_SHIPPING` they leave no code. Otherwise (`NX_PROFILE_HOOKS`) they call whatever `nx::profile::hooks` table the program installed with `nx::profile::set_hooks`, and do nothing when none is; foundation keeps no trace of its own. |
 
 ## Utilities and components
 
