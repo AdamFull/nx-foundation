@@ -65,6 +65,22 @@ void set_fiber_local(void *value, local_slot slot = local_slot::User) noexcept;
 /// Whether the caller runs on a pooled fiber's stack rather than its thread's.
 [[nodiscard]] bool in_fiber() noexcept;
 
+class context;
+
+enum class wait_kind : u8 { Nothing, Counter, Sync, Sleep };
+
+/// A fiber suspended until something wakes it, and the address of what that
+/// is: two waiting on the same thing show the same one.
+struct waiting_fiber {
+  const context *fiber = nullptr;
+  wait_kind kind = wait_kind::Nothing;
+  const void *on = nullptr;
+};
+
+/// Calls @p each with every waiting fiber of every scheduler. For reporting a
+/// process gone wrong: it takes no lock, and a fiber may wake meanwhile.
+void for_each_waiting(function_ref<void(const waiting_fiber &)> each) noexcept;
+
 /// Runs fn, which may block in the OS or a driver, on one of the scheduler's
 /// blocking-service threads; the calling fiber moves there and back, so its
 /// worker runs other jobs meanwhile. Outside a fiber, on one of those threads

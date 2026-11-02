@@ -169,6 +169,38 @@ void context::reset(const fiber::stack &stack, const entry_fn entry) noexcept {
   m_sp = build_initial_frame(stack);
 }
 
+bool context::read_suspended(void *const windows_context) const noexcept {
+#if defined(_MSC_VER) && defined(_M_X64)
+  const void *const sp = m_sp;
+  if (sp == nullptr)
+    return false;
+  // nx_fiber_switch's frame, up to and with its return address.
+  constexpr usize FRAME = 0x110;
+  u64 saved[FRAME / sizeof(u64)];
+  SIZE_T read = 0;
+  if (::ReadProcessMemory(::GetCurrentProcess(), sp, saved, FRAME, &read) ==
+          FALSE ||
+      read != FRAME)
+    return false;
+  CONTEXT &out = *static_cast<CONTEXT *>(windows_context);
+  out.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+  out.R15 = saved[0xC8 / 8];
+  out.R14 = saved[0xD0 / 8];
+  out.R13 = saved[0xD8 / 8];
+  out.R12 = saved[0xE0 / 8];
+  out.Rdi = saved[0xE8 / 8];
+  out.Rsi = saved[0xF0 / 8];
+  out.Rbx = saved[0xF8 / 8];
+  out.Rbp = saved[0x100 / 8];
+  out.Rip = saved[0x108 / 8];
+  out.Rsp = reinterpret_cast<u64>(sp) + FRAME;
+  return true;
+#else
+  (void)windows_context;
+  return false;
+#endif
+}
+
 transfer switch_to(context &from, context &to, void *data) noexcept {
   ContextAccess::before_switch(from, to, false);
   RawTransfer out{&from, &to, data};

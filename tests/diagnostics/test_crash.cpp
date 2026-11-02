@@ -9,6 +9,7 @@
 #include "core/foundation/threading/thread.h"
 #include "core/foundation/threading/thread_pool.h"
 
+#include "core/foundation/fibers/sync.h"
 #include "fibers/fiber_test_support.h"
 
 #include <algorithm>
@@ -92,6 +93,12 @@ DWORD run_child(const char *const test_case, const nx::string &where) {
 NX_NO_INLINE void stuck_here() {
   for (;;)
     nx::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+
+NX_NO_INLINE void waits_forever(nx::fiber::counter &never) {
+  nx::fiber::wait(never);
+  // So the wait is not a tail call, and this frame stays on the stack.
+  nx::this_thread::yield();
 }
 #endif
 
@@ -201,7 +208,113 @@ TEST_CASE("crash: a hang ends the process with a report of every thread") {
         nx::string_view::npos);
   (void)nx::fs::remove_all(where);
 }
+
+// Run by the case after it, in a process of its own: it does not return.
+TEST_CASE("crash: (child) a deadlock of fibers") {
+  const char *const where = std::getenv("NX_CRASH_CHILD_DIR");
+  if (where == nullptr)
+    return;
+  nx::crash::Config config;
+  config.directory = where;
+  config.application = "nxtest";
+  REQUIRE(nx::crash::install(config));
+  const u64 offset =
+      reinterpret_cast<u64>(reinterpret_cast<const void *>(&waits_forever)) -
+      reinterpret_cast<u64>(::GetModuleHandleA(nullptr));
+  REQUIRE(nx::fs::file_write_text(
+      nx::fs::path::join(where, nx::string_view("waits_forever")),
+      nx::format("{}", offset)));
+
+  nx::thread_pool pool;
+  nx::fiber::mutex lock;
+  nx::fiber::counter never(1);
+  std::atomic<bool> holding{false};
+  pool.submit([&] {
+    lock.lock();
+    holding.store(true);
+    waits_forever(never);
+  });
+  while (!holding.load())
+    nx::this_thread::yield();
+  pool.submit([&] { lock.lock(); });
+  nx::this_thread::sleep_for(std::chrono::milliseconds(100));
+  REQUIRE(nx::crash::start_hang_watch(300));
+  nx::crash::beat();
+  for (;;)
+    nx::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+
+TEST_CASE("crash: a hang reports the stack of each fiber waiting and on what") {
+  const nx::string where =
+      nx::fs::path::join(report_dir(), nx::string_view("fibers"));
+  (void)nx::fs::remove_all(where);
+  REQUIRE(nx::fs::create_directories(where));
+  CHECK(run_child("crash: (child) a deadlock of fibers", where) ==
+        static_cast<DWORD>(nx::crash::HANG_EXIT_CODE));
+
+  nx::string report;
+  const auto listed = nx::fs::directory_entries(where);
+  REQUIRE(listed);
+  for (const nx::fs::directory_entry &entry : listed.value())
+    if (entry.path.ends_with(".txt")) {
+      const auto text = nx::fs::file_read_text(entry.path);
+      REQUIRE(text);
+      report = text.value();
+    }
+  const nx::string_view text = report;
+  CHECK(text.find("1 waiting on a counter, 1 on a sync object") !=
+        nx::string_view::npos);
+  CHECK(text.find("=== fiber waiting on a sync object") !=
+        nx::string_view::npos);
+  const usize section = text.find("=== fiber waiting on a counter");
+  REQUIRE(section != nx::string_view::npos);
+
+  // The walk from the saved frame reaches the function that waits.
+  const auto noted = nx::fs::file_read_text(
+      nx::fs::path::join(where, nx::string_view("waits_forever")));
+  REQUIRE(noted);
+  const u64 waits_at = std::strtoull(noted.value().c_str(), nullptr, 10);
+  const usize end = text.find("=== ", section + 4);
+  bool found = false;
+  for (usize at = text.find(".exe+0x", section);
+       at != nx::string_view::npos && at < end;
+       at = text.find(".exe+0x", at + 1)) {
+    const u64 frame = std::strtoull(text.substr(at + 7).data(), nullptr, 16);
+    found = found || (frame >= waits_at && frame < waits_at + 0x400);
+  }
+  CHECK(found);
+  (void)nx::fs::remove_all(where);
+}
 #endif
+
+TEST_CASE("crash: for_each_waiting sees a fiber wait and stop waiting") {
+  nx::thread_pool pool;
+  nx::fiber::counter gate(1);
+  const auto waiting_on = [&] {
+    u32 found = 0;
+    const auto each = [&](const nx::fiber::waiting_fiber &waiting) {
+      found +=
+          waiting.on == &gate && waiting.kind == nx::fiber::wait_kind::Counter
+              ? 1u
+              : 0u;
+    };
+    nx::fiber::for_each_waiting(each);
+    return found;
+  };
+  std::atomic<bool> ran{false};
+  nx::task_group group;
+  pool.submit(group, [&] {
+    nx::fiber::wait(gate);
+    ran.store(true);
+  });
+  for (u32 i = 0; i < 2000 && waiting_on() == 0; ++i)
+    nx::this_thread::sleep_for(std::chrono::milliseconds(1));
+  CHECK(waiting_on() == 1u);
+  gate.decrement();
+  group.wait();
+  CHECK(ran.load());
+  CHECK(waiting_on() == 0u);
+}
 
 // A hang watch that went off would end this process, failing the run.
 TEST_CASE("crash: a hang watch leaves alone what beats, what was never armed, "

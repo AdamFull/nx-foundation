@@ -41,6 +41,12 @@ public:
 
   [[nodiscard]] bool suspended() const noexcept { return m_sp != nullptr; }
 
+  /// On Windows x64, fills the Windows CONTEXT at @p windows_context with
+  /// where this suspended fiber would go on from, to walk its stack. False if
+  /// it runs or there is no such thing here. For a report: the fiber may be
+  /// resuming on another thread, which makes the result wrong but not unsafe.
+  [[nodiscard]] bool read_suspended(void *windows_context) const noexcept;
+
 private:
   friend transfer switch_to(context &, context &, void *) noexcept;
   friend void exit_to(context &, context &, void *) noexcept;

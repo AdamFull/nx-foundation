@@ -3,6 +3,8 @@
 #include "core/foundation/core/time.h"
 #include "core/foundation/diagnostics/diagnostic.h"
 #include "core/foundation/diagnostics/log.h"
+#include "core/foundation/fibers/context.h"
+#include "core/foundation/fibers/scheduler.h"
 #include "core/foundation/platform/filesystem.h"
 #include "core/foundation/platform/os.h"
 #include "core/foundation/strings/format.h"
@@ -1105,9 +1107,68 @@ HangWatch &hang_watch() {
   return watch;
 }
 
+/// One line on the fibers waiting, for the top of a hang's report.
+const char *format_waiting(char (&out)[128]) {
+  u32 counters = 0;
+  u32 syncs = 0;
+  u32 sleeps = 0;
+  const auto count = [&](const fiber::waiting_fiber &waiting) {
+    counters += waiting.kind == fiber::wait_kind::Counter ? 1u : 0u;
+    syncs += waiting.kind == fiber::wait_kind::Sync ? 1u : 0u;
+    sleeps += waiting.kind == fiber::wait_kind::Sleep ? 1u : 0u;
+  };
+  fiber::for_each_waiting(count);
+  return nx::format_to(out,
+                       "fibers       : {} waiting on a counter, {} on a sync "
+                       "object, {} asleep",
+                       counters, syncs, sleeps);
+}
+
 #if NX_HAS_WINDOWS_API
 
 constexpr usize HANG_THREADS_MOST = 128;
+constexpr u32 HANG_FIBERS_MOST = 128;
+
+[[nodiscard]] const char *wait_name(const fiber::wait_kind kind) noexcept {
+  switch (kind) {
+  case fiber::wait_kind::Counter:
+    return "a counter";
+  case fiber::wait_kind::Sync:
+    return "a sync object";
+  case fiber::wait_kind::Sleep:
+    return "a sleep";
+  default:
+    return "nothing";
+  }
+}
+
+void write_waiting_fibers(Out &out) noexcept {
+  u32 written = 0;
+  u32 past = 0;
+  const auto write = [&](const fiber::waiting_fiber &waiting) {
+    if (written == HANG_FIBERS_MOST) {
+      ++past;
+      return;
+    }
+    CONTEXT context = {};
+    if (!waiting.fiber->read_suspended(&context))
+      return;
+    ++written;
+    out.text("\n=== fiber waiting on ");
+    out.text(wait_name(waiting.kind));
+    out.text(" ");
+    out.hex(reinterpret_cast<uintptr_t>(waiting.on));
+    out.nl();
+    write_stack(out, &context);
+    out.flush();
+  };
+  fiber::for_each_waiting(write);
+  if (past != 0) {
+    out.text("\nand ");
+    out.dec(past);
+    out.text(" more fibers waiting\n");
+  }
+}
 
 struct SeenThread {
   DWORD id = 0;
@@ -1191,6 +1252,9 @@ void report_hang(const u64 stalled_ms) noexcept {
     out.text("=== hang report ===\n\nreason       : no frame for ");
     out.dec(stalled_ms);
     out.text(" ms\n");
+    char waiting[128];
+    out.text(format_waiting(waiting));
+    out.nl();
     write_runtime(out);
     out.nl();
     out.text(s.preamble, s.preamble_length);
@@ -1202,6 +1266,7 @@ void report_hang(const u64 stalled_ms) noexcept {
     write_notes(out, true);
     write_tail(out, true);
     out.flush();
+    write_waiting_fibers(out);
     for (usize i = 0; i < threads; ++i) {
       out.text("\n=== thread ");
       out.dec(g_seen_threads[i].id);
@@ -1228,9 +1293,11 @@ void report_hang(const u64 stalled_ms) noexcept {
   char reason[64];
   const string_view text =
       nx::format_to(reason, "no frame for {} ms", stalled_ms);
+  char waiting[128];
   // Another thread's stack cannot be walked from here: the OS tombstone or core
-  // dump of the abort below holds them.
-  (void)report({.reason = text, .kind = "hang"});
+  // dump of the abort below holds them. A fiber waiting is in neither.
+  (void)report(
+      {.reason = text, .detail = format_waiting(waiting), .kind = "hang"});
 }
 
 [[noreturn]] void end_hung_process() noexcept { std::abort(); }

@@ -63,6 +63,14 @@ struct Fiber {
   u32 target = 0;
   fiber::priority priority = fiber::priority::Normal;
   Affinity affinity = Affinity::Any;
+  // For a report only: what this fiber is suspended until.
+  std::atomic<wait_kind> waits{wait_kind::Nothing};
+  std::atomic<const void *> waits_on{nullptr};
+
+  void waiting(const wait_kind kind, const void *const on) noexcept {
+    waits_on.store(on, std::memory_order_relaxed);
+    waits.store(kind, std::memory_order_relaxed);
+  }
 };
 
 // Either a job to start or a yielded fiber to resume.
@@ -310,10 +318,21 @@ void counter::decrement() noexcept {
   m_decrementing.fetch_sub(1, std::memory_order_release);
 }
 
+namespace {
+// for_each_waiting's way to them. A process has a few schedulers; one past this
+// many only goes unreported.
+std::atomic<SchedulerState *> g_schedulers[32];
+} // namespace
+
 SchedulerState::SchedulerState(const scheduler::config &requested) noexcept
     : config(requested), stacks({.stack_size = requested.stack_size,
                                  .initial_commit = requested.stack_commit,
                                  .max_cached = requested.max_fibers}) {
+  for (std::atomic<SchedulerState *> &slot : g_schedulers) {
+    SchedulerState *empty = nullptr;
+    if (slot.compare_exchange_strong(empty, this))
+      break;
+  }
   const u32 worker_count = resolve_worker_count(config.worker_count);
   config.worker_count = worker_count;
   const u32 threads = worker_count + config.blocking_threads;
@@ -347,6 +366,11 @@ SchedulerState::SchedulerState(const scheduler::config &requested) noexcept
 }
 
 SchedulerState::~SchedulerState() noexcept {
+  for (std::atomic<SchedulerState *> &slot : g_schedulers) {
+    SchedulerState *self = this;
+    if (slot.compare_exchange_strong(self, nullptr))
+      break;
+  }
   u32 free_count = 0;
   for (Fiber *fiber = nullptr; free_fibers.try_pop(fiber);)
     ++free_count;
@@ -403,7 +427,8 @@ Fiber *SchedulerState::acquire_fiber() noexcept {
   static std::atomic<u32> next_profile_id{1};
   fiber->profile_id = next_profile_id.fetch_add(1, std::memory_order_relaxed);
 #endif
-  fibers[index] = fiber;
+  std::atomic_ref<Fiber *>(fibers[index])
+      .store(fiber, std::memory_order_release);
   return fiber;
 }
 
@@ -650,7 +675,9 @@ void SchedulerState::suspend_until(Worker *worker, fiber::counter &counter,
     help_until(counter, target);
     return;
   }
+  self->waiting(wait_kind::Counter, &counter);
   switch_fiber(self, next, After::Park, &counter);
+  self->waiting(wait_kind::Nothing, nullptr);
 }
 
 // Only reached when every fiber is in use: rather than deadlock, the waiting
@@ -947,7 +974,9 @@ SchedulerState::block(Worker *worker, spin_lock *lock, internal::WaitList *list,
   Handoff out{After::Enqueue, self, next};
   out.lock = lock;
   out.list = list;
+  self->waiting(list != nullptr ? wait_kind::Sync : wait_kind::Sleep, list);
   switch_with(out);
+  self->waiting(wait_kind::Nothing, nullptr);
 
   if (deadline != internal::NO_DEADLINE)
     remove_timer(self);
@@ -1302,6 +1331,28 @@ void set_fiber_local(void *value, const local_slot slot) noexcept {
 bool in_fiber() noexcept {
   const Worker *const worker = current_worker();
   return worker && worker->current != &worker->thread_fiber;
+}
+
+void for_each_waiting(
+    const function_ref<void(const waiting_fiber &)> each) noexcept {
+  for (const std::atomic<SchedulerState *> &slot : g_schedulers) {
+    const SchedulerState *const state = slot.load(std::memory_order_acquire);
+    if (state == nullptr)
+      continue;
+    const u32 count = state->fiber_count.load(std::memory_order_acquire);
+    for (u32 i = 0; i < count; ++i) {
+      // Claimed before it is filled, so a fiber just made can be missing.
+      const Fiber *const fiber = std::atomic_ref<Fiber *>(state->fibers[i])
+                                     .load(std::memory_order_acquire);
+      if (fiber == nullptr)
+        continue;
+      const wait_kind kind = fiber->waits.load(std::memory_order_relaxed);
+      if (kind != wait_kind::Nothing)
+        each({.fiber = &fiber->context,
+              .kind = kind,
+              .on = fiber->waits_on.load(std::memory_order_relaxed)});
+    }
+  }
 }
 
 bool scheduler::on_worker_thread() const noexcept {
