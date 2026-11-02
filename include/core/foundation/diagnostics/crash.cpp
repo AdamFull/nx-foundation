@@ -19,7 +19,9 @@
 #include <signal.h>
 #elif NX_PLATFORM_POSIX
 #include <fcntl.h>
+#include <pthread.h>
 #include <signal.h>
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -423,13 +425,23 @@ const char *signal_name(const int number) noexcept {
 constexpr int HANDLED_SIGNALS[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT};
 struct sigaction g_previous[nx::array_size(HANDLED_SIGNALS)];
 std::atomic_flag g_handling_signal = ATOMIC_FLAG_INIT;
+std::atomic<pthread_t> g_reporter{};
 char g_alt_stack[65536];
 
 void handle_signal(const int number, siginfo_t *const info,
                    void *const context) {
   const int saved_errno = errno;
   State &s = state();
-  if (!g_handling_signal.test_and_set(std::memory_order_relaxed)) {
+  if (g_handling_signal.test_and_set(std::memory_order_acquire)) {
+    // Going on would end the process with the report half written; the thread
+    // that faulted reporting has nothing to wait for.
+    if (!::pthread_equal(g_reporter.load(std::memory_order_acquire),
+                         ::pthread_self())) {
+      const timespec wait{70, 0};
+      ::nanosleep(&wait, nullptr);
+    }
+  } else {
+    g_reporter.store(::pthread_self(), std::memory_order_release);
     const Out::handle_type handle = open_report(s.report_path);
     {
       Out out(handle);
@@ -696,7 +708,20 @@ void write_report(const Request &request) noexcept {
   close_report(handle);
 }
 
+/// How long a thread that faults while another reports waits, longer than the
+/// report is given.
+constexpr DWORD REPORT_WAIT_MS = 70000;
+std::atomic<DWORD> g_reporter{0};
+
+/// Going on would end the process with the report half written; the thread that
+/// faulted reporting has nothing to wait for.
+void wait_for_report() noexcept {
+  if (::GetCurrentThreadId() != g_reporter.load(std::memory_order_acquire))
+    ::Sleep(REPORT_WAIT_MS);
+}
+
 DWORD WINAPI report_on_worker(LPVOID const arg) {
+  g_reporter.store(::GetCurrentThreadId(), std::memory_order_release);
   write_report(*static_cast<const Request *>(arg));
   return 0;
 }
@@ -704,8 +729,10 @@ DWORD WINAPI report_on_worker(LPVOID const arg) {
 LONG WINAPI handle_exception(EXCEPTION_POINTERS *const pointers) {
   State &s = state();
   bool expected = false;
-  if (!s.handling.compare_exchange_strong(expected, true))
+  if (!s.handling.compare_exchange_strong(expected, true)) {
+    wait_for_report();
     return EXCEPTION_CONTINUE_SEARCH;
+  }
 
   static Request request;
   request.pointers = pointers;
@@ -718,6 +745,7 @@ LONG WINAPI handle_exception(EXCEPTION_POINTERS *const pointers) {
     ::WaitForSingleObject(worker, 60000);
     ::CloseHandle(worker);
   } else {
+    g_reporter.store(request.thread_id, std::memory_order_release);
     write_report(request);
   }
   return EXCEPTION_EXECUTE_HANDLER;
@@ -739,7 +767,10 @@ LONG WINAPI handle_exception(EXCEPTION_POINTERS *const pointers) {
     request.thread_id = ::GetCurrentThreadId();
     request.thread_name = thread_label();
     request.reason = reason;
+    g_reporter.store(request.thread_id, std::memory_order_release);
     write_report(request);
+  } else {
+    wait_for_report();
   }
   ::_exit(3);
 }

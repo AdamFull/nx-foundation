@@ -2,6 +2,7 @@
 
 #include "core/foundation/threading/thread.h"
 
+#include <atomic>
 #include <cfenv>
 #include <stdexcept>
 
@@ -181,6 +182,27 @@ TEST_CASE("fiber context: exceptions unwind within a fiber's stack") {
   });
   CHECK(caught);
 }
+
+#if NX_HAS_WINDOWS_API
+TEST_CASE(
+    "fiber context: what nothing on a fiber handles reaches the process's "
+    "unhandled exception filter, as on a thread") {
+  static std::atomic<u32> filtered{0};
+  filtered = 0;
+  const LPTOP_LEVEL_EXCEPTION_FILTER before = ::SetUnhandledExceptionFilter(
+      [](EXCEPTION_POINTERS *const pointers) -> LONG {
+        if (pointers->ExceptionRecord->ExceptionCode != 0xE0FE0001u)
+          return EXCEPTION_CONTINUE_SEARCH;
+        filtered.fetch_add(1);
+        return EXCEPTION_CONTINUE_EXECUTION;
+      });
+  nx::fiber::stack_pool pool;
+  fiber_test::run_on_fiber(
+      pool, [] { ::RaiseException(0xE0FE0001u, 0, 0, nullptr); });
+  ::SetUnhandledExceptionFilter(before);
+  CHECK(filtered.load() == 1u);
+}
+#endif
 
 TEST_CASE("fiber context: a reset context runs its entry again") {
   nx::fiber::stack_pool pool;

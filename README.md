@@ -532,6 +532,14 @@ optimizer does not reuse a thread-local address across a call. Clang has no
 such switch, which is why the scheduler reads its own thread-locals through
 non-inlined calls.
 
+C++ exceptions unwind within a fiber's stack, and `nx::thread_pool` carries what
+a task throws to whoever waits on it. A raw `fiber::context` entry has no such
+capture. A fiber must not wait inside a `catch` block: the runtime keeps the
+exception being handled per thread. A `no_suspend_scope` in the block has debug
+builds assert it. A fault or exception that nothing on a fiber handles
+reaches the process's unhandled-exception filter, as on a thread, so `nx::crash`
+reports it.
+
 ## Platform
 
 | Type | Header | Use it for |
@@ -560,7 +568,7 @@ non-inlined calls.
 | `nx::function` | `core/callable.h` | A type-erased, heap-backed callable wrapper, like `std::function`. |
 | `nx::unique_function` | `core/callable.h` | A move-only callable, like `std::move_only_function`: small targets live inline, larger ones on the nx heap. The shape for queued work. |
 | `nx::inplace_function` | `core/callable.h` | A type-erased callable stored in a fixed inline buffer (16 bytes by default on 64-bit); never allocates. |
-| `nx::function_ref` | `core/callable.h` | A non-owning reference to a callable, for parameters that only call it. |
+| `nx::function_ref` | `core/callable.h` | A non-owning reference to a callable, for parameters that only call it. Kept past the call, a lambda made in that call is gone: an object that keeps one takes an lvalue. |
 | `nx::enums::map` | `core/enum.h` | A fixed array indexed directly by enum value, sized from the enum's `Count`. Zero-overhead enum-to-value lookup. |
 | `nx::enums::flags` | `core/enum.h` | A type-safe bitset over a scoped enum's enumerators, with bit operators. |
 | `nx::result` / `nx::err` | `core/result.h` | An error-or-value type for exception-free error handling, shaped like `std::expected`: it converts from anything its value is made from, compares with `==` against results, values and `err`s, and has `and_then`/`transform`/`or_else`/`transform_error` combinators (a `transform` may return void), `error_or`, `emplace` and `swap`. It is `[[nodiscard]]`. |

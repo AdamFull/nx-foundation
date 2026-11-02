@@ -6,6 +6,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#if defined(_MSC_VER)
+#include <windows.h>
+#endif
+
 extern "C" {
 void *nx_fiber_switch(void **from_sp, void *to_sp, void *data);
 void nx_fiber_start();
@@ -186,6 +190,18 @@ void exit_to(context &from, context &to, void *data) noexcept {
 } // namespace nx::fiber
 
 extern "C" [[noreturn]] void nx_fiber_main(void *transfer) {
+#if defined(_MSC_VER)
+  // What a thread's start does for it: dispatch ends at a fiber's bottom frame,
+  // and with nothing here the process dies with no filter called, so no report.
+  __try {
+    nx::fiber::ContextAccess::run(
+        *static_cast<const nx::fiber::RawTransfer *>(transfer));
+  } __except (::UnhandledExceptionFilter(GetExceptionInformation())) {
+    ::TerminateProcess(::GetCurrentProcess(), GetExceptionCode());
+  }
+  __assume(false);
+#else
   nx::fiber::ContextAccess::run(
       *static_cast<const nx::fiber::RawTransfer *>(transfer));
+#endif
 }

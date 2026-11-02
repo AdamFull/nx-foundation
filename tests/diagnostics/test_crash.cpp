@@ -9,10 +9,16 @@
 #include "core/foundation/threading/thread.h"
 #include "core/foundation/threading/thread_pool.h"
 
+#include "fibers/fiber_test_support.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <string>
+
+#if NX_HAS_WINDOWS_API
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -58,6 +64,77 @@ nx::string read_last() {
 }
 
 } // namespace
+
+#if NX_HAS_WINDOWS_API
+// Run by the case after it, in a process of its own: it does not return.
+TEST_CASE("crash: (child) faults on two fibers at once") {
+  const char *const where = std::getenv("NX_CRASH_CHILD_DIR");
+  if (where == nullptr)
+    return;
+  nx::crash::Config config;
+  config.directory = where;
+  config.application = "nxtest";
+  REQUIRE(nx::crash::install(config));
+  std::atomic<u32> ready{0};
+  const auto fault = [&] {
+    nx::fiber::stack_pool pool;
+    fiber_test::run_on_fiber(pool, [&] {
+      ready.fetch_add(1);
+      while (ready.load() < 2) {
+      }
+      volatile int *const nowhere = nullptr;
+      *nowhere = 1;
+    });
+  };
+  nx::thread first(fault);
+  nx::thread second(fault);
+  first.join();
+  second.join();
+}
+
+TEST_CASE("crash: faults on two fibers at once leave a whole report") {
+  const nx::string where =
+      nx::fs::path::join(report_dir(), nx::string_view("two_fibers"));
+  (void)nx::fs::remove_all(where);
+  REQUIRE(nx::fs::create_directories(where));
+  REQUIRE(_putenv_s("NX_CRASH_CHILD_DIR", where.c_str()) == 0);
+
+  char exe[MAX_PATH] = {};
+  REQUIRE(::GetModuleFileNameA(nullptr, exe, MAX_PATH) != 0);
+  std::string line = std::string("\"") + exe +
+                     "\" \"--test-case=crash: (child) faults on two fibers at "
+                     "once\"";
+  STARTUPINFOA startup = {};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process = {};
+  REQUIRE(::CreateProcessA(nullptr, line.data(), nullptr, nullptr, FALSE, 0,
+                           nullptr, nullptr, &startup, &process) != 0);
+  (void)_putenv_s("NX_CRASH_CHILD_DIR", "");
+  CHECK(::WaitForSingleObject(process.hProcess, 90000) == WAIT_OBJECT_0);
+  DWORD code = 0;
+  ::GetExitCodeProcess(process.hProcess, &code);
+  ::CloseHandle(process.hThread);
+  ::CloseHandle(process.hProcess);
+  CHECK(code == 0xC0000005u);
+
+  bool whole = false;
+  const auto listed = nx::fs::directory_entries(where);
+  REQUIRE(listed);
+  for (const nx::fs::directory_entry &entry : listed.value()) {
+    if (!entry.path.ends_with(".txt"))
+      continue;
+    const auto text = nx::fs::file_read_text(entry.path);
+    REQUIRE(text);
+    const nx::string_view report = text.value();
+    whole =
+        report.find("EXCEPTION_ACCESS_VIOLATION") != nx::string_view::npos &&
+        report.find("application  : nxtest") != nx::string_view::npos &&
+        report.find("--- registers ---") != nx::string_view::npos;
+  }
+  CHECK(whole);
+  (void)nx::fs::remove_all(where);
+}
+#endif
 
 TEST_CASE("crash: install resolves a directory and creates it") {
   const nx::string &where = installed_dir();
