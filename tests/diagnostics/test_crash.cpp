@@ -339,6 +339,33 @@ TEST_CASE("crash: a hang watch leaves alone what beats, what was never armed, "
   nx::crash::stop_hang_watch();
 }
 
+TEST_CASE("crash: a hang watch warns once a stall, at half its timeout, and "
+          "not once removed") {
+  (void)installed_dir();
+  using namespace std::chrono_literals;
+  static std::atomic<u32> warned{0};
+  warned = 0;
+  const nx::crash::hang_warning_fn warn = [](void *) { warned.fetch_add(1); };
+  nx::crash::add_hang_warning(warn, nullptr);
+  REQUIRE(nx::crash::start_hang_watch(4000));
+  const auto stall_until_warned = [&](const u32 count) {
+    nx::crash::beat();
+    for (u32 i = 0; i < 300 && warned.load() < count; ++i)
+      nx::this_thread::sleep_for(10ms);
+  };
+  stall_until_warned(1);
+  CHECK(warned.load() == 1u);
+  // Nothing has beaten yet: the same stall does not warn again.
+  nx::this_thread::sleep_for(600ms);
+  CHECK(warned.load() == 1u);
+  stall_until_warned(2);
+  CHECK(warned.load() == 2u);
+  nx::crash::remove_hang_warning(warn, nullptr);
+  nx::crash::beat();
+  nx::crash::stop_hang_watch();
+  CHECK(warned.load() == 2u);
+}
+
 TEST_CASE("crash: a hang watch needs a timeout") {
   (void)installed_dir();
   CHECK_FALSE(nx::crash::start_hang_watch(0));

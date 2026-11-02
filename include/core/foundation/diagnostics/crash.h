@@ -68,4 +68,11 @@ void beat() noexcept;
 /// While held, no beat is missed: for a process stopped on purpose.
 void hold_hang_watch(bool held) noexcept;
 
+using hang_warning_fn = void (*)(void *user);
+/// Called on the watch's thread once beats have been missing for half its
+/// timeout, once a stall: what can stop what holds the process up does so, and
+/// beats come again. It must not block. May be called until it is removed.
+void add_hang_warning(hang_warning_fn fn, void *user);
+void remove_hang_warning(hang_warning_fn fn, void *user);
+
 } // namespace nx::crash

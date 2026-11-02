@@ -1,5 +1,6 @@
 #include "core/foundation/diagnostics/crash.h"
 
+#include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/time.h"
 #include "core/foundation/diagnostics/diagnostic.h"
 #include "core/foundation/diagnostics/log.h"
@@ -1094,12 +1095,19 @@ std::atomic<bool> g_hang_held{false};
 constexpr std::chrono::seconds HANG_REPORT_DEADLINE{30};
 constexpr u64 HANG_TICK_MOST_NS = 1000000000u;
 
+struct HangWarning {
+  hang_warning_fn fn = nullptr;
+  void *user = nullptr;
+};
+
 struct HangWatch {
   nx::thread monitor;
   nx::thread deadline;
   nx::event wake{true};
   nx::event hung{true};
   std::atomic<bool> stopping{false};
+  nx::mutex warnings_lock;
+  nx::small_vector<HangWarning, 16> warnings;
 };
 
 HangWatch &hang_watch() {
@@ -1304,6 +1312,19 @@ void report_hang(const u64 stalled_ms) noexcept {
 
 #endif
 
+/// False if the list is busy: what holds it may be what hung, so the next tick
+/// tries again rather than this one waiting.
+[[nodiscard]] bool warn_of_hang(const u64 stalled_ms) noexcept {
+  HangWatch &watch = hang_watch();
+  if (!watch.warnings_lock.try_lock())
+    return false;
+  nx::logw(nx::log::system, "crash: no frame for {} ms", stalled_ms);
+  for (const HangWarning &warning : watch.warnings)
+    warning.fn(warning.user);
+  watch.warnings_lock.unlock();
+  return true;
+}
+
 void watch_for_hangs(const u32 timeout_ms, u64 last) noexcept {
   this_thread::set_name("nx-hang-watch");
   HangWatch &watch = hang_watch();
@@ -1311,6 +1332,7 @@ void watch_for_hangs(const u32 timeout_ms, u64 last) noexcept {
   const u64 tick_ns =
       std::min(std::max<u64>(timeout_ns / 8, 1000000u), HANG_TICK_MOST_NS);
   bool armed = false;
+  bool warned = false;
   u64 stalled_ns = 0;
   u64 previous = os::ticks_ns();
   while (!watch.wake.wait_for(std::chrono::nanoseconds(tick_ns))) {
@@ -1323,11 +1345,14 @@ void watch_for_hangs(const u32 timeout_ms, u64 last) noexcept {
         g_hang_held.load(std::memory_order_relaxed) || dbg_is_present()) {
       last = beats;
       stalled_ns = 0;
+      warned = false;
       continue;
     }
     // A wake far later than asked for means this thread could not run either:
     // the machine slept, or something held the whole process.
     stalled_ns += std::min(elapsed, 2 * tick_ns);
+    if (!warned && stalled_ns >= timeout_ns / 2)
+      warned = warn_of_hang(stalled_ns / 1000000u);
     if (stalled_ns < timeout_ns)
       continue;
     watch.hung.set();
@@ -1372,6 +1397,23 @@ void stop_hang_watch() {
   watch.hung.set();
   watch.monitor.join();
   watch.deadline.join();
+}
+
+void add_hang_warning(const hang_warning_fn fn, void *const user) {
+  HangWatch &watch = hang_watch();
+  const nx::scoped_lock<nx::mutex> held(watch.warnings_lock);
+  watch.warnings.push_back({.fn = fn, .user = user});
+}
+
+void remove_hang_warning(const hang_warning_fn fn, void *const user) {
+  HangWatch &watch = hang_watch();
+  const nx::scoped_lock<nx::mutex> held(watch.warnings_lock);
+  for (usize i = 0; i < watch.warnings.size(); ++i)
+    if (watch.warnings[i].fn == fn && watch.warnings[i].user == user) {
+      watch.warnings[i] = watch.warnings.back();
+      watch.warnings.pop_back();
+      return;
+    }
 }
 
 void beat() noexcept { g_beats.fetch_add(1, std::memory_order_relaxed); }
