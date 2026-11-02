@@ -410,6 +410,10 @@ public:
   thread_pool(const thread_pool &) = delete;
   thread_pool &operator=(const thread_pool &) = delete;
 
+  /// How many workers background tasks may hold at once from now on, from one
+  /// to all of them. Those running past a lowered limit finish.
+  void set_background_limit(u32 limit) noexcept;
+
   [[nodiscard]] u32 worker_count() const noexcept {
     return m_scheduler->worker_count();
   }
@@ -738,7 +742,7 @@ private:
   usize m_background_head = 0;
   std::atomic<u32> m_background_pending{0};
   std::atomic<u32> m_background_active{0};
-  u32 m_background_limit = 1;
+  std::atomic<u32> m_background_limit{1};
   bool m_collect_statistics = false;
   bool m_collect_timings = false;
 };

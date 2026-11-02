@@ -156,7 +156,7 @@ bool thread_pool::is_execution_context() const noexcept {
 thread_pool_statistics thread_pool::statistics() const noexcept {
   thread_pool_statistics out;
   out.workers = worker_count();
-  out.background_limit = m_background_limit;
+  out.background_limit = m_background_limit.load(std::memory_order_relaxed);
   out.background_active = m_background_active.load(std::memory_order_relaxed);
   out.enabled = m_collect_statistics;
   out.timings_enabled = m_collect_timings;
@@ -345,11 +345,17 @@ void thread_pool::dispatch(task_node *node) noexcept {
 
 // Pushes and slot releases both end here, and a pump that takes a slot but
 // finds nothing re-checks, so a queued background task is never stranded.
+void thread_pool::set_background_limit(const u32 limit) noexcept {
+  m_background_limit.store(nx::clamp(limit, 1u, worker_count()),
+                           std::memory_order_seq_cst);
+  pump_background();
+}
+
 void thread_pool::pump_background() noexcept {
   for (;;) {
     u32 active = m_background_active.load(std::memory_order_relaxed);
     do {
-      if (active >= m_background_limit)
+      if (active >= m_background_limit.load(std::memory_order_relaxed))
         return;
     } while (!m_background_active.compare_exchange_weak(
         active, active + 1, std::memory_order_seq_cst));

@@ -719,6 +719,45 @@ TEST_CASE("future: when_any propagates the first terminal failure") {
   pool.wait_idle();
 }
 
+TEST_CASE("thread_pool: a background limit set later holds from then on, and "
+          "raising it starts what waits") {
+  nx::thread_pool::config cfg;
+  cfg.thread_count = 4;
+  cfg.collect_statistics = true;
+  nx::thread_pool pool(cfg);
+  pool.set_background_limit(1);
+  CHECK(pool.statistics().background_limit == 1);
+  nx::event release(true);
+  std::atomic<int> started{0};
+  for (int i = 0; i < 6; ++i)
+    pool.submit(nx::task_priority::Background, [&] {
+      started.fetch_add(1, std::memory_order_release);
+      release.wait();
+    });
+  while (started.load(std::memory_order_acquire) == 0)
+    nx::this_thread::yield();
+  nx::this_thread::sleep_for(5ms);
+  CHECK(started.load(std::memory_order_acquire) == 1);
+
+  // Nothing but the raise starts them: the one running never finishes.
+  pool.set_background_limit(3);
+  const auto until = std::chrono::steady_clock::now() + 2s;
+  while (started.load(std::memory_order_acquire) < 3 &&
+         std::chrono::steady_clock::now() < until)
+    nx::this_thread::yield();
+  nx::this_thread::sleep_for(5ms);
+  CHECK(started.load(std::memory_order_acquire) == 3);
+
+  // Clamped to what the pool has.
+  pool.set_background_limit(0);
+  CHECK(pool.statistics().background_limit == 1);
+  pool.set_background_limit(100);
+  CHECK(pool.statistics().background_limit == pool.worker_count());
+  release.set();
+  pool.wait_idle();
+  CHECK(started.load() == 6);
+}
+
 TEST_CASE("thread_pool: background concurrency leaves critical capacity") {
   nx::thread_pool::config cfg;
   cfg.thread_count = 3;
