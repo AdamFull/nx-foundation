@@ -326,12 +326,16 @@ TEST_CASE("fiber sync: threads outside any scheduler and the main thread can "
 
   bool thread_saw = false;
   bool thread_timed_out = false;
+  std::atomic<bool> timed{false};
   nx::thread foreign([&] {
     thread_timed_out = !from_thread.wait_for(10ms);
+    timed.store(true);
     from_thread.wait();
     thread_saw = true;
   });
-  nx::this_thread::sleep_for(30ms);
+  // Set only once the timed wait is over, however late the thread starts.
+  while (!timed.load())
+    nx::this_thread::sleep_for(1ms);
   from_thread.set();
   foreign.join();
   scheduler.wait(counter);

@@ -2,6 +2,7 @@
 #include "framework/nxtest.h"
 
 #include "core/foundation/serialization/asset_policy.h"
+#include "core/foundation/serialization/async_documents.h"
 #include "core/foundation/serialization/json.h"
 #include "core/foundation/serialization/json_binary.h"
 #include "core/foundation/serialization/json_document.h"
@@ -229,4 +230,36 @@ TEST_CASE("json binary: reads back every depth the text parser accepts") {
   const nx::json::value decoded = nx::json::read_binary(r);
   CHECK(r.ok());
   CHECK(decoded == doc.value());
+}
+
+TEST_CASE("json document: load_document reads as an I/O job, as the file "
+          "load does") {
+  vfs_fixture::scoped_vfs guard;
+  nx::vfs::MemoryDevice *const memory = nx::vfs::make_memory_device();
+  const auto cooked_source = nx::json::parse(R"({"from":"cooked"})");
+  REQUIRE(cooked_source);
+  const nx::vector<u8> cooked =
+      nx::json::encode_document(cooked_source.value());
+  memory->add("/config.nxdoc.nxb",
+              nx::blob<u8>({cooked.data(), cooked.size()}));
+  memory->add("/fallback.nxdoc", vfs_fixture::blob_of(R"({"from":"source"})"));
+  nx::vfs::mount("/", memory);
+
+  nx::thread_pool pool(
+      {.thread_count = 2, .name = "nx-test-docs", .blocking_threads = 2});
+  nx::vfs::AsyncIoService io(pool);
+  auto from_cook = nx::json::load_document(io, "/config.nxdoc");
+  auto from_source = nx::json::load_document(io, "/fallback.nxdoc");
+  auto from_nothing = nx::json::load_document(io, "/none.nxdoc");
+
+  auto cook = from_cook.get();
+  REQUIRE(cook);
+  CHECK((*cook)["from"].get_string() == "cooked");
+  auto source = from_source.get();
+  REQUIRE(source);
+  CHECK((*source)["from"].get_string() == "source");
+  CHECK_FALSE(from_nothing.get());
+
+  memory->add("/config.nxdoc.nxb", vfs_fixture::blob_of("broken"));
+  CHECK_FALSE(nx::json::load_document(io, "/config.nxdoc").get());
 }

@@ -112,7 +112,9 @@ struct LoadError {
 /// The INI asset at VFS path @p source (as `/config/modio.ini`): its cooked
 /// sibling `<source>.nxb` when there is one, else, outside Shipping
 /// (asset_policy), the source text parsed. A cooked file that does not decode
-/// is not hidden by its source.
+/// is not hidden by its source. Deprecated: it blocks the caller on the
+/// reads; load(io, source) in async_documents.h takes the same path as an I/O
+/// job.
 [[nodiscard]] nx::result<Document, LoadError> load(nx::string_view source);
 
 } // namespace nx::ini

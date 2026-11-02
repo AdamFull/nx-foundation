@@ -1,6 +1,7 @@
 #include "core/foundation/serialization/json_document.h"
 
 #include "core/foundation/serialization/asset_policy.h"
+#include "core/foundation/serialization/async_documents.h"
 #include "core/foundation/serialization/json_binary.h"
 #include "core/foundation/serialization/nva.h"
 #include "core/foundation/vfs/vfs.h"
@@ -90,24 +91,56 @@ nx::string document_cooked_path(const nx::string_view source) {
   return out;
 }
 
-bool load_document_file(const nx::string_view source, value &out) {
+namespace {
+
+// The one load path: blocking or as an I/O job, only the reads differ.
+template <typename Stat, typename Read>
+[[nodiscard]] std::optional<value> load_with(const nx::string_view source,
+                                             Stat &&stat, Read &&read) {
   const nx::string cooked_path = document_cooked_path(source);
-  const nx::vfs::FileInfo cooked_info = nx::vfs::stat(cooked_path.view());
+  const nx::vfs::FileInfo cooked_info = stat(cooked_path.view());
   if (cooked_info.exists) {
-    const auto cooked = nx::vfs::read(cooked_path.view());
-    return cooked && decode_document({cooked->data(), cooked->size()}, out);
+    const auto cooked = read(cooked_path.view());
+    value decoded;
+    if (!cooked || !decode_document({cooked->data(), cooked->size()}, decoded))
+      return std::nullopt;
+    return decoded;
   }
   if (!nx::asset_policy::can_fallback_to_authored_source(cooked_info.exists))
-    return false;
+    return std::nullopt;
 
-  const auto text = nx::vfs::read_text(source);
-  if (!text)
-    return false;
-  auto parsed = parse_asset_document(text->view());
+  const auto bytes = read(source);
+  if (!bytes)
+    return std::nullopt;
+  auto parsed = parse_asset_document(nx::string_view(
+      reinterpret_cast<const char *>(bytes->data()), bytes->size()));
   if (!parsed)
+    return std::nullopt;
+  return std::move(parsed.value());
+}
+
+} // namespace
+
+bool load_document_file(const nx::string_view source, value &out) {
+  std::optional<value> loaded = load_with(
+      source, [](const nx::fs::path_view path) { return nx::vfs::stat(path); },
+      [](const nx::fs::path_view path) { return nx::vfs::read(path); });
+  if (!loaded)
     return false;
-  out = std::move(parsed.value());
+  out = std::move(*loaded);
   return true;
+}
+
+future<std::optional<value>> load_document(vfs::AsyncIoService &io,
+                                           const nx::string_view source,
+                                           vfs::AsyncIoRequest request) {
+  return io.async(std::move(request), [path = nx::string(source)](
+                                          vfs::AsyncIoContext &context) {
+    return load_with(
+        path.view(),
+        [&](const nx::fs::path_view at) { return context.stat(at); },
+        [&](const nx::fs::path_view at) { return context.read(at); });
+  });
 }
 
 } // namespace nx::json

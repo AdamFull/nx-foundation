@@ -135,6 +135,7 @@ set(NX_FOUNDATION_HEADERS
   serialization/arguments.h
   serialization/asset_contract.h
   serialization/asset_policy.h
+  serialization/async_documents.h
   serialization/json_binary.h
   serialization/json_member_index.h
   serialization/json_document.h

@@ -41,6 +41,8 @@ normalize_asset_document(nx::string_view text,
 /// Loads the cooked sibling first. Editor/development builds may use authored
 /// JSON only when the cooked sibling is absent. Shipping builds require the
 /// cooked asset, and a present but unreadable or malformed cook always fails.
+/// Deprecated: it blocks the caller on the reads; load_document in
+/// async_documents.h takes the same path as an I/O job.
 [[nodiscard]] bool load_document_file(nx::string_view source, value &out);
 
 } // namespace nx::json

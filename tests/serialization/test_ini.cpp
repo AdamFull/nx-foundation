@@ -1,5 +1,6 @@
 #include "framework/nxtest.h"
 
+#include "core/foundation/serialization/async_documents.h"
 #include "core/foundation/serialization/ini.h"
 #include "core/foundation/vfs/vfs.h"
 
@@ -295,4 +296,39 @@ TEST_CASE("ini: assign sees through a byte order mark") {
   REQUIRE(reparsed.has_value());
   REQUIRE(reparsed->find("", "b") != nullptr);
   CHECK(reparsed->find("s", "b") == nullptr);
+}
+
+TEST_CASE("ini: load through an I/O service finds what the blocking load "
+          "finds") {
+  vfs_fixture::scoped_vfs guard;
+  nx::vfs::MemoryDevice *const memory = nx::vfs::make_memory_device();
+  const auto cooked_source = nx::ini::parse("[a]\nfrom = cooked\n");
+  REQUIRE(cooked_source);
+  const nx::vector<u8> cooked = nx::ini::encode(*cooked_source);
+  memory->add("/config/a.ini.nxb",
+              nx::blob<u8>({cooked.data(), cooked.size()}));
+  memory->add("/config/b.ini", vfs_fixture::blob_of("[a]\nfrom = source\n"));
+  memory->add("/config/bad.ini", vfs_fixture::blob_of("[unterminated\n"));
+  nx::vfs::mount("/", memory);
+
+  nx::thread_pool pool(
+      {.thread_count = 2, .name = "nx-test-ini", .blocking_threads = 2});
+  nx::vfs::AsyncIoService io(pool);
+  const auto a = nx::ini::load(io, "/config/a.ini").get();
+  REQUIRE(a);
+  CHECK(a->find("a", "from")->view() == "cooked");
+  const auto b = nx::ini::load(io, "/config/b.ini").get();
+  REQUIRE(b);
+  CHECK(b->find("a", "from")->view() == "source");
+  const auto missing = nx::ini::load(io, "/config/none.ini").get();
+  REQUIRE_FALSE(missing);
+  CHECK(missing.error().kind == nx::ini::LoadErrorKind::NotFound);
+  const auto bad = nx::ini::load(io, "/config/bad.ini").get();
+  REQUIRE_FALSE(bad);
+  CHECK(bad.error().kind == nx::ini::LoadErrorKind::Invalid);
+
+  memory->add("/config/a.ini.nxb", vfs_fixture::blob_of("broken"));
+  const auto broken = nx::ini::load(io, "/config/a.ini").get();
+  REQUIRE_FALSE(broken);
+  CHECK(broken.error().kind == nx::ini::LoadErrorKind::Malformed);
 }

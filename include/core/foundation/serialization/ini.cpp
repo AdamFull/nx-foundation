@@ -1,6 +1,7 @@
 #include "core/foundation/serialization/ini.h"
 
 #include "core/foundation/serialization/asset_policy.h"
+#include "core/foundation/serialization/async_documents.h"
 #include "core/foundation/serialization/nva.h"
 #include "core/foundation/vfs/vfs.h"
 
@@ -489,12 +490,17 @@ nx::string_view LoadError::message() const noexcept {
   return "unknown error";
 }
 
-nx::result<Document, LoadError> load(const nx::string_view source) {
+namespace {
+
+// The one load path: blocking or as an I/O job, only the reads differ.
+template <typename Stat, typename Read>
+[[nodiscard]] nx::result<Document, LoadError>
+load_with(const nx::string_view source, Stat &&stat, Read &&read) {
   nx::string cooked_path(source);
   cooked_path += ".nxb";
-  const nx::vfs::FileInfo cooked_info = nx::vfs::stat(cooked_path.view());
+  const nx::vfs::FileInfo cooked_info = stat(cooked_path.view());
   if (cooked_info.exists) {
-    const auto cooked = nx::vfs::read(cooked_path.view());
+    const auto cooked = read(cooked_path.view());
     if (!cooked)
       return nx::err(LoadError{.kind = LoadErrorKind::Unreadable});
     std::optional<Document> decoded = decode({cooked->data(), cooked->size()});
@@ -504,17 +510,38 @@ nx::result<Document, LoadError> load(const nx::string_view source) {
   }
   if (!nx::asset_policy::can_fallback_to_authored_source(cooked_info.exists))
     return nx::err(LoadError{.kind = LoadErrorKind::NotFound});
-  const auto text = nx::vfs::read_text(source);
-  if (!text)
+  const auto bytes = read(source);
+  if (!bytes)
     return nx::err(
-        LoadError{.kind = text.error().kind == nx::fs::io_error::NotFound
+        LoadError{.kind = bytes.error().kind == nx::fs::io_error::NotFound
                               ? LoadErrorKind::NotFound
                               : LoadErrorKind::Unreadable});
-  auto parsed = parse(text->view());
+  auto parsed = parse(nx::string_view(
+      reinterpret_cast<const char *>(bytes->data()), bytes->size()));
   if (!parsed)
     return nx::err(
         LoadError{.kind = LoadErrorKind::Invalid, .parse = parsed.error()});
   return std::move(parsed.value());
+}
+
+} // namespace
+
+nx::result<Document, LoadError> load(const nx::string_view source) {
+  return load_with(
+      source, [](const nx::fs::path_view path) { return nx::vfs::stat(path); },
+      [](const nx::fs::path_view path) { return nx::vfs::read(path); });
+}
+
+future<nx::result<Document, LoadError>> load(vfs::AsyncIoService &io,
+                                             const nx::string_view source,
+                                             vfs::AsyncIoRequest request) {
+  return io.async(std::move(request), [path = nx::string(source)](
+                                          vfs::AsyncIoContext &context) {
+    return load_with(
+        path.view(),
+        [&](const nx::fs::path_view at) { return context.stat(at); },
+        [&](const nx::fs::path_view at) { return context.read(at); });
+  });
 }
 
 } // namespace nx::ini
