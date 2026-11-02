@@ -1,6 +1,7 @@
 #include "core/foundation/diagnostics/crash.h"
 
 #include "core/foundation/core/time.h"
+#include "core/foundation/diagnostics/diagnostic.h"
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/platform/filesystem.h"
 #include "core/foundation/platform/os.h"
@@ -17,6 +18,7 @@
 // Do not reorder!
 #include <dbghelp.h>
 #include <signal.h>
+#include <tlhelp32.h>
 #elif NX_PLATFORM_POSIX
 #include <fcntl.h>
 #include <pthread.h>
@@ -932,6 +934,7 @@ bool install(const Config &config) {
 
 void shutdown() {
   State &s = state();
+  stop_hang_watch();
   if (!s.installed.exchange(false, std::memory_order_acq_rel))
     return;
   remove_handlers();
@@ -1077,6 +1080,237 @@ vector<string> pending_reports() {
   if (!listed)
     return found;
   return newest_first(listed.value(), false);
+}
+
+namespace {
+
+std::atomic<u64> g_beats{0};
+std::atomic<bool> g_hang_held{false};
+
+/// How long a hang's report may take before the process just ends: what hung
+/// may hold a lock the report wants.
+constexpr std::chrono::seconds HANG_REPORT_DEADLINE{30};
+constexpr u64 HANG_TICK_MOST_NS = 1000000000u;
+
+struct HangWatch {
+  nx::thread monitor;
+  nx::thread deadline;
+  nx::event wake{true};
+  nx::event hung{true};
+  std::atomic<bool> stopping{false};
+};
+
+HangWatch &hang_watch() {
+  static HangWatch watch;
+  return watch;
+}
+
+#if NX_HAS_WINDOWS_API
+
+constexpr usize HANG_THREADS_MOST = 128;
+
+struct SeenThread {
+  DWORD id = 0;
+  CONTEXT context = {};
+};
+SeenThread g_seen_threads[HANG_THREADS_MOST];
+
+/// Each other thread's registers, each stopped only as long as it takes: one
+/// stopped holding a lock the walks below want would hang the report.
+usize see_threads() noexcept {
+  const HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+  if (snapshot == INVALID_HANDLE_VALUE)
+    return 0;
+  usize seen = 0;
+  THREADENTRY32 entry = {};
+  entry.dwSize = sizeof(entry);
+  for (BOOL more = ::Thread32First(snapshot, &entry);
+       more != FALSE && seen < HANG_THREADS_MOST;
+       more = ::Thread32Next(snapshot, &entry)) {
+    if (entry.th32OwnerProcessID != ::GetCurrentProcessId() ||
+        entry.th32ThreadID == ::GetCurrentThreadId())
+      continue;
+    const HANDLE thread = ::OpenThread(
+        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, entry.th32ThreadID);
+    if (thread == nullptr)
+      continue;
+    if (::SuspendThread(thread) != static_cast<DWORD>(-1)) {
+      SeenThread &out = g_seen_threads[seen];
+      out.id = entry.th32ThreadID;
+      out.context.ContextFlags = CONTEXT_FULL;
+      if (::GetThreadContext(thread, &out.context) != FALSE)
+        ++seen;
+      ::ResumeThread(thread);
+    }
+    ::CloseHandle(thread);
+  }
+  ::CloseHandle(snapshot);
+  return seen;
+}
+
+void write_thread_name(Out &out, const DWORD id) noexcept {
+  const HANDLE thread =
+      ::OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, id);
+  if (thread == nullptr)
+    return;
+  PWSTR wide = nullptr;
+  if (SUCCEEDED(::GetThreadDescription(thread, &wide)) && wide != nullptr) {
+    char name[128] = {};
+    if (::WideCharToMultiByte(CP_UTF8, 0, wide, -1, name, sizeof(name), nullptr,
+                              nullptr) > 0)
+      out.text(name);
+    ::LocalFree(wide);
+  }
+  ::CloseHandle(thread);
+}
+
+void report_hang(const u64 stalled_ms) noexcept {
+  State &s = state();
+  bool expected = false;
+  if (!s.handling.compare_exchange_strong(expected, true)) {
+    wait_for_report();
+    return;
+  }
+  g_reporter.store(::GetCurrentThreadId(), std::memory_order_release);
+
+  char stamp[64] = {};
+  stamp_now(stamp, sizeof(stamp));
+  char name[256];
+  const string where(directory());
+  copy_into(s.report_path, PATH_CAPACITY,
+            fs::path::join(where, nx::format_to(name, "hang-{}-{}.txt",
+                                                string_view(stamp), s.pid)));
+  copy_into(s.dump_path, PATH_CAPACITY,
+            fs::path::join(where, nx::format_to(name, "hang-{}-{}.dmp",
+                                                string_view(stamp), s.pid)));
+
+  const usize threads = see_threads();
+  const Out::handle_type handle = open_report(s.report_path);
+  {
+    Out out(handle);
+    out.text("=== hang report ===\n\nreason       : no frame for ");
+    out.dec(stalled_ms);
+    out.text(" ms\n");
+    write_runtime(out);
+    out.nl();
+    out.text(s.preamble, s.preamble_length);
+    if (s.minidump && g_write_dump != nullptr) {
+      out.text("minidump     : ");
+      out.text(s.dump_path);
+      out.nl();
+    }
+    write_notes(out, true);
+    write_tail(out, true);
+    out.flush();
+    for (usize i = 0; i < threads; ++i) {
+      out.text("\n=== thread ");
+      out.dec(g_seen_threads[i].id);
+      out.text(" ");
+      write_thread_name(out, g_seen_threads[i].id);
+      out.nl();
+      write_stack(out, &g_seen_threads[i].context);
+      out.flush();
+    }
+  }
+  close_report(handle);
+  // Last: it can be large, and the deadline is for the whole report.
+  write_dump(nullptr, 0);
+}
+
+[[noreturn]] void end_hung_process() noexcept {
+  ::TerminateProcess(::GetCurrentProcess(), static_cast<UINT>(HANG_EXIT_CODE));
+  ::_exit(HANG_EXIT_CODE);
+}
+
+#else
+
+void report_hang(const u64 stalled_ms) noexcept {
+  char reason[64];
+  const string_view text =
+      nx::format_to(reason, "no frame for {} ms", stalled_ms);
+  // Another thread's stack cannot be walked from here: the OS tombstone or core
+  // dump of the abort below holds them.
+  (void)report({.reason = text, .kind = "hang"});
+}
+
+[[noreturn]] void end_hung_process() noexcept { std::abort(); }
+
+#endif
+
+void watch_for_hangs(const u32 timeout_ms, u64 last) noexcept {
+  this_thread::set_name("nx-hang-watch");
+  HangWatch &watch = hang_watch();
+  const u64 timeout_ns = u64(timeout_ms) * 1000000u;
+  const u64 tick_ns =
+      std::min(std::max<u64>(timeout_ns / 8, 1000000u), HANG_TICK_MOST_NS);
+  bool armed = false;
+  u64 stalled_ns = 0;
+  u64 previous = os::ticks_ns();
+  while (!watch.wake.wait_for(std::chrono::nanoseconds(tick_ns))) {
+    const u64 now = os::ticks_ns();
+    const u64 elapsed = now - previous;
+    previous = now;
+    const u64 beats = g_beats.load(std::memory_order_relaxed);
+    armed = armed || beats != last;
+    if (beats != last || !armed ||
+        g_hang_held.load(std::memory_order_relaxed) || dbg_is_present()) {
+      last = beats;
+      stalled_ns = 0;
+      continue;
+    }
+    // A wake far later than asked for means this thread could not run either:
+    // the machine slept, or something held the whole process.
+    stalled_ns += std::min(elapsed, 2 * tick_ns);
+    if (stalled_ns < timeout_ns)
+      continue;
+    watch.hung.set();
+    nx::loge(nx::log::system, "crash: no frame for {} ms, ending the process",
+             stalled_ns / 1000000u);
+    report_hang(stalled_ns / 1000000u);
+    end_hung_process();
+  }
+}
+
+} // namespace
+
+bool start_hang_watch(const u32 timeout_ms) {
+  HangWatch &watch = hang_watch();
+  if (timeout_ms == 0 || !installed() || watch.monitor.joinable())
+    return false;
+  watch.stopping.store(false, std::memory_order_relaxed);
+  watch.wake.reset();
+  watch.hung.reset();
+  g_hang_held.store(false, std::memory_order_relaxed);
+  watch.deadline = nx::thread([&watch] {
+    this_thread::set_name("nx-hang-deadline");
+    watch.hung.wait();
+    if (watch.stopping.load(std::memory_order_acquire))
+      return;
+    this_thread::sleep_for(HANG_REPORT_DEADLINE);
+    end_hung_process();
+  });
+  // Here, not on the thread: a beat before it starts still arms it.
+  const u64 beats = g_beats.load(std::memory_order_relaxed);
+  watch.monitor =
+      nx::thread([timeout_ms, beats] { watch_for_hangs(timeout_ms, beats); });
+  return true;
+}
+
+void stop_hang_watch() {
+  HangWatch &watch = hang_watch();
+  if (!watch.monitor.joinable())
+    return;
+  watch.stopping.store(true, std::memory_order_release);
+  watch.wake.set();
+  watch.hung.set();
+  watch.monitor.join();
+  watch.deadline.join();
+}
+
+void beat() noexcept { g_beats.fetch_add(1, std::memory_order_relaxed); }
+
+void hold_hang_watch(const bool held) noexcept {
+  g_hang_held.store(held, std::memory_order_relaxed);
 }
 
 } // namespace nx::crash

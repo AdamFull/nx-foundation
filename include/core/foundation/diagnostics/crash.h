@@ -53,4 +53,19 @@ bool report(const Fatal &fatal);
 [[nodiscard]] string_view last_report() noexcept;
 [[nodiscard]] vector<string> pending_reports();
 
+/// What a process the hang watch ended exits with, where it can choose.
+inline constexpr i32 HANG_EXIT_CODE = 4;
+
+/// Watches, on threads of its own, for beat() to stop being called: after
+/// @p timeout_ms without one it writes a report of every thread, where the
+/// platform can, and ends the process. The first beat arms it, so what runs
+/// before that is not watched. Time a debugger holds the process, and time the
+/// machine sleeps, do not count. False if nothing is installed or it runs.
+bool start_hang_watch(u32 timeout_ms);
+void stop_hang_watch();
+/// Says the process got somewhere. Any thread, and cheap.
+void beat() noexcept;
+/// While held, no beat is missed: for a process stopped on purpose.
+void hold_hang_watch(bool held) noexcept;
+
 } // namespace nx::crash

@@ -63,6 +63,38 @@ nx::string read_last() {
   return text.value();
 }
 
+#if NX_HAS_WINDOWS_API
+/// Runs @p test_case in a process of its own, reporting into @p where; what it
+/// exited with.
+DWORD run_child(const char *const test_case, const nx::string &where) {
+  REQUIRE(_putenv_s("NX_CRASH_CHILD_DIR", where.c_str()) == 0);
+  char exe[MAX_PATH] = {};
+  REQUIRE(::GetModuleFileNameA(nullptr, exe, MAX_PATH) != 0);
+  std::string line =
+      std::string("\"") + exe + "\" \"--test-case=" + test_case + "\"";
+  STARTUPINFOA startup = {};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process = {};
+  REQUIRE(::CreateProcessA(nullptr, line.data(), nullptr, nullptr, FALSE, 0,
+                           nullptr, nullptr, &startup, &process) != 0);
+  (void)_putenv_s("NX_CRASH_CHILD_DIR", "");
+  const DWORD waited = ::WaitForSingleObject(process.hProcess, 90000);
+  CHECK(waited == WAIT_OBJECT_0);
+  if (waited != WAIT_OBJECT_0)
+    ::TerminateProcess(process.hProcess, 1);
+  DWORD code = 0;
+  ::GetExitCodeProcess(process.hProcess, &code);
+  ::CloseHandle(process.hThread);
+  ::CloseHandle(process.hProcess);
+  return code;
+}
+
+NX_NO_INLINE void stuck_here() {
+  for (;;)
+    nx::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+#endif
+
 } // namespace
 
 #if NX_HAS_WINDOWS_API
@@ -97,25 +129,8 @@ TEST_CASE("crash: faults on two fibers at once leave a whole report") {
       nx::fs::path::join(report_dir(), nx::string_view("two_fibers"));
   (void)nx::fs::remove_all(where);
   REQUIRE(nx::fs::create_directories(where));
-  REQUIRE(_putenv_s("NX_CRASH_CHILD_DIR", where.c_str()) == 0);
-
-  char exe[MAX_PATH] = {};
-  REQUIRE(::GetModuleFileNameA(nullptr, exe, MAX_PATH) != 0);
-  std::string line = std::string("\"") + exe +
-                     "\" \"--test-case=crash: (child) faults on two fibers at "
-                     "once\"";
-  STARTUPINFOA startup = {};
-  startup.cb = sizeof(startup);
-  PROCESS_INFORMATION process = {};
-  REQUIRE(::CreateProcessA(nullptr, line.data(), nullptr, nullptr, FALSE, 0,
-                           nullptr, nullptr, &startup, &process) != 0);
-  (void)_putenv_s("NX_CRASH_CHILD_DIR", "");
-  CHECK(::WaitForSingleObject(process.hProcess, 90000) == WAIT_OBJECT_0);
-  DWORD code = 0;
-  ::GetExitCodeProcess(process.hProcess, &code);
-  ::CloseHandle(process.hThread);
-  ::CloseHandle(process.hProcess);
-  CHECK(code == 0xC0000005u);
+  CHECK(run_child("crash: (child) faults on two fibers at once", where) ==
+        0xC0000005u);
 
   bool whole = false;
   const auto listed = nx::fs::directory_entries(where);
@@ -134,7 +149,87 @@ TEST_CASE("crash: faults on two fibers at once leave a whole report") {
   CHECK(whole);
   (void)nx::fs::remove_all(where);
 }
+
+// Run by the case after it, in a process of its own: it does not return.
+TEST_CASE("crash: (child) a hang") {
+  const char *const where = std::getenv("NX_CRASH_CHILD_DIR");
+  if (where == nullptr)
+    return;
+  nx::crash::Config config;
+  config.directory = where;
+  config.application = "nxtest";
+  REQUIRE(nx::crash::install(config));
+  REQUIRE(nx::crash::start_hang_watch(300));
+  nx::thread stuck([] {
+    nx::this_thread::set_name("stuck-thread");
+    stuck_here();
+  });
+  nx::crash::beat();
+  stuck.join();
+}
+
+TEST_CASE("crash: a hang ends the process with a report of every thread") {
+  const nx::string where =
+      nx::fs::path::join(report_dir(), nx::string_view("a_hang"));
+  (void)nx::fs::remove_all(where);
+  REQUIRE(nx::fs::create_directories(where));
+  CHECK(run_child("crash: (child) a hang", where) ==
+        static_cast<DWORD>(nx::crash::HANG_EXIT_CODE));
+
+  nx::string report;
+  bool dump = false;
+  const auto listed = nx::fs::directory_entries(where);
+  REQUIRE(listed);
+  for (const nx::fs::directory_entry &entry : listed.value()) {
+    if (entry.path.ends_with(".dmp"))
+      dump = true;
+    if (entry.path.ends_with(".txt")) {
+      const auto text = nx::fs::file_read_text(entry.path);
+      REQUIRE(text);
+      report = text.value();
+    }
+  }
+  CHECK(dump);
+  const nx::string_view text = report;
+  CHECK(text.find("=== hang report ===") != nx::string_view::npos);
+  CHECK(text.find("no frame for") != nx::string_view::npos);
+  CHECK(text.find("application  : nxtest") != nx::string_view::npos);
+  const usize stuck = text.find("stuck-thread");
+  REQUIRE(stuck != nx::string_view::npos);
+  // The stuck thread's stack reaches this executable's own code.
+  CHECK(text.find(".exe+", text.find("--- backtrace ---", stuck)) !=
+        nx::string_view::npos);
+  (void)nx::fs::remove_all(where);
+}
 #endif
+
+// A hang watch that went off would end this process, failing the run.
+TEST_CASE("crash: a hang watch leaves alone what beats, what was never armed, "
+          "and what is held") {
+  (void)installed_dir();
+  using namespace std::chrono_literals;
+  REQUIRE(nx::crash::start_hang_watch(100));
+  CHECK_FALSE(nx::crash::start_hang_watch(100));
+  nx::this_thread::sleep_for(400ms);
+  for (u32 i = 0; i < 30; ++i) {
+    nx::crash::beat();
+    nx::this_thread::sleep_for(15ms);
+  }
+  nx::crash::hold_hang_watch(true);
+  nx::this_thread::sleep_for(400ms);
+  nx::crash::beat();
+  nx::crash::hold_hang_watch(false);
+  nx::crash::beat();
+  nx::crash::stop_hang_watch();
+  nx::this_thread::sleep_for(200ms);
+  REQUIRE(nx::crash::start_hang_watch(100));
+  nx::crash::stop_hang_watch();
+}
+
+TEST_CASE("crash: a hang watch needs a timeout") {
+  (void)installed_dir();
+  CHECK_FALSE(nx::crash::start_hang_watch(0));
+}
 
 TEST_CASE("crash: install resolves a directory and creates it") {
   const nx::string &where = installed_dir();
