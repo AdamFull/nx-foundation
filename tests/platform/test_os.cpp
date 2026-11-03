@@ -19,6 +19,24 @@ using namespace std::chrono_literals;
 
 namespace vmem = nx::vmem;
 
+TEST_CASE("os: a moment in seconds since 1970 is shown in the user's time "
+          "zone") {
+  // 2023-11-14 22:13:20 UTC: no zone is more than 14 hours from it, and
+  // every zone is a whole number of quarter hours.
+  const std::optional<nx::os::LocalTime> at = nx::os::local_time(1'700'000'000);
+  REQUIRE(at.has_value());
+  CHECK(at->year == 2023);
+  CHECK(at->month == 11);
+  CHECK((at->day == 14 || at->day == 15));
+  CHECK(at->minute % 15 == 13 % 15);
+  CHECK(at->second == 20);
+  const std::optional<nx::os::LocalTime> later =
+      nx::os::local_time(1'700'000'000 + 61);
+  REQUIRE(later.has_value());
+  CHECK(later->second == 21);
+  CHECK(later->minute == (at->minute + 1) % 60);
+}
+
 TEST_CASE("vmem: page size and allocation granularity are sane powers of two") {
   const usize page = vmem::get_page_size();
   const usize gran = vmem::get_allocation_granularity();

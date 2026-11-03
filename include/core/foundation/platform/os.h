@@ -39,6 +39,20 @@ MemStats mem_get_stats() noexcept;
 u64 ticks_ns() noexcept;
 u64 ticks_ms() noexcept;
 
+// A moment as the user's clock and calendar show it, in their time zone.
+struct LocalTime {
+  i32 year = 1970;
+  u8 month = 1;
+  u8 day = 1;
+  u8 hour = 0;
+  u8 minute = 0;
+  u8 second = 0;
+};
+
+// @p seconds since 1970 as the user's clock shows it; nothing where it
+// cannot be told.
+[[nodiscard]] std::optional<LocalTime> local_time(i64 seconds) noexcept;
+
 // Total physical system memory in megabytes (0 if it cannot be determined).
 u32 system_ram_mb() noexcept;
 

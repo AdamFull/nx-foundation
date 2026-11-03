@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <ctime>
 
 #if NX_USE_MIMALLOC
 #include <mimalloc-stats.h>
@@ -461,6 +462,24 @@ usize cpu_brand(char *const out, const usize capacity) noexcept {
 #else
   return say(out, capacity, "");
 #endif
+}
+
+std::optional<LocalTime> local_time(const i64 seconds) noexcept {
+  const auto at = nx::cast<std::time_t>(seconds);
+  std::tm tmv = {};
+#if NX_HAS_WINDOWS_API
+  if (localtime_s(&tmv, &at) != 0)
+    return std::nullopt;
+#else
+  if (localtime_r(&at, &tmv) == nullptr)
+    return std::nullopt;
+#endif
+  return LocalTime{.year = tmv.tm_year + 1900,
+                   .month = nx::cast<u8>(tmv.tm_mon + 1),
+                   .day = nx::cast<u8>(tmv.tm_mday),
+                   .hour = nx::cast<u8>(tmv.tm_hour),
+                   .minute = nx::cast<u8>(tmv.tm_min),
+                   .second = nx::cast<u8>(tmv.tm_sec)};
 }
 
 u32 process_id() noexcept {
