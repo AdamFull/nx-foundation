@@ -32,6 +32,8 @@ public:
   public:
     constexpr reference(bit_array &owner, const usize pos) noexcept
         : m_owner(&owner), m_pos(pos) {}
+    /// Another proxy of the same bit; assigning one writes its bit's value.
+    constexpr reference(const reference &) noexcept = default;
 
     constexpr reference &operator=(const bool value) noexcept {
       m_owner->set(m_pos, value);

@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace nxtest {
@@ -154,21 +155,24 @@ template <typename L, typename R>
 
 }
 
+/// The left side of a checked expression, a const reference to an lvalue or,
+/// for a temporary, the value itself: a lone value is only shown after the
+/// statement that made the temporary has ended.
 template <typename L> struct lhs_expr {
-  const L &lhs;
+  L lhs;
   bool value = false;
   std::string text;
 
-  explicit lhs_expr(const L &l) : lhs(l) {
-    if constexpr (requires { static_cast<bool>(l); })
-      value = static_cast<bool>(l);
+  template <typename T> explicit lhs_expr(T &&l) : lhs(std::forward<T>(l)) {
+    if constexpr (requires { static_cast<bool>(lhs); })
+      value = static_cast<bool>(lhs);
   }
 
 #define NXTEST_BINARY_OP(op, compare)                                          \
-  template <typename R> lhs_expr &operator op(const R &rhs) {                  \
+  template <typename R> lhs_expr &&operator op(const R &rhs) {                 \
     value = compare;                                                           \
     text = stringify(lhs) + " " #op " " + stringify(rhs);                      \
-    return *this;                                                              \
+    return std::move(*this);                                                   \
   }
 
   NXTEST_BINARY_OP(==, detail::equal(lhs, rhs))
@@ -184,8 +188,13 @@ template <typename L> struct lhs_expr {
 };
 
 struct decomposer {
-  template <typename L> lhs_expr<L> operator<<(const L &lhs) const {
-    return lhs_expr<L>(lhs);
+  template <typename L> lhs_expr<const L &> operator<<(const L &lhs) const {
+    return lhs_expr<const L &>(lhs);
+  }
+  template <typename L>
+    requires(!std::is_lvalue_reference_v<L> && std::is_move_constructible_v<L>)
+  lhs_expr<L> operator<<(L &&lhs) const {
+    return lhs_expr<L>(std::move(lhs));
   }
 };
 

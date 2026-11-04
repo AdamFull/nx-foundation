@@ -75,6 +75,8 @@ set(NX_FOUNDATION_TEST_SOURCES
   core/test_function_ref.cpp
   core/test_no_alloc.cpp
 
+  framework/test_nxtest.cpp
+
   containers/test_bit_array.cpp
   containers/test_blob.cpp
   containers/test_concurrent_queue.cpp

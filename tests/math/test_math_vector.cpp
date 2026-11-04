@@ -136,7 +136,10 @@ TEST_CASE("math vector: 16-bit floats") {
   CHECK(f32tof16(0x1p-24f) == 0x0001);
   CHECK(f32tof16(0x1.8p-25f) == 0x0001);
   CHECK(f32tof16(0x1p-26f) == 0);
-  CHECK(f32tof16(std::bit_cast<float>(0x7f800001u)) == 0x7c01);
+  // MSVC quiets a signalling NaN it folds at compile time: read its bits at
+  // run time.
+  volatile uint32_t signalling = 0x7f800001u;
+  CHECK(f32tof16(std::bit_cast<float>(uint32_t(signalling))) == 0x7c01);
   CHECK(f32tof16(std::bit_cast<float>(0xffc00000u)) == 0xfe00);
   CHECK(f16tof32(0x3c00) == 1.f);
   CHECK(f16tof32(0x0001) == 0x1p-24f);
