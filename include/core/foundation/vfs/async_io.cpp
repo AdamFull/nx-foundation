@@ -259,6 +259,7 @@ AsyncIoService::AsyncIoService(thread_pool &workers,
   m_fallback_limit = nx::max(1u, config.max_concurrent_requests);
   if (blocking > 1)
     m_fallback_limit = nx::min(m_fallback_limit, blocking - 1);
+  m_thread_bound = blocking == 0 ? std::numeric_limits<u32>::max() : blocking;
   if (config.enable_native_backend)
     m_native = detail::make_native_async_io(config.thread_name);
 }
@@ -557,6 +558,8 @@ void AsyncIoService::enqueue_fallback(const task_priority priority,
 // there is more than one, so speculative streaming cannot hold them all.
 bool AsyncIoService::take_fallback_locked(nx::detail::task_fn &job,
                                           task_priority &priority) noexcept {
+  if (m_fallback_active + m_parked >= m_thread_bound)
+    return false;
   for (usize lane = task_priority_index(task_priority::Count); lane-- > 0;) {
     nx::vector<nx::detail::task_fn> &queue = m_fallback_pending[lane];
     if (queue.empty())
@@ -580,6 +583,7 @@ void AsyncIoService::release_admission() noexcept {
   {
     nx::scoped_lock lock(m_budget_lock);
     --m_fallback_active;
+    ++m_parked;
   }
   pump_fallback();
 }
@@ -589,6 +593,7 @@ void AsyncIoService::reacquire_admission() {
   {
     nx::scoped_lock lock(m_budget_lock);
     if (m_readmit.empty() && m_fallback_active < m_fallback_limit) {
+      --m_parked;
       ++m_fallback_active;
       return;
     }
@@ -609,6 +614,7 @@ void AsyncIoService::pump_fallback() noexcept {
           return;
         readmitted = m_readmit.front();
         m_readmit.erase(m_readmit.begin());
+        --m_parked;
         ++m_fallback_active;
       } else if (!take_fallback_locked(job, priority)) {
         return;

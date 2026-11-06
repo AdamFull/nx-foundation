@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace {
@@ -471,6 +473,65 @@ TEST_CASE("async vfs: a request waiting for bytes does not keep the slot the "
     CHECK(reader.get() == source.size());
     CHECK(waiter.get());
   }
+}
+
+// Two slots and four blocking-service threads, and the whole byte budget held
+// outside the service: each request gives its slot up to wait for bytes but
+// keeps its thread. Admitting another for every slot given up filled all four
+// threads with waiting requests and admitted two more with no thread to run
+// on; the one the bytes then went to waited for a slot those two held.
+TEST_CASE("async vfs: requests waiting for their slot back leave a thread "
+          "for each request admitted") {
+  vfs_fixture::scoped_vfs guard;
+  nx::thread_pool pool({.thread_count = 2, .blocking_threads = 4});
+  nx::vfs::AsyncIoService io(pool,
+                             {.max_concurrent_requests = 2, .byte_limit = 4});
+  REQUIRE(io.concurrency_limit() == 2u);
+  auto holder =
+      io.async({.reservation_bytes = 4}, [](nx::vfs::AsyncIoContext &context) {
+        return context.take_reservation();
+      });
+  REQUIRE(holder.valid());
+  nx::vfs::AsyncIoReservation held = holder.get();
+  REQUIRE(held.bytes() == 4u);
+
+  constexpr u32 REQUESTS = 8;
+  std::atomic<u32> ran{0};
+  nx::vector<nx::future<void>> waiting;
+  for (u32 i = 0; i < REQUESTS; ++i)
+    waiting.push_back(
+        io.async({.reservation_bytes = 4}, [&](nx::vfs::AsyncIoContext &) {
+          ran.fetch_add(1, std::memory_order_relaxed);
+        }));
+  // Every blocking-service thread holds a request waiting for bytes.
+  for (u32 attempt = 0;
+       attempt != 2000u && io.statistics().workload.active < 4u; ++attempt)
+    nx::this_thread::sleep_for(std::chrono::milliseconds(1));
+  REQUIRE(io.statistics().workload.active == 4u);
+  CHECK(ran.load() == 0u);
+
+  held.reset();
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  const auto all_ready = [&] {
+    return std::all_of(waiting.begin(), waiting.end(),
+                       [](const nx::future<void> &w) { return w.ready(); });
+  };
+  while (!all_ready() && std::chrono::steady_clock::now() < deadline)
+    nx::this_thread::sleep_for(std::chrono::milliseconds(1));
+  if (!all_ready()) {
+    // Neither shutdown nor the pool's destructor can end a deadlocked
+    // service: they wait for requests that wait for each other.
+    std::fprintf(stderr, "async vfs: requests deadlocked waiting for slots "
+                         "and threads\n");
+    std::fflush(stderr);
+    std::_Exit(EXIT_FAILURE);
+  }
+  for (nx::future<void> &w : waiting)
+    w.get();
+  CHECK(ran.load() == REQUESTS);
+  CHECK(io.statistics().bytes_in_flight == 0u);
+  io.shutdown();
 }
 
 namespace {

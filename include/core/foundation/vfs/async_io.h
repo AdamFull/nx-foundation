@@ -336,6 +336,15 @@ private:
       m_fallback_pending[static_cast<usize>(task_priority::Count)];
   u32 m_fallback_active = 0;
   u32 m_fallback_limit = 1;
+  /// Requests that gave their slot up for a native read or a byte-budget
+  /// wait. Each still holds the blocking-service thread it runs on, so
+  /// a request starts only while those and the running ones together leave
+  /// a thread for it, or one admitted could wait for a thread forever while
+  /// every thread waits for a slot.
+  u32 m_parked = 0;
+  /// The blocking-service threads requests run on; no bound without any,
+  /// where a request runs on its own fiber and a wait suspends it.
+  u32 m_thread_bound = 0;
   /// Requests whose native read has finished, waiting to take a slot back.
   /// They go before any request not yet started.
   nx::vector<fiber::counter *> m_readmit;
