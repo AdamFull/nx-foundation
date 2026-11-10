@@ -174,14 +174,29 @@ namespace nx {
     fn(log::app, fmt, std::forward<Args>(args)...);                            \
   }
 
+// Shipping compiles trace and debug logging out, so their format strings are
+// not in the binary; the arguments are still evaluated, as before. Info and
+// above stay, filtered at run time.
+#define NX_LOG_FUNC_OUT(fn)                                                    \
+  template <typename... Args>                                                  \
+  void fn(log::Category, string_view, Args &&...) noexcept {}                  \
+  template <typename... Args> void fn(string_view, Args &&...) noexcept {}
+
+#if defined(NX_BUILD_SHIPPING)
+NX_LOG_FUNC_OUT(logv)
+NX_LOG_FUNC_OUT(logt)
+NX_LOG_FUNC_OUT(logd)
+#else
 NX_LOG_FUNC(logv, Trace)
 NX_LOG_FUNC(logt, Trace)
 NX_LOG_FUNC(logd, Debug)
+#endif
 NX_LOG_FUNC(logi, Info)
 NX_LOG_FUNC(logw, Warn)
 NX_LOG_FUNC(loge, Error)
 NX_LOG_FUNC(logc, Critical)
 
+#undef NX_LOG_FUNC_OUT
 #undef NX_LOG_FUNC
 
 }
