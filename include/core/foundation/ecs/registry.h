@@ -1000,6 +1000,11 @@ public:
     return n ? n->child_count : 0;
   }
 
+  [[nodiscard]] Entity first_child(Entity e) const noexcept {
+    const hierarchy_node *n = m_hierarchy.try_get(e);
+    return n ? n->first_child : Entity{};
+  }
+
   [[nodiscard]] Entity next_sibling(Entity e) const noexcept {
     const hierarchy_node *n = m_hierarchy.try_get(e);
     return n ? n->next_sibling : Entity{};

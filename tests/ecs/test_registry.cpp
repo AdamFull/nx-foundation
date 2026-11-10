@@ -1209,6 +1209,31 @@ TEST_CASE("ecs: children keep the order they were added") {
   CHECK(seen == std::vector<entity_t>{added[0], added[2], added[3], last});
 }
 
+TEST_CASE("ecs: first_child and next_sibling walk what each_child visits") {
+  fixture f;
+  const entity_t parent = f.reg.create();
+  CHECK_FALSE(f.reg.first_child(parent).valid());
+  CHECK_FALSE(f.reg.first_child(entity_t{}).valid());
+  std::vector<entity_t> added;
+  for (int i = 0; i < 5; ++i) {
+    const entity_t c = f.reg.create();
+    REQUIRE(f.reg.set_parent(c, parent));
+    added.push_back(c);
+  }
+  f.reg.remove_parent(added[0]);
+  REQUIRE(f.reg.set_parent(added[0], parent));
+
+  std::vector<entity_t> visited;
+  f.reg.each_child(parent, [&](entity_t c) { visited.push_back(c); });
+  std::vector<entity_t> walked;
+  for (entity_t c = f.reg.first_child(parent); c.valid();
+       c = f.reg.next_sibling(c))
+    walked.push_back(c);
+  CHECK(walked == visited);
+  CHECK(walked.front() == added[1]);
+  CHECK_FALSE(f.reg.first_child(added[2]).valid());
+}
+
 TEST_CASE("ecs: each_child tolerates destroying the visited child") {
   fixture f;
   const entity_t parent = f.reg.create();
