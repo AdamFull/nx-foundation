@@ -19,4 +19,14 @@ sha256(const std::span<const std::byte> bytes) noexcept {
                                     bytes.size()));
 }
 
+namespace detail {
+
+/// sha256 without the processor's SHA instructions, for comparing the two.
+[[nodiscard]] std::array<u8, SHA256_BYTES>
+sha256_portable(std::span<const u8> bytes) noexcept;
+/// Whether sha256 uses the processor's SHA instructions.
+[[nodiscard]] bool sha256_accelerated() noexcept;
+
+} // namespace detail
+
 } // namespace nx

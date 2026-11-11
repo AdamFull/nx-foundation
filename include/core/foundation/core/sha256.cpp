@@ -1,5 +1,14 @@
 #include "core/foundation/core/sha256.h"
 
+#if NX_ARCH_X64
+#include <immintrin.h>
+#if defined(NX_COMPILER_MSVC) && !defined(NX_COMPILER_CLANG)
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#endif
+
 namespace nx {
 namespace {
 
@@ -56,14 +65,112 @@ void compress(u32 (&state)[8], const u8 *const block) noexcept {
   state[7] += h;
 }
 
-} // namespace
+using compress_fn = void (*)(u32 (&)[8], const u8 *, usize) noexcept;
 
-std::array<u8, SHA256_BYTES> sha256(const std::span<const u8> bytes) noexcept {
+void compress_portable(u32 (&state)[8], const u8 *const data,
+                       const usize blocks) noexcept {
+  for (usize i = 0; i < blocks; ++i)
+    compress(state, data + i * 64);
+}
+
+#if NX_ARCH_X64
+#if defined(NX_COMPILER_MSVC) && !defined(NX_COMPILER_CLANG)
+#define NX_SHA_TARGET
+#else
+#define NX_SHA_TARGET __attribute__((target("sha,ssse3,sse4.1")))
+#endif
+
+/// The SHA extensions' rounds hold the state as ABEF and CDGH and the
+/// message as 4-word groups, each scheduled from the four before it.
+NX_SHA_TARGET void compress_shani(u32 (&state)[8], const u8 *data,
+                                  usize blocks) noexcept {
+  const __m128i swap =
+      _mm_set_epi64x(0x0c0d0e0f08090a0bULL, 0x0405060700010203ULL);
+  __m128i cdab = _mm_shuffle_epi32(
+      _mm_loadu_si128(reinterpret_cast<const __m128i *>(state)), 0xb1);
+  __m128i efgh = _mm_shuffle_epi32(
+      _mm_loadu_si128(reinterpret_cast<const __m128i *>(state + 4)), 0x1b);
+  __m128i abef = _mm_alignr_epi8(cdab, efgh, 8);
+  __m128i cdgh = _mm_blend_epi16(efgh, cdab, 0xf0);
+
+  for (; blocks != 0; --blocks, data += 64) {
+    const __m128i abef_before = abef;
+    const __m128i cdgh_before = cdgh;
+    __m128i w[4];
+    for (int group = 0; group < 16; ++group) {
+      __m128i &words = w[group & 3];
+      if (group < 4) {
+        words =
+            _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i *>(
+                                 data + group * 16)),
+                             swap);
+      } else {
+        const __m128i before = w[(group - 1) & 3];
+        __m128i next = _mm_sha256msg1_epu32(words, w[(group - 3) & 3]);
+        next =
+            _mm_add_epi32(next, _mm_alignr_epi8(before, w[(group - 2) & 3], 4));
+        words = _mm_sha256msg2_epu32(next, before);
+      }
+      __m128i message = _mm_add_epi32(
+          words, _mm_loadu_si128(
+                     reinterpret_cast<const __m128i *>(ROUNDS + group * 4)));
+      cdgh = _mm_sha256rnds2_epu32(cdgh, abef, message);
+      message = _mm_shuffle_epi32(message, 0x0e);
+      abef = _mm_sha256rnds2_epu32(abef, cdgh, message);
+    }
+    abef = _mm_add_epi32(abef, abef_before);
+    cdgh = _mm_add_epi32(cdgh, cdgh_before);
+  }
+
+  const __m128i feba = _mm_shuffle_epi32(abef, 0x1b);
+  const __m128i dchg = _mm_shuffle_epi32(cdgh, 0xb1);
+  _mm_storeu_si128(reinterpret_cast<__m128i *>(state),
+                   _mm_blend_epi16(feba, dchg, 0xf0));
+  _mm_storeu_si128(reinterpret_cast<__m128i *>(state + 4),
+                   _mm_alignr_epi8(dchg, feba, 8));
+}
+
+[[nodiscard]] bool cpu_has_sha() noexcept {
+  unsigned r[4] = {};
+#if defined(NX_COMPILER_MSVC) && !defined(NX_COMPILER_CLANG)
+  __cpuid(reinterpret_cast<int *>(r), 0);
+  if (r[0] < 7)
+    return false;
+  __cpuid(reinterpret_cast<int *>(r), 1);
+  const unsigned ecx = r[2];
+  __cpuidex(reinterpret_cast<int *>(r), 7, 0);
+  const unsigned ebx7 = r[1];
+#else
+  if (__get_cpuid_max(0, nullptr) < 7)
+    return false;
+  __get_cpuid(1, &r[0], &r[1], &r[2], &r[3]);
+  const unsigned ecx = r[2];
+  __cpuid_count(7, 0, r[0], r[1], r[2], r[3]);
+  const unsigned ebx7 = r[1];
+#endif
+  const bool ssse3 = (ecx >> 9) & 1, sse41 = (ecx >> 19) & 1;
+  const bool sha = (ebx7 >> 29) & 1;
+  return ssse3 && sse41 && sha;
+}
+#endif
+
+[[nodiscard]] compress_fn best_compress() noexcept {
+#if NX_ARCH_X64
+  static const compress_fn chosen =
+      cpu_has_sha() ? compress_shani : compress_portable;
+  return chosen;
+#else
+  return compress_portable;
+#endif
+}
+
+[[nodiscard]] std::array<u8, SHA256_BYTES>
+digest_with(const compress_fn compress_blocks,
+            const std::span<const u8> bytes) noexcept {
   u32 state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
                   0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
   const usize whole = bytes.size() / 64 * 64;
-  for (usize at = 0; at < whole; at += 64)
-    compress(state, bytes.data() + at);
+  compress_blocks(state, bytes.data(), whole / 64);
 
   // The rest, a one bit, zeros and the length in bits fill one block or two.
   u8 tail[128] = {};
@@ -75,8 +182,7 @@ std::array<u8, SHA256_BYTES> sha256(const std::span<const u8> bytes) noexcept {
   const u64 bits = nx::cast<u64>(bytes.size()) * 8u;
   for (usize i = 0; i < 8; ++i)
     tail[blocks * 64 - 1 - i] = nx::cast<u8>(bits >> (i * 8));
-  for (usize block = 0; block < blocks; ++block)
-    compress(state, tail + block * 64);
+  compress_blocks(state, tail, blocks);
 
   std::array<u8, SHA256_BYTES> digest{};
   for (usize i = 0; i < 8; ++i)
@@ -84,5 +190,24 @@ std::array<u8, SHA256_BYTES> sha256(const std::span<const u8> bytes) noexcept {
       digest[i * 4 + j] = nx::cast<u8>(state[i] >> (24 - j * 8));
   return digest;
 }
+
+} // namespace
+
+std::array<u8, SHA256_BYTES> sha256(const std::span<const u8> bytes) noexcept {
+  return digest_with(best_compress(), bytes);
+}
+
+namespace detail {
+
+std::array<u8, SHA256_BYTES>
+sha256_portable(const std::span<const u8> bytes) noexcept {
+  return digest_with(compress_portable, bytes);
+}
+
+bool sha256_accelerated() noexcept {
+  return best_compress() != compress_portable;
+}
+
+} // namespace detail
 
 } // namespace nx

@@ -45,3 +45,20 @@ TEST_CASE("sha256: whole blocks, and the edges of the last one") {
   CHECK(digest_of(nx::string(64, 'a').view()) ==
         "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb");
 }
+
+TEST_CASE("sha256: the processor's instructions agree with the portable code") {
+  nx::vector<u8> bytes(256 * 1024 + 77);
+  u32 seed = 0x9e3779b9u;
+  for (u8 &byte : bytes) {
+    seed = seed * 1664525u + 1013904223u;
+    byte = nx::cast<u8>(seed >> 24);
+  }
+  for (usize size = 0; size <= 1000; ++size) {
+    const std::span<const u8> part(bytes.data(), size);
+    CHECK(nx::sha256(part) == nx::detail::sha256_portable(part));
+  }
+  for (const usize size : {usize{65536}, usize{65536 + 1}, bytes.size()}) {
+    const std::span<const u8> part(bytes.data(), size);
+    CHECK(nx::sha256(part) == nx::detail::sha256_portable(part));
+  }
+}
