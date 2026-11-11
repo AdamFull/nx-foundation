@@ -8,10 +8,13 @@
 #include <mz.h>
 #include <mz_strm.h>
 #include <mz_strm_buf.h>
+#include <mz_strm_os.h>
 #include <mz_zip.h>
 #include <mz_zip_rw.h>
 
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <limits>
 
 namespace nx::vfs {
@@ -81,6 +84,96 @@ directory_entry(const mz_zip_file &info) {
   return true;
 }
 
+[[nodiscard]] u32 le16(const std::span<const u8> bytes, const usize at) {
+  return u32{bytes[at]} | u32{bytes[at + 1]} << 8;
+}
+
+[[nodiscard]] u32 le32(const std::span<const u8> bytes, const usize at) {
+  return le16(bytes, at) | le16(bytes, at + 2) << 16;
+}
+
+/// Where @p entry's stored bytes begin: past its local header, whose name
+/// and extra field need not match the directory's. nullopt when there is no
+/// local header there, or the bytes would run past @p archive_size.
+template <typename ReadAt>
+[[nodiscard]] std::optional<u64> stored_start(const ZipDirectoryEntry &entry,
+                                              const u64 archive_size,
+                                              ReadAt &&read_at) {
+  constexpr usize LOCAL_HEADER_BYTES = 30;
+  constexpr u32 LOCAL_HEADER_SIGNATURE = 0x04034b50u;
+  std::array<u8, LOCAL_HEADER_BYTES> header{};
+  if (entry.disk != 0 || entry.local_header_offset > archive_size ||
+      archive_size - entry.local_header_offset < LOCAL_HEADER_BYTES ||
+      !read_at(entry.local_header_offset, std::span<u8>(header)) ||
+      le32(header, 0) != LOCAL_HEADER_SIGNATURE)
+    return std::nullopt;
+  const u64 start = entry.local_header_offset + LOCAL_HEADER_BYTES +
+                    le16(header, 26) + le16(header, 28);
+  if (start > archive_size || archive_size - start < entry.compressed_size)
+    return std::nullopt;
+  return start;
+}
+
+/// Where an enciphered entry's stored bytes lie in the archive.
+struct CipherRange {
+  u64 start = 0;
+  u64 end = 0;
+  usize entry = 0;
+};
+
+/// The ranges of @p directory's entries @p cipher enciphers, ascending;
+/// nullopt when one cannot be found or two overlap.
+template <typename ReadAt>
+[[nodiscard]] std::optional<nx::vector<CipherRange>>
+cipher_ranges(const std::span<const ZipDirectoryEntry> directory,
+              const ZipCipher &cipher, const u64 archive_size,
+              ReadAt &&read_at) {
+  nx::vector<CipherRange> ranges;
+  for (usize i = 0; i < directory.size(); ++i) {
+    const ZipDirectoryEntry &entry = directory[i];
+    if (entry.compressed_size == 0 || !cipher.enciphered(entry))
+      continue;
+    const std::optional<u64> start = stored_start(entry, archive_size, read_at);
+    if (!start)
+      return std::nullopt;
+    ranges.push_back({*start, *start + entry.compressed_size, i});
+  }
+  std::sort(ranges.begin(), ranges.end(),
+            [](const CipherRange &a, const CipherRange &b) {
+              return a.start < b.start;
+            });
+  for (usize i = 1; i < ranges.size(); ++i)
+    if (ranges[i].start < ranges[i - 1].end)
+      return std::nullopt;
+  return ranges;
+}
+
+/// An archive's cipher and the ranges it deciphers: empty until armed, so
+/// what is read before then, the directory and the signature and cipher
+/// entries, passes as it is.
+struct ArchiveCipher {
+  nx::unique_ptr<ZipCipher> cipher;
+  nx::vector<ZipDirectoryEntry> directory;
+  nx::vector<CipherRange> ranges;
+
+  /// Deciphers @p bytes, read from @p position in the archive.
+  void apply(const u64 position, const std::span<u8> bytes) const {
+    if (ranges.empty() || bytes.empty())
+      return;
+    const u64 end = position + bytes.size();
+    auto it = std::upper_bound(
+        ranges.begin(), ranges.end(), position,
+        [](const u64 at, const CipherRange &range) { return at < range.end; });
+    for (; it != ranges.end() && it->start < end; ++it) {
+      const u64 from = nx::max(it->start, position);
+      const u64 to = nx::min(it->end, end);
+      cipher->apply(directory[it->entry], from - it->start,
+                    bytes.subspan(nx::cast<usize>(from - position),
+                                  nx::cast<usize>(to - from)));
+    }
+  }
+};
+
 /// All of an open entry's bytes. The size is the archive's own claim, so
 /// memory follows the bytes that arrive: a forged header cannot make this
 /// allocate gigabytes up front.
@@ -114,6 +207,7 @@ directory_entry(const mz_zip_file &info) {
 struct FoundationZipStream {
   mz_stream base{};
   nx::fs::stream_ptr source;
+  const ArchiveCipher *cipher = nullptr;
   i32 error = MZ_OK;
 };
 
@@ -148,6 +242,11 @@ i32 foundation_stream_read(void *stream, void *buffer, const i32 size) {
       s->error = MZ_PARAM_ERROR;
     return MZ_PARAM_ERROR;
   }
+  const i64 position = s->cipher ? s->source->tell() : 0;
+  if (position < 0) {
+    s->error = MZ_TELL_ERROR;
+    return MZ_READ_ERROR;
+  }
   const usize read = s->source->read(buffer, nx::cast<usize>(size));
   if (read < nx::cast<usize>(size) && !s->source->status()) {
     s->error = MZ_READ_ERROR;
@@ -157,6 +256,9 @@ i32 foundation_stream_read(void *stream, void *buffer, const i32 size) {
     s->error = MZ_READ_ERROR;
     return MZ_READ_ERROR;
   }
+  if (s->cipher)
+    s->cipher->apply(nx::cast<u64>(position),
+                     {static_cast<u8 *>(buffer), read});
   return nx::cast<i32>(read);
 }
 
@@ -255,12 +357,18 @@ void destroy_reader(ZipReader *reader) {
 // it, so a stream still open when its device is unmounted keeps reading.
 class ZipArchive {
 public:
-  ZipArchive(nx::blob<u8> zip_data, nx::unique_ptr<ZipVerifier> verifier)
-      : m_zip_data(std::move(zip_data)), m_verifier(std::move(verifier)) {}
+  ZipArchive(nx::blob<u8> zip_data, nx::unique_ptr<ZipVerifier> verifier,
+             nx::unique_ptr<ZipCipher> cipher)
+      : m_zip_data(std::move(zip_data)), m_verifier(std::move(verifier)) {
+    m_cipher.cipher = std::move(cipher);
+  }
   ZipArchive(ZipStreamFactory stream_factory,
-             nx::unique_ptr<ZipVerifier> verifier)
+             nx::unique_ptr<ZipVerifier> verifier,
+             nx::unique_ptr<ZipCipher> cipher)
       : m_stream_factory(std::move(stream_factory)),
-        m_verifier(std::move(verifier)) {}
+        m_verifier(std::move(verifier)) {
+    m_cipher.cipher = std::move(cipher);
+  }
 
   ZipArchive(const ZipArchive &) = delete;
   ZipArchive &operator=(const ZipArchive &) = delete;
@@ -301,6 +409,8 @@ public:
       }
       reader->source->base.vtbl = &foundation_stream_vtbl;
       reader->source->source = std::move(source).value();
+      if (m_cipher.cipher)
+        reader->source->cipher = &m_cipher;
 
       reader->buffered = mz_stream_buffered_create();
       if (!reader->buffered) {
@@ -334,10 +444,57 @@ public:
     return m_verifier.get();
   }
 
+  [[nodiscard]] ZipCipher *cipher() const noexcept {
+    return m_cipher.cipher.get();
+  }
+
+  /// Deciphers what is read from now on of the entries the admitted cipher
+  /// names in @p directory. Readers opened before may hold bytes read as
+  /// they are, so they go. False when an entry's bytes cannot be found.
+  [[nodiscard]] bool arm_cipher(nx::vector<ZipDirectoryEntry> directory) {
+    ZipReader *reader = nullptr;
+    while (m_readers.try_pop(reader))
+      destroy_reader(reader);
+    if (m_stream_factory) {
+      auto source = m_stream_factory();
+      if (!source || (*source)->size() < 0)
+        return false;
+      nx::fs::stream &stream = **source;
+      const auto read_at = [&stream](const u64 offset, std::span<u8> out) {
+        return offset <= nx::cast<u64>(std::numeric_limits<i64>::max()) &&
+               stream.seek(nx::cast<i64>(offset), nx::fs::seek_origin::begin) &&
+               stream.read(out.data(), out.size()) == out.size();
+      };
+      auto ranges = cipher_ranges(directory, *m_cipher.cipher,
+                                  nx::cast<u64>(stream.size()), read_at);
+      if (!ranges)
+        return false;
+      m_cipher.directory = std::move(directory);
+      m_cipher.ranges = std::move(*ranges);
+      return true;
+    }
+    const auto read_at = [this](const u64 offset, std::span<u8> out) {
+      if (offset > m_zip_data.size() || m_zip_data.size() - offset < out.size())
+        return false;
+      std::memcpy(out.data(), m_zip_data.data() + offset, out.size());
+      return true;
+    };
+    const auto ranges =
+        cipher_ranges(directory, *m_cipher.cipher, m_zip_data.size(), read_at);
+    if (!ranges)
+      return false;
+    for (const CipherRange &range : *ranges)
+      m_cipher.cipher->apply(directory[range.entry], 0,
+                             {m_zip_data.data() + range.start,
+                              nx::cast<usize>(range.end - range.start)});
+    return true;
+  }
+
 private:
   nx::blob<u8> m_zip_data;
   ZipStreamFactory m_stream_factory;
   nx::unique_ptr<ZipVerifier> m_verifier;
+  ArchiveCipher m_cipher;
   nx::mpmc::queue<ZipReader *, READER_POOL> m_readers;
 };
 
@@ -348,63 +505,21 @@ public:
 
   template <typename Source>
   ZipDevice(Source source, nx::string subdir,
-            nx::unique_ptr<ZipVerifier> verifier)
-      : m_archive(nx::make_shared<ZipArchive>(std::move(source),
-                                              std::move(verifier))),
+            nx::unique_ptr<ZipVerifier> verifier,
+            nx::unique_ptr<ZipCipher> cipher)
+      : m_archive(nx::make_shared<ZipArchive>(
+            std::move(source), std::move(verifier), std::move(cipher))),
         m_subdir(std::move(subdir)) {}
 
   /// Damaged when the central directory cannot be read to its end, so a
   /// mount of a damaged archive fails rather than showing part of it.
   Indexed build_index() {
-    ZipReader *reader = m_archive->acquire();
-    void *r = reader ? reader->handle : nullptr;
-    if (!r)
-      return Indexed::Damaged;
-    NX_DEFER { m_archive->release_reader(reader); };
-    ZipVerifier *const verifier = m_archive->verifier();
-    const nx::string_view signature =
-        verifier ? verifier->signature_entry() : nx::string_view();
     nx::vector<ZipDirectoryEntry> directory;
-    std::optional<u64> signature_size;
-    i32 e = mz_zip_reader_goto_first_entry(r);
-    while (e == MZ_OK) {
-      mz_zip_file *info = nullptr;
-      if (mz_zip_reader_entry_get_info(r, &info) != MZ_OK || !info ||
-          !info->filename)
-        return Indexed::Damaged;
-      if (verifier) {
-        std::optional<ZipDirectoryEntry> record = directory_entry(*info);
-        if (!record)
-          return Indexed::Damaged;
-        if (!signature.empty() && record->name.view() == signature)
-          signature_size = record->uncompressed_size;
-        directory.push_back(std::move(*record));
-      }
-      if (signature.empty() || nx::string_view(info->filename) != signature)
-        index_entry(*info);
-      e = mz_zip_reader_goto_next_entry(r);
-    }
-    if (e != MZ_END_OF_LIST)
-      return Indexed::Damaged;
-    if (!verifier)
-      return Indexed::Built;
-
-    nx::blob<u8> signature_bytes;
-    if (signature_size) {
-      const nx::string name(signature);
-      if (*signature_size > nx::cast<u64>(0x7fffffff) ||
-          mz_zip_reader_locate_entry(r, name.c_str(), 0) != MZ_OK ||
-          mz_zip_reader_entry_open(r) != MZ_OK)
-        return Indexed::Damaged;
-      auto bytes = read_open_entry(r, *signature_size);
-      if (!bytes)
-        return Indexed::Damaged;
-      signature_bytes = std::move(*bytes);
-    }
-    return verifier->admit(directory,
-                           {signature_bytes.data(), signature_bytes.size()})
-               ? Indexed::Built
-               : Indexed::Refused;
+    const Indexed indexed = index_directory(directory);
+    if (indexed != Indexed::Built || !m_archive->cipher())
+      return indexed;
+    return m_archive->arm_cipher(std::move(directory)) ? Indexed::Built
+                                                       : Indexed::Damaged;
   }
 
   [[nodiscard]] io_result<nx::blob<u8>> read(const path_view rel) override {
@@ -506,6 +621,91 @@ public:
   [[nodiscard]] const char *name() const noexcept override { return "zip"; }
 
 private:
+  /// The index, and the directory when the verifier or cipher needs it,
+  /// once both have admitted the archive.
+  Indexed index_directory(nx::vector<ZipDirectoryEntry> &directory) {
+    ZipReader *reader = m_archive->acquire();
+    void *r = reader ? reader->handle : nullptr;
+    if (!r)
+      return Indexed::Damaged;
+    NX_DEFER { m_archive->release_reader(reader); };
+    ZipVerifier *const verifier = m_archive->verifier();
+    ZipCipher *const cipher = m_archive->cipher();
+    const nx::string_view signature =
+        verifier ? verifier->signature_entry() : nx::string_view();
+    const nx::string_view cipher_name =
+        cipher ? cipher->cipher_entry() : nx::string_view();
+    std::optional<u64> signature_size;
+    std::optional<u64> cipher_size;
+    i32 e = mz_zip_reader_goto_first_entry(r);
+    while (e == MZ_OK) {
+      mz_zip_file *info = nullptr;
+      if (mz_zip_reader_entry_get_info(r, &info) != MZ_OK || !info ||
+          !info->filename)
+        return Indexed::Damaged;
+      const nx::string_view name(info->filename);
+      if (verifier || cipher) {
+        std::optional<ZipDirectoryEntry> record = directory_entry(*info);
+        if (!record)
+          return Indexed::Damaged;
+        if (!signature.empty() && name == signature)
+          signature_size = record->uncompressed_size;
+        if (!cipher_name.empty() && name == cipher_name)
+          cipher_size = record->uncompressed_size;
+        directory.push_back(std::move(*record));
+      }
+      if ((signature.empty() || name != signature) &&
+          (cipher_name.empty() || name != cipher_name))
+        index_entry(*info);
+      e = mz_zip_reader_goto_next_entry(r);
+    }
+    if (e != MZ_END_OF_LIST)
+      return Indexed::Damaged;
+
+    const auto read_named =
+        [r](const nx::string_view entry, const u64 size,
+            const u64 max_bytes) -> io_result<nx::blob<u8>> {
+      const nx::string name(entry);
+      if (size > max_bytes ||
+          mz_zip_reader_locate_entry(r, name.c_str(), 0) != MZ_OK ||
+          mz_zip_reader_entry_open(r) != MZ_OK)
+        return err(file_error{io_error::ReadFailed, 0});
+      return read_open_entry(r, size);
+    };
+    if (verifier) {
+      nx::blob<u8> signature_bytes;
+      if (signature_size) {
+        auto bytes =
+            read_named(signature, *signature_size, nx::cast<u64>(0x7fffffff));
+        if (!bytes)
+          return Indexed::Damaged;
+        signature_bytes = std::move(*bytes);
+      }
+      if (!verifier->admit(directory,
+                           {signature_bytes.data(), signature_bytes.size()}))
+        return Indexed::Refused;
+    }
+    if (!cipher)
+      return Indexed::Built;
+    nx::blob<u8> record;
+    if (cipher_size) {
+      auto bytes =
+          read_named(cipher_name, *cipher_size, MAX_ZIP_CIPHER_ENTRY_BYTES);
+      if (!bytes)
+        return Indexed::Damaged;
+      record = std::move(*bytes);
+      if (verifier) {
+        const std::optional<ZipEntryDigests> digests =
+            verifier->digests(cipher_name);
+        if (!digests || !blocks_match(*digests, {record.data(), record.size()}))
+          return Indexed::Refused;
+      }
+    }
+    return cipher->admit(directory, {record.data(), record.size()})
+               ? Indexed::Built
+               : Indexed::Refused;
+  }
+
   /// Indexes an entry under its canonical name. One that names anything else,
   /// such as "../x" or "a//b", is left out: it is not a path the VFS can ask
   /// for, and listing it would hand callers a name that climbs out.
@@ -832,7 +1032,8 @@ io_result<stream_ptr> ZipDevice::open(const path_view rel) {
 
 io_result<Device *> make_zip_device(path_view zip_path,
                                     const path_view archive_subdir,
-                                    nx::unique_ptr<ZipVerifier> verifier) {
+                                    nx::unique_ptr<ZipVerifier> verifier,
+                                    nx::unique_ptr<ZipCipher> cipher) {
   // One open file for every reader, so the archive stays what was mounted
   // even when the file is replaced on disk.
   auto views = nx::fs::open_file_views(zip_path);
@@ -842,7 +1043,7 @@ io_result<Device *> make_zip_device(path_view zip_path,
   }
   nx::string subdir = canon_rel(archive_subdir);
   auto *dev = nx::allocate<ZipDevice>(std::move(*views), std::move(subdir),
-                                      std::move(verifier));
+                                      std::move(verifier), std::move(cipher));
   if (!dev)
     return err(file_error{io_error::OpenFailed, 0});
   if (const Indexed indexed = dev->build_index(); indexed != Indexed::Built) {
@@ -856,12 +1057,13 @@ io_result<Device *> make_zip_device(path_view zip_path,
 
 io_result<Device *> make_zip_device(nx::blob<u8> zip_data,
                                     const path_view archive_subdir,
-                                    nx::unique_ptr<ZipVerifier> verifier) {
+                                    nx::unique_ptr<ZipVerifier> verifier,
+                                    nx::unique_ptr<ZipCipher> cipher) {
   if (zip_data.empty() || zip_data.size() > nx::cast<usize>(0x7fffffff))
     return err(file_error{io_error::InvalidArgument, 0});
   nx::string subdir = canon_rel(archive_subdir);
   auto *dev = nx::allocate<ZipDevice>(std::move(zip_data), std::move(subdir),
-                                      std::move(verifier));
+                                      std::move(verifier), std::move(cipher));
   if (!dev)
     return err(file_error{io_error::OpenFailed, 0});
   if (const Indexed indexed = dev->build_index(); indexed != Indexed::Built) {
@@ -875,12 +1077,14 @@ io_result<Device *> make_zip_device(nx::blob<u8> zip_data,
 
 io_result<Device *> make_zip_device(ZipStreamFactory stream_factory,
                                     const path_view archive_subdir,
-                                    nx::unique_ptr<ZipVerifier> verifier) {
+                                    nx::unique_ptr<ZipVerifier> verifier,
+                                    nx::unique_ptr<ZipCipher> cipher) {
   if (!stream_factory)
     return err(file_error{io_error::InvalidArgument, 0});
   nx::string subdir = canon_rel(archive_subdir);
-  auto *dev = nx::allocate<ZipDevice>(std::move(stream_factory),
-                                      std::move(subdir), std::move(verifier));
+  auto *dev =
+      nx::allocate<ZipDevice>(std::move(stream_factory), std::move(subdir),
+                              std::move(verifier), std::move(cipher));
   if (!dev)
     return err(file_error{io_error::OpenFailed, 0});
   if (const Indexed indexed = dev->build_index(); indexed != Indexed::Built) {
@@ -976,6 +1180,77 @@ read_zip_directory(const path_view zip_path) {
   if (e != MZ_END_OF_LIST)
     return err(file_error{io_error::ReadFailed, 0});
   return entries;
+}
+
+io_result<void> encipher_zip(const path_view zip_path, ZipCipher &cipher) {
+  auto directory = read_zip_directory(zip_path);
+  if (!directory)
+    return err(directory.error());
+  const nx::string path(zip_path.native());
+
+  nx::blob<u8> record;
+  const nx::string_view cipher_name = cipher.cipher_entry();
+  for (const ZipDirectoryEntry &entry : *directory) {
+    if (cipher_name.empty() || entry.name.view() != cipher_name)
+      continue;
+    if (entry.uncompressed_size > MAX_ZIP_CIPHER_ENTRY_BYTES)
+      return err(file_error{io_error::FileTooLarge, 0});
+    void *reader = mz_zip_reader_create();
+    if (!reader)
+      return err(file_error{io_error::Unknown, 0});
+    NX_DEFER { mz_zip_reader_delete(&reader); };
+    if (mz_zip_reader_open_file(reader, path.c_str()) != MZ_OK ||
+        mz_zip_reader_locate_entry(reader, entry.name.c_str(), 0) != MZ_OK ||
+        mz_zip_reader_entry_open(reader) != MZ_OK)
+      return err(file_error{io_error::ReadFailed, 0});
+    auto bytes = read_open_entry(reader, entry.uncompressed_size);
+    if (!bytes)
+      return err(bytes.error());
+    record = std::move(*bytes);
+    break;
+  }
+  if (!cipher.admit(*directory, {record.data(), record.size()}))
+    return err(file_error{io_error::InvalidArgument, 0});
+
+  void *file = mz_stream_os_create();
+  if (!file)
+    return err(file_error{io_error::Unknown, 0});
+  NX_DEFER { mz_stream_os_delete(&file); };
+  if (mz_stream_os_open(file, path.c_str(),
+                        MZ_OPEN_MODE_READWRITE | MZ_OPEN_MODE_APPEND) != MZ_OK)
+    return err(file_error{io_error::OpenFailed, 0});
+  NX_DEFER { (void)mz_stream_os_close(file); };
+  const i64 size = mz_stream_os_tell(file);
+  if (size < 0)
+    return err(file_error{io_error::ReadFailed, 0});
+  const auto read_at = [file](const u64 offset, std::span<u8> out) {
+    return mz_stream_os_seek(file, nx::cast<i64>(offset), MZ_SEEK_SET) ==
+               MZ_OK &&
+           mz_stream_os_read(file, out.data(), nx::cast<i32>(out.size())) ==
+               nx::cast<i32>(out.size());
+  };
+  const auto ranges =
+      cipher_ranges(*directory, cipher, nx::cast<u64>(size), read_at);
+  if (!ranges)
+    return err(file_error{io_error::ReadFailed, 0});
+
+  nx::vector<u8> chunk(usize{1} << 20);
+  for (const CipherRange &range : *ranges) {
+    for (u64 at = range.start; at < range.end;) {
+      const usize count =
+          nx::cast<usize>(nx::min<u64>(chunk.size(), range.end - at));
+      const std::span<u8> bytes(chunk.data(), count);
+      if (!read_at(at, bytes))
+        return err(file_error{io_error::ReadFailed, 0});
+      cipher.apply((*directory)[range.entry], at - range.start, bytes);
+      if (mz_stream_os_seek(file, nx::cast<i64>(at), MZ_SEEK_SET) != MZ_OK ||
+          mz_stream_os_write(file, bytes.data(), nx::cast<i32>(count)) !=
+              nx::cast<i32>(count))
+        return err(file_error{io_error::WriteFailed, 0});
+      at += count;
+    }
+  }
+  return {};
 }
 
 } // namespace nx::vfs

@@ -879,3 +879,288 @@ TEST_CASE("vfs zip verifier outlives its device for an open stream") {
   CHECK(read_stream(**stream, STORED.size()) == STORED);
   CHECK((*stream)->status().has_value());
 }
+
+namespace {
+
+/// What a test cipher saw and was told, outliving the cipher the device
+/// owns.
+struct CipherVerdicts {
+  bool admitted = false;
+  std::string record;
+  usize directory = 0;
+};
+
+/// "ON" in its entry enciphers every other entry with a keystream that
+/// depends on the entry and the position, so a range deciphered in the wrong
+/// place reads wrong.
+class TestCipher final : public vfs::ZipCipher {
+public:
+  explicit TestCipher(CipherVerdicts &verdicts) noexcept
+      : m_verdicts(verdicts) {}
+
+  [[nodiscard]] nx::string_view cipher_entry() const noexcept override {
+    return "cipher.bin";
+  }
+  [[nodiscard]] bool admit(const std::span<const vfs::ZipDirectoryEntry> dir,
+                           const std::span<const u8> record) override {
+    m_verdicts.admitted = true;
+    m_verdicts.directory = dir.size();
+    m_verdicts.record.assign(record.begin(), record.end());
+    m_on = m_verdicts.record == "ON";
+    return m_on || record.empty();
+  }
+  [[nodiscard]] bool
+  enciphered(const vfs::ZipDirectoryEntry &entry) const override {
+    return m_on && entry.name.view() != "cipher.bin" &&
+           entry.name.view() != "sig.bin";
+  }
+  void apply(const vfs::ZipDirectoryEntry &entry, const u64 offset,
+             const std::span<u8> bytes) const override {
+    const u64 seed = entry.name.size() * 131u + entry.crc32;
+    for (usize i = 0; i < bytes.size(); ++i)
+      bytes[i] ^= nx::cast<u8>((offset + i) * 2654435761u + seed + 1u);
+  }
+
+private:
+  CipherVerdicts &m_verdicts;
+  bool m_on = false;
+};
+
+std::string noise(const usize size, u32 state) {
+  std::string out(size, '\0');
+  for (char &c : out) {
+    state = state * 1664525u + 1013904223u;
+    c = nx::cast<char>(state >> 24);
+  }
+  return out;
+}
+
+std::string text(const usize size) {
+  std::string out;
+  for (u32 i = 0; out.size() < size; ++i)
+    out += nx::format("line {} of a deflated entry\n", i % 977).c_str();
+  out.resize(size);
+  return out;
+}
+
+std::span<const u8> span_of(const std::string &s) {
+  return {reinterpret_cast<const u8 *>(s.data()), s.size()};
+}
+
+/// Larger than a buffered read, so entries are read in several pieces.
+const std::string NOISE = noise(300 * 1024 + 17, 7u);
+const std::string TEXT = text(200 * 1024 + 5);
+
+bool write_enciphered(const nx::string &path, const char *record) {
+  vfs::ZipWriter w;
+  if (!w.open(path.view()) ||
+      !w.add("noise.bin", span_of(NOISE), vfs::ZipCompression::Store)
+           .has_value() ||
+      !w.add("sub/text.txt", span_of(TEXT), vfs::ZipCompression::Deflate)
+           .has_value() ||
+      !w.add("zstd.txt", span_of(TEXT), vfs::ZipCompression::Zstd)
+           .has_value() ||
+      (record &&
+       !w.add("cipher.bin", bytes_of(record), vfs::ZipCompression::Store)
+            .has_value()))
+    return false;
+  if (!w.close().has_value())
+    return false;
+  CipherVerdicts sealing;
+  TestCipher cipher(sealing);
+  return vfs::encipher_zip(path.view(), cipher).has_value();
+}
+
+bool reads_all(nx::fs::stream &stream, const std::string &want) {
+  if (read_stream(stream, 1000) != want.substr(0, 1000))
+    return false;
+  if (!stream.seek(-77, nx::fs::seek_origin::end) ||
+      read_stream(stream, 200) != want.substr(want.size() - 77))
+    return false;
+  if (!stream.seek(123457, nx::fs::seek_origin::begin) ||
+      read_stream(stream, 70000) != want.substr(123457, 70000))
+    return false;
+  if (!stream.seek(3, nx::fs::seek_origin::begin) ||
+      read_stream(stream, want.size()) != want.substr(3))
+    return false;
+  return stream.status().has_value();
+}
+
+nx::blob<u8> file_blob(const nx::string &path) {
+  auto bytes = nx::fs::file_read(path.view());
+  REQUIRE(bytes.has_value());
+  return nx::blob<u8>(std::span<const u8>(bytes->data(), bytes->size()));
+}
+
+} // namespace
+
+TEST_CASE("vfs zip cipher reads enciphered entries and seeks in them") {
+  temp_dir dir("zipcipher");
+  const nx::string zip = dir.file("enciphered.zip");
+  REQUIRE(write_enciphered(zip, "ON"));
+
+  CipherVerdicts verdicts;
+  auto zd = vfs::make_zip_device(zip.view(), {}, {},
+                                 nx::make_unique<TestCipher>(verdicts));
+  REQUIRE(zd.has_value());
+  CHECK(verdicts.admitted);
+  CHECK(verdicts.record == "ON");
+  CHECK(verdicts.directory == 4u);
+  scoped_vfs guard;
+  vfs::mount("/", *zd, 0);
+  for (const auto &[name, want] :
+       {std::pair{"/noise.bin", &NOISE}, std::pair{"/sub/text.txt", &TEXT},
+        std::pair{"/zstd.txt", &TEXT}}) {
+    const auto whole = vfs::read(name);
+    REQUIRE(whole.has_value());
+    CHECK(std::string(reinterpret_cast<const char *>(whole->data()),
+                      whole->size()) == *want);
+    auto stream = vfs::open(name);
+    REQUIRE(stream.has_value());
+    CHECK(reads_all(**stream, *want));
+  }
+  CHECK_FALSE(vfs::exists("/cipher.bin"));
+  const auto listed = vfs::list("/");
+  REQUIRE(listed.has_value());
+  CHECK_FALSE(has_name(*listed, "cipher.bin"));
+}
+
+TEST_CASE("vfs zip cipher deciphers an archive held in memory") {
+  temp_dir dir("zipcipher");
+  const nx::string zip = dir.file("enciphered.zip");
+  REQUIRE(write_enciphered(zip, "ON"));
+  CipherVerdicts verdicts;
+  auto zd = vfs::make_zip_device(file_blob(zip), {}, {},
+                                 nx::make_unique<TestCipher>(verdicts));
+  REQUIRE(zd.has_value());
+  scoped_vfs guard;
+  vfs::mount("/", *zd, 0);
+  const auto whole = vfs::read("/sub/text.txt");
+  REQUIRE(whole.has_value());
+  CHECK(std::string(reinterpret_cast<const char *>(whole->data()),
+                    whole->size()) == TEXT);
+  auto stream = vfs::open("/noise.bin");
+  REQUIRE(stream.has_value());
+  CHECK(reads_all(**stream, NOISE));
+}
+
+TEST_CASE("vfs zip cipher: enciphered bytes do not read without it") {
+  temp_dir dir("zipcipher");
+  const nx::string zip = dir.file("enciphered.zip");
+  REQUIRE(write_enciphered(zip, "ON"));
+  auto zd = vfs::make_zip_device(zip.view());
+  REQUIRE(zd.has_value());
+  scoped_vfs guard;
+  vfs::mount("/", *zd, 0);
+  for (const char *name : {"/noise.bin", "/sub/text.txt", "/zstd.txt"}) {
+    CHECK_FALSE(vfs::read(name).has_value());
+  }
+  CHECK(read_eq("/cipher.bin", "ON"));
+}
+
+TEST_CASE("vfs zip cipher passes an archive it does not encipher") {
+  temp_dir dir("zipcipher");
+  const nx::string zip = dir.file("plain.zip");
+  REQUIRE(write_enciphered(zip, nullptr));
+  CipherVerdicts verdicts;
+  auto zd = vfs::make_zip_device(zip.view(), {}, {},
+                                 nx::make_unique<TestCipher>(verdicts));
+  REQUIRE(zd.has_value());
+  CHECK(verdicts.admitted);
+  CHECK(verdicts.record.empty());
+  scoped_vfs guard;
+  vfs::mount("/", *zd, 0);
+  auto stream = vfs::open("/noise.bin");
+  REQUIRE(stream.has_value());
+  CHECK(reads_all(**stream, NOISE));
+}
+
+TEST_CASE("vfs zip cipher refuses what it does not admit") {
+  temp_dir dir("zipcipher");
+  const nx::string zip = dir.file("refused.zip");
+  REQUIRE(make_zip(zip, {{"a.txt", "A", vfs::ZipCompression::Store},
+                         {"cipher.bin", "OFF", vfs::ZipCompression::Store}}));
+  CipherVerdicts verdicts;
+  CHECK_FALSE(vfs::make_zip_device(zip.view(), {}, {},
+                                   nx::make_unique<TestCipher>(verdicts))
+                  .has_value());
+  CHECK(verdicts.admitted);
+  CHECK(verdicts.record == "OFF");
+}
+
+TEST_CASE("vfs zip cipher entry must be the signed one") {
+  temp_dir dir("zipcipher");
+  const nx::string zip = dir.file("signed.zip");
+  REQUIRE(
+      make_zip(zip, {{"stored.bin", STORED.c_str(), vfs::ZipCompression::Store},
+                     {"cipher.bin", "ON", vfs::ZipCompression::Store},
+                     {"sig.bin", "SIGNED", vfs::ZipCompression::Store}}));
+  {
+    CipherVerdicts sealing;
+    TestCipher cipher(sealing);
+    REQUIRE(vfs::encipher_zip(zip.view(), cipher).has_value());
+  }
+  Verdicts verdicts;
+  verdicts.digests["stored.bin"] = block_digests(STORED, verdicts.block_bytes);
+  verdicts.digests["cipher.bin"] = block_digests("ON", verdicts.block_bytes);
+  CipherVerdicts ciphered;
+  auto zd = vfs::make_zip_device(zip.view(), {},
+                                 nx::make_unique<TestVerifier>(verdicts),
+                                 nx::make_unique<TestCipher>(ciphered));
+  REQUIRE(zd.has_value());
+  {
+    scoped_vfs guard;
+    vfs::mount("/", *zd, 0);
+    CHECK(read_eq("/stored.bin", STORED.c_str()));
+    auto stream = vfs::open("/stored.bin");
+    REQUIRE(stream.has_value());
+    REQUIRE((*stream)->seek(20, nx::fs::seek_origin::begin));
+    CHECK(read_stream(**stream, 9) == STORED.substr(20, 9));
+  }
+
+  verdicts.digests["cipher.bin"] = block_digests("OF", verdicts.block_bytes);
+  CipherVerdicts changed;
+  CHECK_FALSE(vfs::make_zip_device(zip.view(), {},
+                                   nx::make_unique<TestVerifier>(verdicts),
+                                   nx::make_unique<TestCipher>(changed))
+                  .has_value());
+  CHECK_FALSE(changed.admitted);
+  verdicts.digests.erase("cipher.bin");
+  CHECK_FALSE(vfs::make_zip_device(zip.view(), {},
+                                   nx::make_unique<TestVerifier>(verdicts),
+                                   nx::make_unique<TestCipher>(changed))
+                  .has_value());
+}
+
+TEST_CASE("vfs zip cipher refuses entries it cannot place") {
+  const std::string good =
+      raw_zip({stored("a.bin", "AAAA"), stored("b.bin", "BBBB"),
+               stored("cipher.bin", "ON")});
+  const auto central = [](const std::string &zip, const usize index) {
+    usize at = 0;
+    for (usize i = 0; i <= index; ++i)
+      at = zip.find("PK\x01\x02", i == 0 ? 0 : at + 4);
+    REQUIRE(at != std::string::npos);
+    return at;
+  };
+  const auto mount_ciphered = [](const std::string &zip) {
+    CipherVerdicts verdicts;
+    return vfs::make_zip_device(
+        nx::blob<u8>(std::span<const u8>(
+            reinterpret_cast<const u8 *>(zip.data()), zip.size())),
+        {}, {}, nx::make_unique<TestCipher>(verdicts));
+  };
+  REQUIRE(mount_ciphered(good).has_value());
+  REQUIRE(mount_raw(good).has_value());
+
+  std::string overlapping = good;
+  const usize b = central(overlapping, 1);
+  for (usize i = 0; i < 4; ++i)
+    overlapping[b + 42 + i] = 0;
+  CHECK_FALSE(mount_ciphered(overlapping).has_value());
+  CHECK(mount_raw(overlapping).has_value());
+
+  std::string misplaced = good;
+  misplaced[central(misplaced, 1) + 42] += 3;
+  CHECK_FALSE(mount_ciphered(misplaced).has_value());
+}

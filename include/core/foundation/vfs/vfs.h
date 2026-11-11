@@ -171,22 +171,65 @@ public:
   digests(nx::string_view name) const = 0;
 };
 
+/// Its owner's word on which entries of an archive have their stored bytes
+/// (what ZIP holds after compression) enciphered, and their keystream. A
+/// keystream is its own inverse, so applying it enciphers and deciphers
+/// alike, and any range of an entry deciphers on its own: reads stay
+/// seekable. Foundation holds no key; the owner's policy does.
+class ZipCipher {
+public:
+  virtual ~ZipCipher() = default;
+
+  /// The entry naming how the archive is enciphered, by its name in the
+  /// archive; empty for none. Never enciphered. The device does not list it
+  /// or read it out.
+  [[nodiscard]] virtual nx::string_view cipher_entry() const noexcept = 0;
+  /// Once, before any entry's stored bytes are read: the whole directory in
+  /// order and that entry's bytes, empty when the archive has none. False
+  /// refuses the mount.
+  [[nodiscard]] virtual bool admit(std::span<const ZipDirectoryEntry> directory,
+                                   std::span<const u8> record) = 0;
+  /// Whether @p entry's stored bytes are enciphered. Called after admit().
+  [[nodiscard]] virtual bool
+  enciphered(const ZipDirectoryEntry &entry) const = 0;
+  /// Applies @p entry's keystream to @p bytes, which begin @p offset bytes
+  /// into its stored bytes. Reads only the entry's name, method, CRC and
+  /// sizes. Called after admit() from any I/O thread.
+  virtual void apply(const ZipDirectoryEntry &entry, u64 offset,
+                     std::span<u8> bytes) const = 0;
+};
+
+/// The largest cipher entry a ZIP device reads.
+inline constexpr u64 MAX_ZIP_CIPHER_ENTRY_BYTES = 64 * 1024;
+
 /// A verifier, when given, decides whether the archive mounts and checks
-/// every byte read from it; the device and its open streams keep it.
+/// every byte read from it; a cipher, when given, deciphers the entries it
+/// names before anything else reads them, the verifier included. The device
+/// and its open streams keep both.
 [[nodiscard]] io_result<Device *>
 make_zip_device(path_view zip_path, path_view archive_subdir = {},
-                nx::unique_ptr<ZipVerifier> verifier = {});
+                nx::unique_ptr<ZipVerifier> verifier = {},
+                nx::unique_ptr<ZipCipher> cipher = {});
 
 using ZipStreamFactory = nx::function<io_result<stream_ptr>()>;
 [[nodiscard]] io_result<Device *>
 make_zip_device(ZipStreamFactory stream_factory, path_view archive_subdir = {},
-                nx::unique_ptr<ZipVerifier> verifier = {});
+                nx::unique_ptr<ZipVerifier> verifier = {},
+                nx::unique_ptr<ZipCipher> cipher = {});
 
 /// Creates a ZIP device that intentionally owns the complete archive in RAM.
 /// Prefer the path or stream-factory overload for production asset packs.
 [[nodiscard]] io_result<Device *>
 make_zip_device(nx::blob<u8> zip_data, path_view archive_subdir = {},
-                nx::unique_ptr<ZipVerifier> verifier = {});
+                nx::unique_ptr<ZipVerifier> verifier = {},
+                nx::unique_ptr<ZipCipher> cipher = {});
+
+/// Enciphers in place the stored bytes of each entry of the archive at
+/// @p zip_path that @p cipher, admitted with its directory and cipher entry,
+/// names. For the tool that wrote the archive, once: a second pass
+/// deciphers.
+[[nodiscard]] io_result<void> encipher_zip(path_view zip_path,
+                                           ZipCipher &cipher);
 
 enum class ZipCompression : u16 { Store = 0, Deflate = 8, Zstd = 93 };
 
