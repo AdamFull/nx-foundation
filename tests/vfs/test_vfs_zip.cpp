@@ -623,3 +623,79 @@ TEST_CASE("vfs zip leaves out entries that are not plain paths") {
   CHECK(listed->size() == 1u);
   CHECK(has_name(*listed, "ok.txt"));
 }
+
+TEST_CASE("vfs zip directory lists every record in order") {
+  temp_dir dir("zipdir");
+  const nx::string zip = dir.file("dir.zip");
+  REQUIRE(make_zip(
+      zip, {{"b.txt", "BEE", vfs::ZipCompression::Store},
+            {"a/c.bin", "SEA SEA SEA SEA", vfs::ZipCompression::Deflate}}));
+  const auto listed = vfs::read_zip_directory(zip.view());
+  REQUIRE(listed.has_value());
+  REQUIRE(listed->size() == 2u);
+  const vfs::ZipDirectoryEntry &b = (*listed)[0];
+  const vfs::ZipDirectoryEntry &c = (*listed)[1];
+  CHECK(b.name == "b.txt");
+  CHECK(b.method == nx::cast<u16>(vfs::ZipCompression::Store));
+  CHECK(b.uncompressed_size == 3u);
+  CHECK(b.compressed_size == 3u);
+  CHECK(b.crc32 == crc32_of("BEE"));
+  CHECK(b.local_header_offset == 0u);
+  CHECK(c.name == "a/c.bin");
+  CHECK(c.method == nx::cast<u16>(vfs::ZipCompression::Deflate));
+  CHECK(c.uncompressed_size == 15u);
+  CHECK(c.local_header_offset > b.local_header_offset);
+
+  CHECK_FALSE(vfs::read_zip_directory(dir.file("missing.zip").view()));
+}
+
+TEST_CASE("vfs zip directory refuses one that breaks off") {
+  temp_dir dir("zipdir");
+  std::string raw = raw_zip({stored("one.txt", "1"), stored("two.txt", "2")});
+  const usize second = raw.find("PK\x01\x02", raw.find("PK\x01\x02") + 4);
+  REQUIRE(second != std::string::npos);
+  raw[second + 3] = '\x09';
+  const nx::string zip = dir.file("broken.zip");
+  REQUIRE(nx::fs::file_write(
+      zip.view(), {reinterpret_cast<const u8 *>(raw.data()), raw.size()}));
+  CHECK_FALSE(vfs::read_zip_directory(zip.view()));
+}
+
+TEST_CASE("vfs zip writer appends after an archive's entries") {
+  temp_dir dir("zipappend");
+  const nx::string zip = dir.file("append.zip");
+  REQUIRE(
+      make_zip(zip, {{"first.txt", "FIRST", vfs::ZipCompression::Deflate},
+                     {"second.bin", "SECOND", vfs::ZipCompression::Store}}));
+  const auto before = vfs::read_zip_directory(zip.view());
+  REQUIRE(before.has_value());
+
+  vfs::ZipWriter w;
+  REQUIRE(w.open(zip.view(), vfs::ZipWriteMode::Append));
+  REQUIRE(w.add("last.txt", bytes_of("LAST"), vfs::ZipCompression::Store));
+  REQUIRE(w.close());
+
+  const auto after = vfs::read_zip_directory(zip.view());
+  REQUIRE(after.has_value());
+  REQUIRE(after->size() == 3u);
+  for (usize i = 0; i < before->size(); ++i) {
+    const vfs::ZipDirectoryEntry &was = (*before)[i];
+    const vfs::ZipDirectoryEntry &is = (*after)[i];
+    CHECK(is.name == was.name);
+    CHECK(is.flags == was.flags);
+    CHECK(is.method == was.method);
+    CHECK(is.crc32 == was.crc32);
+    CHECK(is.compressed_size == was.compressed_size);
+    CHECK(is.uncompressed_size == was.uncompressed_size);
+    CHECK(is.local_header_offset == was.local_header_offset);
+  }
+  CHECK((*after)[2].name == "last.txt");
+
+  auto zd = vfs::make_zip_device(zip.view());
+  REQUIRE(zd.has_value());
+  scoped_vfs guard;
+  vfs::mount("/", *zd, 0);
+  CHECK(read_eq("/first.txt", "FIRST"));
+  CHECK(read_eq("/second.bin", "SECOND"));
+  CHECK(read_eq("/last.txt", "LAST"));
+}

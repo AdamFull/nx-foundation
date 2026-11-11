@@ -139,6 +139,9 @@ make_zip_device(nx::blob<u8> zip_data, path_view archive_subdir = {});
 
 enum class ZipCompression : u16 { Store = 0, Deflate = 8, Zstd = 93 };
 
+/// Append keeps an archive's entries where they are and adds after them.
+enum class ZipWriteMode : u8 { Create, Append };
+
 /// Produces archives a ZipDevice can mount. Single-writer, not thread-safe.
 class ZipWriter {
 public:
@@ -148,7 +151,8 @@ public:
   ZipWriter(const ZipWriter &) = delete;
   ZipWriter &operator=(const ZipWriter &) = delete;
 
-  [[nodiscard]] bool open(path_view path);
+  [[nodiscard]] bool open(path_view path,
+                          ZipWriteMode mode = ZipWriteMode::Create);
   io_result<void> add(path_view rel, std::span<const u8> data,
                       ZipCompression method = ZipCompression::Deflate) const;
   io_result<void> close();
@@ -156,6 +160,24 @@ public:
 private:
   void *m_handle = nullptr;
 };
+
+/// One central directory record: what a reader uses to find an entry's bytes
+/// and to check them.
+struct ZipDirectoryEntry {
+  nx::string name;
+  u16 flags = 0;
+  u16 method = 0;
+  u32 crc32 = 0;
+  u64 compressed_size = 0;
+  u64 uncompressed_size = 0;
+  u64 local_header_offset = 0;
+  u32 disk = 0;
+};
+
+/// The central directory of the archive at @p zip_path, in its order. Fails
+/// when the directory cannot be read to its end.
+[[nodiscard]] io_result<nx::vector<ZipDirectoryEntry>>
+read_zip_directory(path_view zip_path);
 
 bool initialize();
 void shutdown();
@@ -209,4 +231,4 @@ io_result<void> write_text(path_view vpath, nx::string_view text);
 io_result<void> remove(path_view vpath);
 io_result<void> create_directories(path_view vpath);
 
-}
+} // namespace nx::vfs

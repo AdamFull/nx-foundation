@@ -687,14 +687,15 @@ ZipWriter::~ZipWriter() {
   }
 }
 
-bool ZipWriter::open(const path_view path) {
+bool ZipWriter::open(const path_view path, const ZipWriteMode mode) {
   if (m_handle)
     return false;
   m_handle = mz_zip_writer_create();
   if (!m_handle)
     return false;
   const nx::string p(path.native());
-  if (mz_zip_writer_open_file(m_handle, p.c_str(), 0, 0) != MZ_OK) {
+  const u8 append = mode == ZipWriteMode::Append ? 1 : 0;
+  if (mz_zip_writer_open_file(m_handle, p.c_str(), 0, append) != MZ_OK) {
     void *h = m_handle;
     mz_zip_writer_delete(&h);
     m_handle = nullptr;
@@ -736,6 +737,41 @@ io_result<void> ZipWriter::close() {
   if (rc != MZ_OK)
     return err(file_error{io_error::WriteFailed, 0});
   return {};
+}
+
+io_result<nx::vector<ZipDirectoryEntry>>
+read_zip_directory(const path_view zip_path) {
+  void *reader = mz_zip_reader_create();
+  if (!reader)
+    return err(file_error{io_error::Unknown, 0});
+  NX_DEFER { mz_zip_reader_delete(&reader); };
+  const nx::string p(zip_path.native());
+  if (mz_zip_reader_open_file(reader, p.c_str()) != MZ_OK)
+    return err(file_error{io_error::OpenFailed, 0});
+
+  nx::vector<ZipDirectoryEntry> entries;
+  i32 e = mz_zip_reader_goto_first_entry(reader);
+  while (e == MZ_OK) {
+    mz_zip_file *info = nullptr;
+    if (mz_zip_reader_entry_get_info(reader, &info) != MZ_OK || !info ||
+        !info->filename || info->compressed_size < 0 ||
+        info->uncompressed_size < 0 || info->disk_offset < 0)
+      return err(file_error{io_error::ReadFailed, 0});
+    entries.push_back({
+        .name = nx::string(info->filename),
+        .flags = info->flag,
+        .method = info->compression_method,
+        .crc32 = info->crc,
+        .compressed_size = nx::cast<u64>(info->compressed_size),
+        .uncompressed_size = nx::cast<u64>(info->uncompressed_size),
+        .local_header_offset = nx::cast<u64>(info->disk_offset),
+        .disk = info->disk_number,
+    });
+    e = mz_zip_reader_goto_next_entry(reader);
+  }
+  if (e != MZ_END_OF_LIST)
+    return err(file_error{io_error::ReadFailed, 0});
+  return entries;
 }
 
 } // namespace nx::vfs
