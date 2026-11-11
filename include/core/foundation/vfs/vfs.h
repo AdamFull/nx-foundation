@@ -5,10 +5,12 @@
 #include "core/foundation/core/callable.h"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/core/handle.h"
+#include "core/foundation/core/sha256.h"
 #include "core/foundation/platform/filesystem.h"
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/threading/sync.h"
 
+#include <array>
 #include <optional>
 #include <span>
 
@@ -125,17 +127,66 @@ make_host_device(path_view root,
 
 [[nodiscard]] MemoryDevice *make_memory_device();
 
+/// One central directory record: what a reader uses to find an entry's bytes
+/// and to check them.
+struct ZipDirectoryEntry {
+  nx::string name;
+  u16 flags = 0;
+  u16 method = 0;
+  u32 crc32 = 0;
+  u64 compressed_size = 0;
+  u64 uncompressed_size = 0;
+  u64 local_header_offset = 0;
+  u32 disk = 0;
+};
+
+using ZipDigest = std::array<u8, SHA256_BYTES>;
+
+/// What an entry's bytes must hash to: the SHA-256 of each block_bytes of
+/// them in order, the last block shorter.
+struct ZipEntryDigests {
+  u32 block_bytes = 0;
+  std::span<const ZipDigest> digests;
+};
+
+/// Its owner's word on whether an archive mounts and what its entries' bytes
+/// must hash to. A ZipDevice given one hands out no byte that does not match:
+/// a block is checked before any of it is read. Foundation holds no key; the
+/// owner's policy does.
+class ZipVerifier {
+public:
+  virtual ~ZipVerifier() = default;
+
+  /// The entry admit() is given, by its name in the archive; empty for none.
+  /// The device does not list it or read it out.
+  [[nodiscard]] virtual nx::string_view signature_entry() const noexcept = 0;
+  /// Once, before the device exists: the whole directory in order and that
+  /// entry's bytes, empty when the archive has none. False refuses the mount.
+  [[nodiscard]] virtual bool admit(std::span<const ZipDirectoryEntry> directory,
+                                   std::span<const u8> signature) = 0;
+  /// What the entry named @p name in the archive must hash to; nullopt
+  /// refuses every read of it. Called after admit() from any I/O thread, and
+  /// its answer must stay valid while the verifier lives.
+  [[nodiscard]] virtual std::optional<ZipEntryDigests>
+  digests(nx::string_view name) const = 0;
+};
+
+/// A verifier, when given, decides whether the archive mounts and checks
+/// every byte read from it; the device and its open streams keep it.
 [[nodiscard]] io_result<Device *>
-make_zip_device(path_view zip_path, path_view archive_subdir = {});
+make_zip_device(path_view zip_path, path_view archive_subdir = {},
+                nx::unique_ptr<ZipVerifier> verifier = {});
 
 using ZipStreamFactory = nx::function<io_result<stream_ptr>()>;
 [[nodiscard]] io_result<Device *>
-make_zip_device(ZipStreamFactory stream_factory, path_view archive_subdir = {});
+make_zip_device(ZipStreamFactory stream_factory, path_view archive_subdir = {},
+                nx::unique_ptr<ZipVerifier> verifier = {});
 
 /// Creates a ZIP device that intentionally owns the complete archive in RAM.
 /// Prefer the path or stream-factory overload for production asset packs.
 [[nodiscard]] io_result<Device *>
-make_zip_device(nx::blob<u8> zip_data, path_view archive_subdir = {});
+make_zip_device(nx::blob<u8> zip_data, path_view archive_subdir = {},
+                nx::unique_ptr<ZipVerifier> verifier = {});
 
 enum class ZipCompression : u16 { Store = 0, Deflate = 8, Zstd = 93 };
 
@@ -159,19 +210,6 @@ public:
 
 private:
   void *m_handle = nullptr;
-};
-
-/// One central directory record: what a reader uses to find an entry's bytes
-/// and to check them.
-struct ZipDirectoryEntry {
-  nx::string name;
-  u16 flags = 0;
-  u16 method = 0;
-  u32 crc32 = 0;
-  u64 compressed_size = 0;
-  u64 uncompressed_size = 0;
-  u64 local_header_offset = 0;
-  u32 disk = 0;
 };
 
 /// The central directory of the archive at @p zip_path, in its order. Fails

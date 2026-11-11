@@ -38,6 +38,79 @@ struct ZipEntry {
   bool is_dir = false;
 };
 
+/// Refused is the verifier's decision, which its owner reports.
+enum class Indexed : u8 { Built, Damaged, Refused };
+
+[[nodiscard]] std::optional<ZipDirectoryEntry>
+directory_entry(const mz_zip_file &info) {
+  if (!info.filename || info.compressed_size < 0 ||
+      info.uncompressed_size < 0 || info.disk_offset < 0)
+    return std::nullopt;
+  return ZipDirectoryEntry{
+      .name = nx::string(info.filename),
+      .flags = info.flag,
+      .method = info.compression_method,
+      .crc32 = info.crc,
+      .compressed_size = nx::cast<u64>(info.compressed_size),
+      .uncompressed_size = nx::cast<u64>(info.uncompressed_size),
+      .local_header_offset = nx::cast<u64>(info.disk_offset),
+      .disk = info.disk_number,
+  };
+}
+
+/// Whether @p digests has one digest for each block of an entry of @p size.
+[[nodiscard]] bool digests_fit(const ZipEntryDigests &digests,
+                               const u64 size) noexcept {
+  if (digests.block_bytes == 0)
+    return false;
+  const u64 blocks =
+      size / digests.block_bytes + (size % digests.block_bytes != 0 ? 1 : 0);
+  return digests.digests.size() == blocks;
+}
+
+[[nodiscard]] bool blocks_match(const ZipEntryDigests &digests,
+                                const std::span<const u8> bytes) noexcept {
+  if (!digests_fit(digests, bytes.size()))
+    return false;
+  usize index = 0;
+  for (usize at = 0; at < bytes.size(); at += digests.block_bytes, ++index) {
+    const usize length = nx::min<usize>(digests.block_bytes, bytes.size() - at);
+    if (nx::sha256(bytes.subspan(at, length)) != digests.digests[index])
+      return false;
+  }
+  return true;
+}
+
+/// All of an open entry's bytes. The size is the archive's own claim, so
+/// memory follows the bytes that arrive: a forged header cannot make this
+/// allocate gigabytes up front.
+[[nodiscard]] io_result<nx::blob<u8>> read_open_entry(void *reader,
+                                                      const u64 size) {
+  constexpr u64 FIRST_BLOCK = u64{1} << 20;
+  nx::blob<u8> data(nx::cast<usize>(nx::min(size, FIRST_BLOCK)));
+  usize off = 0;
+  bool ok = true;
+  while (off < size) {
+    if (off == data.size()) {
+      nx::blob<u8> grown(
+          nx::cast<usize>(nx::min(size, nx::cast<u64>(data.size()) * 2)));
+      std::memcpy(grown.data(), data.data(), off);
+      data = std::move(grown);
+    }
+    const i32 want = nx::cast<i32>(
+        nx::min<usize>(data.size() - off, nx::cast<usize>(FIRST_BLOCK)));
+    const i32 n = mz_zip_reader_entry_read(reader, data.data() + off, want);
+    if (n <= 0) {
+      ok = false;
+      break;
+    }
+    off += nx::cast<usize>(n);
+  }
+  if (!ok || !finish_entry(reader))
+    return err(file_error{io_error::ReadFailed, 0});
+  return data;
+}
+
 struct FoundationZipStream {
   mz_stream base{};
   nx::fs::stream_ptr source;
@@ -182,10 +255,12 @@ void destroy_reader(ZipReader *reader) {
 // it, so a stream still open when its device is unmounted keeps reading.
 class ZipArchive {
 public:
-  explicit ZipArchive(nx::blob<u8> zip_data)
-      : m_zip_data(std::move(zip_data)) {}
-  explicit ZipArchive(ZipStreamFactory stream_factory)
-      : m_stream_factory(std::move(stream_factory)) {}
+  ZipArchive(nx::blob<u8> zip_data, nx::unique_ptr<ZipVerifier> verifier)
+      : m_zip_data(std::move(zip_data)), m_verifier(std::move(verifier)) {}
+  ZipArchive(ZipStreamFactory stream_factory,
+             nx::unique_ptr<ZipVerifier> verifier)
+      : m_stream_factory(std::move(stream_factory)),
+        m_verifier(std::move(verifier)) {}
 
   ZipArchive(const ZipArchive &) = delete;
   ZipArchive &operator=(const ZipArchive &) = delete;
@@ -255,9 +330,14 @@ public:
       destroy_reader(reader);
   }
 
+  [[nodiscard]] ZipVerifier *verifier() const noexcept {
+    return m_verifier.get();
+  }
+
 private:
   nx::blob<u8> m_zip_data;
   ZipStreamFactory m_stream_factory;
+  nx::unique_ptr<ZipVerifier> m_verifier;
   nx::mpmc::queue<ZipReader *, READER_POOL> m_readers;
 };
 
@@ -267,28 +347,64 @@ public:
   class EntryStream;
 
   template <typename Source>
-  ZipDevice(Source source, nx::string subdir)
-      : m_archive(nx::make_shared<ZipArchive>(std::move(source))),
+  ZipDevice(Source source, nx::string subdir,
+            nx::unique_ptr<ZipVerifier> verifier)
+      : m_archive(nx::make_shared<ZipArchive>(std::move(source),
+                                              std::move(verifier))),
         m_subdir(std::move(subdir)) {}
 
-  /// False when the central directory cannot be read to its end: a mount of
-  /// a damaged archive fails rather than showing part of it.
-  bool build_index() {
+  /// Damaged when the central directory cannot be read to its end, so a
+  /// mount of a damaged archive fails rather than showing part of it.
+  Indexed build_index() {
     ZipReader *reader = m_archive->acquire();
     void *r = reader ? reader->handle : nullptr;
     if (!r)
-      return false;
+      return Indexed::Damaged;
     NX_DEFER { m_archive->release_reader(reader); };
+    ZipVerifier *const verifier = m_archive->verifier();
+    const nx::string_view signature =
+        verifier ? verifier->signature_entry() : nx::string_view();
+    nx::vector<ZipDirectoryEntry> directory;
+    std::optional<u64> signature_size;
     i32 e = mz_zip_reader_goto_first_entry(r);
     while (e == MZ_OK) {
       mz_zip_file *info = nullptr;
       if (mz_zip_reader_entry_get_info(r, &info) != MZ_OK || !info ||
           !info->filename)
-        return false;
-      index_entry(*info);
+        return Indexed::Damaged;
+      if (verifier) {
+        std::optional<ZipDirectoryEntry> record = directory_entry(*info);
+        if (!record)
+          return Indexed::Damaged;
+        if (!signature.empty() && record->name.view() == signature)
+          signature_size = record->uncompressed_size;
+        directory.push_back(std::move(*record));
+      }
+      if (signature.empty() || nx::string_view(info->filename) != signature)
+        index_entry(*info);
       e = mz_zip_reader_goto_next_entry(r);
     }
-    return e == MZ_END_OF_LIST;
+    if (e != MZ_END_OF_LIST)
+      return Indexed::Damaged;
+    if (!verifier)
+      return Indexed::Built;
+
+    nx::blob<u8> signature_bytes;
+    if (signature_size) {
+      const nx::string name(signature);
+      if (*signature_size > nx::cast<u64>(0x7fffffff) ||
+          mz_zip_reader_locate_entry(r, name.c_str(), 0) != MZ_OK ||
+          mz_zip_reader_entry_open(r) != MZ_OK)
+        return Indexed::Damaged;
+      auto bytes = read_open_entry(r, *signature_size);
+      if (!bytes)
+        return Indexed::Damaged;
+      signature_bytes = std::move(*bytes);
+    }
+    return verifier->admit(directory,
+                           {signature_bytes.data(), signature_bytes.size()})
+               ? Indexed::Built
+               : Indexed::Refused;
   }
 
   [[nodiscard]] io_result<nx::blob<u8>> read(const path_view rel) override {
@@ -312,30 +428,15 @@ public:
         mz_zip_reader_entry_open(r) != MZ_OK)
       return err(file_error{io_error::NotFound, 0});
 
-    // The size is the archive's own claim, so memory follows the bytes that
-    // arrive: a forged header cannot make this allocate gigabytes up front.
-    constexpr u64 FIRST_BLOCK = u64{1} << 20;
-    nx::blob<u8> data(nx::cast<usize>(nx::min(size, FIRST_BLOCK)));
-    usize off = 0;
-    bool ok = true;
-    while (off < size) {
-      if (off == data.size()) {
-        nx::blob<u8> grown(
-            nx::cast<usize>(nx::min(size, nx::cast<u64>(data.size()) * 2)));
-        std::memcpy(grown.data(), data.data(), off);
-        data = std::move(grown);
-      }
-      const i32 want = nx::cast<i32>(
-          nx::min<usize>(data.size() - off, nx::cast<usize>(FIRST_BLOCK)));
-      const i32 n = mz_zip_reader_entry_read(r, data.data() + off, want);
-      if (n <= 0) {
-        ok = false;
-        break;
-      }
-      off += nx::cast<usize>(n);
+    auto data = read_open_entry(r, size);
+    if (!data)
+      return data;
+    if (const ZipVerifier *const verifier = m_archive->verifier()) {
+      const std::optional<ZipEntryDigests> digests =
+          verifier->digests(full.view());
+      if (!digests || !blocks_match(*digests, {data->data(), data->size()}))
+        return err(file_error{io_error::ReadFailed, 0});
     }
-    if (!ok || !finish_entry(r))
-      return err(file_error{io_error::ReadFailed, 0});
     return data;
   }
 
@@ -463,9 +564,10 @@ private:
 class ZipDevice::EntryStream final : public nx::fs::stream {
 public:
   EntryStream(nx::shared_ptr<ZipArchive> archive, ZipReader *reader,
-              nx::string entry, const u64 size) noexcept
+              nx::string entry, const u64 size,
+              std::optional<ZipEntryDigests> check) noexcept
       : m_archive(std::move(archive)), m_reader(reader),
-        m_entry(std::move(entry)), m_size(size) {}
+        m_entry(std::move(entry)), m_size(size), m_check(check) {}
 
   ~EntryStream() override {
     close_entry();
@@ -473,6 +575,8 @@ public:
   }
 
   usize read(void *destination, const usize bytes) override {
+    if (m_check)
+      return read_checked(static_cast<u8 *>(destination), bytes);
     if (!m_reader || !m_open || destination == nullptr || bytes == 0 ||
         m_position >= m_size)
       return 0;
@@ -530,6 +634,11 @@ public:
     if (signed_target < 0 || nx::cast<u64>(signed_target) > m_size)
       return false;
     const u64 target = nx::cast<u64>(signed_target);
+    if (m_check) {
+      // The block holding it is read and checked when it is first read.
+      m_position = target;
+      return true;
+    }
     if (target < m_position && !reopen())
       return false;
 
@@ -586,6 +695,91 @@ private:
     return true;
   }
 
+  /// Reads served from blocks, each read whole and checked before any of it
+  /// is handed out; m_raw is where the entry itself has been read to.
+  usize read_checked(u8 *const output, const usize bytes) {
+    if (!m_reader || m_failed || output == nullptr || bytes == 0 ||
+        m_position >= m_size)
+      return 0;
+    const usize wanted =
+        nx::cast<usize>(nx::min<u64>(m_size - m_position, bytes));
+    usize total = 0;
+    while (total < wanted) {
+      if (m_block_fill == 0 || m_position < m_block_start ||
+          m_position >= m_block_start + m_block_fill) {
+        if (!load_block(m_position / m_check->block_bytes)) {
+          m_failed = true;
+          break;
+        }
+      }
+      const usize at = nx::cast<usize>(m_position - m_block_start);
+      const usize count = nx::min<usize>(wanted - total, m_block_fill - at);
+      std::memcpy(output + total, m_block.data() + at, count);
+      total += count;
+      m_position += count;
+    }
+    return total;
+  }
+
+  [[nodiscard]] bool load_block(const u64 index) {
+    m_block_fill = 0;
+    const u64 start = index * m_check->block_bytes;
+    if (index >= m_check->digests.size() || start >= m_size)
+      return false;
+    const usize length =
+        nx::cast<usize>(nx::min<u64>(m_check->block_bytes, m_size - start));
+    if (m_raw > start && !reopen_raw())
+      return false;
+    std::array<u8, 64u * 1024u> discard{};
+    while (m_raw < start) {
+      const usize count =
+          nx::cast<usize>(nx::min<u64>(discard.size(), start - m_raw));
+      if (!read_raw(discard.data(), count))
+        return false;
+    }
+    m_block.resize(length);
+    if (!read_raw(m_block.data(), length) ||
+        nx::sha256(std::span<const u8>(m_block.data(), length)) !=
+            m_check->digests[index])
+      return false;
+    m_block_start = start;
+    m_block_fill = length;
+    return true;
+  }
+
+  /// Exactly @p count of the entry's next bytes; at its end, minizip's CRC.
+  [[nodiscard]] bool read_raw(u8 *const output, const usize count) {
+    if (!m_open)
+      return false;
+    usize total = 0;
+    while (total < count) {
+      const i32 chunk = nx::cast<i32>(nx::min<usize>(
+          count - total, nx::cast<usize>(std::numeric_limits<i32>::max())));
+      const i32 read =
+          mz_zip_reader_entry_read(m_reader->handle, output + total, chunk);
+      if (read <= 0)
+        return false;
+      total += nx::cast<usize>(read);
+    }
+    m_raw += count;
+    if (m_raw == m_size) {
+      m_open = false;
+      return finish_entry(m_reader->handle);
+    }
+    return true;
+  }
+
+  [[nodiscard]] bool reopen_raw() {
+    close_entry();
+    if (mz_zip_reader_locate_entry(m_reader->handle, m_entry.c_str(), 0) !=
+            MZ_OK ||
+        mz_zip_reader_entry_open(m_reader->handle) != MZ_OK)
+      return false;
+    m_open = true;
+    m_raw = 0;
+    return true;
+  }
+
   nx::shared_ptr<ZipArchive> m_archive;
   ZipReader *m_reader = nullptr;
   nx::string m_entry;
@@ -593,6 +787,11 @@ private:
   u64 m_position = 0;
   bool m_open = true;
   bool m_failed = false;
+  std::optional<ZipEntryDigests> m_check;
+  nx::vector<u8> m_block;
+  u64 m_block_start = 0;
+  usize m_block_fill = 0;
+  u64 m_raw = 0;
 };
 
 io_result<stream_ptr> ZipDevice::open(const path_view rel) {
@@ -604,6 +803,12 @@ io_result<stream_ptr> ZipDevice::open(const path_view rel) {
     return err(file_error{io_error::FileTooLarge, 0});
 
   const nx::string full = archive_name(key.view());
+  std::optional<ZipEntryDigests> check;
+  if (const ZipVerifier *const verifier = m_archive->verifier()) {
+    check = verifier->digests(full.view());
+    if (!check || !digests_fit(*check, found->second.size))
+      return err(file_error{io_error::ReadFailed, 0});
+  }
   ZipReader *reader = m_archive->acquire();
   if (!reader)
     return err(file_error{io_error::OpenFailed, 0});
@@ -613,8 +818,8 @@ io_result<stream_ptr> ZipDevice::open(const path_view rel) {
     return err(file_error{io_error::NotFound, 0});
   }
 
-  auto *entry =
-      nx::allocate<EntryStream>(m_archive, reader, full, found->second.size);
+  auto *entry = nx::allocate<EntryStream>(m_archive, reader, full,
+                                          found->second.size, check);
   if (!entry) {
     (void)mz_zip_reader_entry_close(reader->handle);
     m_archive->release_reader(reader);
@@ -626,7 +831,8 @@ io_result<stream_ptr> ZipDevice::open(const path_view rel) {
 } // namespace
 
 io_result<Device *> make_zip_device(path_view zip_path,
-                                    const path_view archive_subdir) {
+                                    const path_view archive_subdir,
+                                    nx::unique_ptr<ZipVerifier> verifier) {
   // One open file for every reader, so the archive stays what was mounted
   // even when the file is replaced on disk.
   auto views = nx::fs::open_file_views(zip_path);
@@ -635,11 +841,13 @@ io_result<Device *> make_zip_device(path_view zip_path,
     return err(views.error());
   }
   nx::string subdir = canon_rel(archive_subdir);
-  auto *dev = nx::allocate<ZipDevice>(std::move(*views), std::move(subdir));
+  auto *dev = nx::allocate<ZipDevice>(std::move(*views), std::move(subdir),
+                                      std::move(verifier));
   if (!dev)
     return err(file_error{io_error::OpenFailed, 0});
-  if (!dev->build_index()) {
-    nx::logw(log_vfs, "vfs: cannot open zip '{}'", zip_path);
+  if (const Indexed indexed = dev->build_index(); indexed != Indexed::Built) {
+    if (indexed == Indexed::Damaged)
+      nx::logw(log_vfs, "vfs: cannot open zip '{}'", zip_path);
     nx::release(dev);
     return err(file_error{io_error::OpenFailed, 0});
   }
@@ -647,15 +855,18 @@ io_result<Device *> make_zip_device(path_view zip_path,
 }
 
 io_result<Device *> make_zip_device(nx::blob<u8> zip_data,
-                                    const path_view archive_subdir) {
+                                    const path_view archive_subdir,
+                                    nx::unique_ptr<ZipVerifier> verifier) {
   if (zip_data.empty() || zip_data.size() > nx::cast<usize>(0x7fffffff))
     return err(file_error{io_error::InvalidArgument, 0});
   nx::string subdir = canon_rel(archive_subdir);
-  auto *dev = nx::allocate<ZipDevice>(std::move(zip_data), std::move(subdir));
+  auto *dev = nx::allocate<ZipDevice>(std::move(zip_data), std::move(subdir),
+                                      std::move(verifier));
   if (!dev)
     return err(file_error{io_error::OpenFailed, 0});
-  if (!dev->build_index()) {
-    nx::logw(log_vfs, "vfs: cannot open zip from memory");
+  if (const Indexed indexed = dev->build_index(); indexed != Indexed::Built) {
+    if (indexed == Indexed::Damaged)
+      nx::logw(log_vfs, "vfs: cannot open zip from memory");
     nx::release(dev);
     return err(file_error{io_error::OpenFailed, 0});
   }
@@ -663,16 +874,18 @@ io_result<Device *> make_zip_device(nx::blob<u8> zip_data,
 }
 
 io_result<Device *> make_zip_device(ZipStreamFactory stream_factory,
-                                    const path_view archive_subdir) {
+                                    const path_view archive_subdir,
+                                    nx::unique_ptr<ZipVerifier> verifier) {
   if (!stream_factory)
     return err(file_error{io_error::InvalidArgument, 0});
   nx::string subdir = canon_rel(archive_subdir);
-  auto *dev =
-      nx::allocate<ZipDevice>(std::move(stream_factory), std::move(subdir));
+  auto *dev = nx::allocate<ZipDevice>(std::move(stream_factory),
+                                      std::move(subdir), std::move(verifier));
   if (!dev)
     return err(file_error{io_error::OpenFailed, 0});
-  if (!dev->build_index()) {
-    nx::logw(log_vfs, "vfs: cannot open zip from stream factory");
+  if (const Indexed indexed = dev->build_index(); indexed != Indexed::Built) {
+    if (indexed == Indexed::Damaged)
+      nx::logw(log_vfs, "vfs: cannot open zip from stream factory");
     nx::release(dev);
     return err(file_error{io_error::OpenFailed, 0});
   }
@@ -753,20 +966,11 @@ read_zip_directory(const path_view zip_path) {
   i32 e = mz_zip_reader_goto_first_entry(reader);
   while (e == MZ_OK) {
     mz_zip_file *info = nullptr;
+    std::optional<ZipDirectoryEntry> record;
     if (mz_zip_reader_entry_get_info(reader, &info) != MZ_OK || !info ||
-        !info->filename || info->compressed_size < 0 ||
-        info->uncompressed_size < 0 || info->disk_offset < 0)
+        !(record = directory_entry(*info)))
       return err(file_error{io_error::ReadFailed, 0});
-    entries.push_back({
-        .name = nx::string(info->filename),
-        .flags = info->flag,
-        .method = info->compression_method,
-        .crc32 = info->crc,
-        .compressed_size = nx::cast<u64>(info->compressed_size),
-        .uncompressed_size = nx::cast<u64>(info->uncompressed_size),
-        .local_header_offset = nx::cast<u64>(info->disk_offset),
-        .disk = info->disk_number,
-    });
+    entries.push_back(std::move(*record));
     e = mz_zip_reader_goto_next_entry(reader);
   }
   if (e != MZ_END_OF_LIST)

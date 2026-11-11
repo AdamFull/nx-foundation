@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -698,4 +699,183 @@ TEST_CASE("vfs zip writer appends after an archive's entries") {
   CHECK(read_eq("/first.txt", "FIRST"));
   CHECK(read_eq("/second.bin", "SECOND"));
   CHECK(read_eq("/last.txt", "LAST"));
+}
+
+namespace {
+
+/// What a test verifier saw and was told, outliving the verifier the device
+/// owns.
+struct Verdicts {
+  bool accept = true;
+  bool admitted = false;
+  nx::vector<vfs::ZipDirectoryEntry> directory;
+  std::string signature;
+  std::map<std::string, nx::vector<vfs::ZipDigest>> digests;
+  u32 block_bytes = 16;
+};
+
+class TestVerifier final : public vfs::ZipVerifier {
+public:
+  explicit TestVerifier(Verdicts &verdicts) noexcept : m_verdicts(verdicts) {}
+
+  [[nodiscard]] nx::string_view signature_entry() const noexcept override {
+    return "sig.bin";
+  }
+  [[nodiscard]] bool admit(const std::span<const vfs::ZipDirectoryEntry> dir,
+                           const std::span<const u8> signature) override {
+    m_verdicts.admitted = true;
+    m_verdicts.directory.assign(dir.begin(), dir.end());
+    m_verdicts.signature.assign(signature.begin(), signature.end());
+    return m_verdicts.accept;
+  }
+  [[nodiscard]] std::optional<vfs::ZipEntryDigests>
+  digests(const nx::string_view name) const override {
+    const auto it = m_verdicts.digests.find(std::string(name));
+    if (it == m_verdicts.digests.end())
+      return std::nullopt;
+    return vfs::ZipEntryDigests{m_verdicts.block_bytes, it->second};
+  }
+
+private:
+  Verdicts &m_verdicts;
+};
+
+nx::vector<vfs::ZipDigest> block_digests(const std::string &bytes,
+                                         const u32 block_bytes) {
+  nx::vector<vfs::ZipDigest> out;
+  for (usize at = 0; at < bytes.size(); at += block_bytes)
+    out.push_back(nx::sha256(
+        std::span<const u8>(reinterpret_cast<const u8 *>(bytes.data()) + at,
+                            nx::min<usize>(block_bytes, bytes.size() - at))));
+  return out;
+}
+
+const std::string STORED = "stored bytes, several blocks of them: 0123456789";
+const std::string PACKED = "deflated bytes repeat, deflated bytes repeat, ok";
+
+/// An archive with a stored and a deflated entry and a signature entry, and
+/// a verifier whose digests match every entry.
+nx::string verified_zip(const temp_dir &dir, Verdicts &verdicts) {
+  const nx::string zip = dir.file("verified.zip");
+  REQUIRE(make_zip(
+      zip, {{"stored.bin", STORED.c_str(), vfs::ZipCompression::Store},
+            {"sub/packed.bin", PACKED.c_str(), vfs::ZipCompression::Deflate},
+            {"sig.bin", "SIGNED", vfs::ZipCompression::Store}}));
+  verdicts.digests["stored.bin"] = block_digests(STORED, verdicts.block_bytes);
+  verdicts.digests["sub/packed.bin"] =
+      block_digests(PACKED, verdicts.block_bytes);
+  return zip;
+}
+
+std::string read_stream(nx::fs::stream &stream, const usize count) {
+  std::string out(count, '\0');
+  out.resize(stream.read(out.data(), count));
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("vfs zip verifier admits with the directory and signature") {
+  temp_dir dir("zipverify");
+  Verdicts verdicts;
+  const nx::string zip = verified_zip(dir, verdicts);
+  auto zd = vfs::make_zip_device(zip.view(), {},
+                                 nx::make_unique<TestVerifier>(verdicts));
+  REQUIRE(zd.has_value());
+  CHECK(verdicts.admitted);
+  CHECK(verdicts.signature == "SIGNED");
+  REQUIRE(verdicts.directory.size() == 3u);
+  CHECK(verdicts.directory[0].name == "stored.bin");
+  CHECK(verdicts.directory[2].name == "sig.bin");
+
+  scoped_vfs guard;
+  vfs::mount("/", *zd, 0);
+  CHECK(read_eq("/stored.bin", STORED.c_str()));
+  CHECK(read_eq("/sub/packed.bin", PACKED.c_str()));
+  CHECK_FALSE(vfs::exists("/sig.bin"));
+  CHECK_FALSE(vfs::read("/sig.bin").has_value());
+  const auto listed = vfs::list("/");
+  REQUIRE(listed.has_value());
+  CHECK_FALSE(has_name(*listed, "sig.bin"));
+
+  Verdicts refused;
+  refused.accept = false;
+  CHECK_FALSE(vfs::make_zip_device(zip.view(), {},
+                                   nx::make_unique<TestVerifier>(refused))
+                  .has_value());
+  CHECK(refused.admitted);
+}
+
+TEST_CASE("vfs zip verifier streams checked blocks and seeks") {
+  temp_dir dir("zipverify");
+  Verdicts verdicts;
+  const nx::string zip = verified_zip(dir, verdicts);
+  auto zd = vfs::make_zip_device(zip.view(), {},
+                                 nx::make_unique<TestVerifier>(verdicts));
+  REQUIRE(zd.has_value());
+  scoped_vfs guard;
+  vfs::mount("/", *zd, 0);
+
+  for (const char *name : {"/stored.bin", "/sub/packed.bin"}) {
+    const std::string &want =
+        std::string(name) == "/stored.bin" ? STORED : PACKED;
+    auto stream = vfs::open(name);
+    REQUIRE(stream.has_value());
+    CHECK(read_stream(**stream, 5) == want.substr(0, 5));
+    CHECK(read_stream(**stream, 20) == want.substr(5, 20));
+    REQUIRE((*stream)->seek(-3, nx::fs::seek_origin::end));
+    CHECK(read_stream(**stream, 10) == want.substr(want.size() - 3));
+    CHECK((*stream)->eof());
+    REQUIRE((*stream)->seek(17, nx::fs::seek_origin::begin));
+    CHECK(read_stream(**stream, 4) == want.substr(17, 4));
+    REQUIRE((*stream)->seek(2, nx::fs::seek_origin::begin));
+    CHECK(read_stream(**stream, want.size()) == want.substr(2));
+    CHECK((*stream)->status().has_value());
+  }
+}
+
+TEST_CASE("vfs zip verifier refuses bytes that do not match") {
+  temp_dir dir("zipverify");
+  Verdicts verdicts;
+  const nx::string zip = verified_zip(dir, verdicts);
+  verdicts.digests["stored.bin"][1][0] ^= 0x01;
+  verdicts.digests.erase("sub/packed.bin");
+  auto zd = vfs::make_zip_device(zip.view(), {},
+                                 nx::make_unique<TestVerifier>(verdicts));
+  REQUIRE(zd.has_value());
+  scoped_vfs guard;
+  vfs::mount("/", *zd, 0);
+
+  CHECK_FALSE(vfs::read("/stored.bin").has_value());
+  auto stream = vfs::open("/stored.bin");
+  REQUIRE(stream.has_value());
+  CHECK(read_stream(**stream, 16) == STORED.substr(0, 16));
+  CHECK(read_stream(**stream, 16).empty());
+  const auto status = (*stream)->status();
+  REQUIRE_FALSE(status.has_value());
+  CHECK(status.error().kind == nx::fs::io_error::ReadFailed);
+  CHECK((*stream)->eof());
+
+  CHECK_FALSE(vfs::read("/sub/packed.bin").has_value());
+  CHECK_FALSE(vfs::open("/sub/packed.bin").has_value());
+
+  verdicts.digests.erase("stored.bin");
+  verdicts.digests["stored.bin"] = block_digests(STORED, verdicts.block_bytes);
+  verdicts.digests["stored.bin"].pop_back();
+  CHECK_FALSE(vfs::open("/stored.bin").has_value());
+  CHECK_FALSE(vfs::read("/stored.bin").has_value());
+}
+
+TEST_CASE("vfs zip verifier outlives its device for an open stream") {
+  temp_dir dir("zipverify");
+  Verdicts verdicts;
+  const nx::string zip = verified_zip(dir, verdicts);
+  auto zd = vfs::make_zip_device(zip.view(), {},
+                                 nx::make_unique<TestVerifier>(verdicts));
+  REQUIRE(zd.has_value());
+  auto stream = (*zd)->open("stored.bin");
+  nx::release(*zd);
+  REQUIRE(stream.has_value());
+  CHECK(read_stream(**stream, STORED.size()) == STORED);
+  CHECK((*stream)->status().has_value());
 }
