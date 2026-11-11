@@ -7,6 +7,17 @@
 #else
 #include <cpuid.h>
 #endif
+#elif NX_ARCH_AARCH64
+#if defined(NX_COMPILER_MSVC) && !defined(NX_COMPILER_CLANG)
+#include <arm64_neon.h>
+#else
+#include <arm_neon.h>
+#endif
+#if defined(NX_PLATFORM_WINDOWS)
+#include <windows.h>
+#elif defined(NX_PLATFORM_LINUX) || defined(NX_PLATFORM_ANDROID)
+#include <sys/auxv.h>
+#endif
 #endif
 
 namespace nx {
@@ -154,10 +165,68 @@ NX_SHA_TARGET void compress_shani(u32 (&state)[8], const u8 *data,
 }
 #endif
 
+#if NX_ARCH_AARCH64
+#if defined(NX_COMPILER_MSVC) && !defined(NX_COMPILER_CLANG)
+#define NX_SHA2_TARGET
+#elif defined(NX_COMPILER_CLANG)
+#define NX_SHA2_TARGET __attribute__((target("sha2")))
+#else
+#define NX_SHA2_TARGET __attribute__((target("+sha2")))
+#endif
+
+/// ARMv8's SHA-256 instructions keep the state as ABCD and EFGH and schedule
+/// each 4-word group from the four before it.
+NX_SHA2_TARGET void compress_armv8(u32 (&state)[8], const u8 *data,
+                                   usize blocks) noexcept {
+  uint32x4_t abcd = vld1q_u32(state);
+  uint32x4_t efgh = vld1q_u32(state + 4);
+  for (; blocks != 0; --blocks, data += 64) {
+    const uint32x4_t abcd_before = abcd;
+    const uint32x4_t efgh_before = efgh;
+    uint32x4_t w[4];
+    for (int group = 0; group < 16; ++group) {
+      uint32x4_t &words = w[group & 3];
+      if (group < 4)
+        words = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + group * 16)));
+      else
+        words = vsha256su1q_u32(vsha256su0q_u32(words, w[(group - 3) & 3]),
+                                w[(group - 2) & 3], w[(group - 1) & 3]);
+      const uint32x4_t message =
+          vaddq_u32(words, vld1q_u32(ROUNDS + group * 4));
+      const uint32x4_t abcd_now = abcd;
+      abcd = vsha256hq_u32(abcd, efgh, message);
+      efgh = vsha256h2q_u32(efgh, abcd_now, message);
+    }
+    abcd = vaddq_u32(abcd, abcd_before);
+    efgh = vaddq_u32(efgh, efgh_before);
+  }
+  vst1q_u32(state, abcd);
+  vst1q_u32(state + 4, efgh);
+}
+
+[[nodiscard]] bool cpu_has_sha2() noexcept {
+#if defined(NX_PLATFORM_APPLE)
+  return true;
+#elif defined(NX_PLATFORM_WINDOWS)
+  return IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE) !=
+         0;
+#elif defined(NX_PLATFORM_LINUX) || defined(NX_PLATFORM_ANDROID)
+  constexpr unsigned long HWCAP_SHA2_BIT = 1ul << 6;
+  return (getauxval(AT_HWCAP) & HWCAP_SHA2_BIT) != 0;
+#else
+  return false;
+#endif
+}
+#endif
+
 [[nodiscard]] compress_fn best_compress() noexcept {
 #if NX_ARCH_X64
   static const compress_fn chosen =
       cpu_has_sha() ? compress_shani : compress_portable;
+  return chosen;
+#elif NX_ARCH_AARCH64
+  static const compress_fn chosen =
+      cpu_has_sha2() ? compress_armv8 : compress_portable;
   return chosen;
 #else
   return compress_portable;

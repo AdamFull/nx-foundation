@@ -582,7 +582,7 @@ gives the registers to walk one's stack from; a hang's report does both.
 | `nx::scoped_value` | `core/scope_guard.h` | Temporarily replace a value and restore it on scope exit, including correctly nested scopes. |
 | `nx::guid` | `core/random.h` | A 128-bit unique identifier (UUID): parse, format, compare, hash. Generate via `nx::rng::guid()`. |
 | `nx::rng` | `core/random.h` | A seedable pseudo-random generator; not for secrets, which come from `nx::os::random_bytes`. |
-| `nx::sha256` | `core/sha256.h` | The SHA-256 digest (FIPS 180-4) of a byte span, for identities and checks such as PKCE; not a password hash. |
+| `nx::sha256` | `core/sha256.h` | The SHA-256 digest (FIPS 180-4) of a byte span, for identities and checks such as PKCE; not a password hash. It uses the processor's SHA instructions where the processor has them (x86 SHA-NI by `cpuid`; ARMv8 SHA2 by `getauxval` on Android and Linux, always on Apple, `IsProcessorFeaturePresent` on Windows), and portable code otherwise. |
 | `nx::duration` / `nx::timestamp` / `nx::stopwatch` | `core/time.h` | Signed nanosecond spans and monotonic time points, a stopwatch, and `scoped_micros` that writes a scope's length on exit. |
 | `nx::fixed` | `core/fixed.h` | Q16.16 fixed point whose overflow wraps as defined behaviour, so every peer of a rollback session computes the same bits. |
 | `nx::noise` | `core/noise.h` | Value, simplex and cellular noise in 2D and 3D in integer arithmetic only, so a seed gives the same world on every CPU; Q16.16 results, `fbm` for octaves. No simplex gradient lies square to a simplex edge, so no field is zero along a straight line. |
