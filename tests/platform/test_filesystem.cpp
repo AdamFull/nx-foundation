@@ -668,6 +668,56 @@ TEST_CASE("fs: staged files publish completely or preserve the destination") {
   CHECK(*fs::file_read_text(fs::path_view(destination)) == "replacement");
 }
 
+TEST_CASE("fs: stale staged temporaries go, fresh ones and other files stay") {
+  const temp_dir dir("stale_staged");
+  const nx::string destination = dir.child("cache.bin");
+  REQUIRE(fs::file_write_text(fs::path_view(destination), "cache").has_value());
+
+  nx::string fresh;
+  {
+    fs::staged_file staged{fs::path_view(destination)};
+    fresh = nx::string(staged.temporary_path().native());
+  }
+  const nx::string stale = dir.child("cache.bin.12.345.6.nxtmp");
+  const nx::string kept[] = {
+      dir.child("cache.bin.12.345.nxtmp"),
+      dir.child("cache.bin.12.x45.6.nxtmp"),
+      dir.child("cache.bin..345.6.nxtmp"),
+      dir.child("cache.bin.other.12.345.6.nxtmp"),
+      dir.child("other.bin.12.345.6.nxtmp"),
+  };
+  const auto age = [](const nx::string &file) {
+    const std::filesystem::path native(file.c_str());
+    std::filesystem::last_write_time(native,
+                                     std::filesystem::last_write_time(native) -
+                                         std::chrono::hours(2));
+  };
+  REQUIRE(fs::file_write_text(fs::path_view(fresh), "fresh").has_value());
+  REQUIRE(fs::file_write_text(fs::path_view(stale), "stale").has_value());
+  age(stale);
+  for (const nx::string &file : kept) {
+    REQUIRE(fs::file_write_text(fs::path_view(file), "kept").has_value());
+    age(file);
+  }
+
+  constexpr u64 HOUR_NS = 3600ull * 1000000000ull;
+  const auto removed =
+      fs::remove_stale_staged_files(fs::path_view(destination), HOUR_NS);
+  REQUIRE(removed.has_value());
+  CHECK(*removed == 1u);
+  CHECK_FALSE(fs::exists(fs::path_view(stale)));
+  CHECK(fs::exists(fs::path_view(fresh)));
+  CHECK(fs::exists(fs::path_view(destination)));
+  for (const nx::string &file : kept)
+    CHECK(fs::exists(fs::path_view(file)));
+
+  const auto all = fs::remove_stale_staged_files(fs::path_view(destination), 0);
+  REQUIRE(all.has_value());
+  CHECK(*all == 1u);
+  CHECK_FALSE(fs::exists(fs::path_view(fresh)));
+  CHECK(fs::exists(fs::path_view(destination)));
+}
+
 TEST_CASE("fs: a flushed atomic write publishes as a cached one does and "
           "leaves nothing staged") {
   const temp_dir dir("flushed_write");

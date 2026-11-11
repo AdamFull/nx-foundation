@@ -6,6 +6,7 @@
 #include "core/foundation/strings/format.h"
 
 #include <atomic>
+#include <chrono>
 #include <cwchar>
 #include <iterator>
 #include <limits>
@@ -1545,6 +1546,65 @@ io_result<void> copy_file_atomic(const path_view from, const path_view to) {
   if (auto copied = copy_file(from, staged.temporary_path()); !copied)
     return copied;
   return staged.commit();
+}
+
+namespace {
+
+// What staged_file names a temporary of @p target: "<target>.<process>.
+// <ticks>.<sequence>.nxtmp".
+[[nodiscard]] bool names_staged_temporary(const string_view name,
+                                          const string_view target) noexcept {
+  constexpr string_view SUFFIX = ".nxtmp";
+  if (target.empty() || name.size() <= target.size() + SUFFIX.size() ||
+      !name.starts_with(target) || !name.ends_with(SUFFIX))
+    return false;
+  const string_view fields =
+      name.substr(target.size(), name.size() - target.size() - SUFFIX.size());
+  u32 dots = 0;
+  bool digits = false;
+  for (const char c : fields) {
+    if (c == '.') {
+      if (dots > 0 && !digits)
+        return false;
+      ++dots;
+      digits = false;
+    } else if (c >= '0' && c <= '9' && dots > 0) {
+      digits = true;
+    } else {
+      return false;
+    }
+  }
+  return dots == 3 && digits;
+}
+
+} // namespace
+
+io_result<usize> remove_stale_staged_files(const path_view destination,
+                                           const u64 min_age_ns) {
+  const string_view target = path::filename(destination.native());
+  const string_view parent = path::parent_path(destination.native());
+  auto entries =
+      directory_entries(parent.empty() ? path_view(".") : path_view(parent));
+  if (!entries)
+    return err(entries.error());
+  // stat_file's times count from the Unix epoch, as system_clock's do.
+  const u64 now =
+      nx::cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count());
+  usize removed = 0;
+  for (const directory_entry &entry : *entries) {
+    if (entry.type != file_type::regular ||
+        !names_staged_temporary(path::filename(entry.path.view()), target))
+      continue;
+    const file_stat stat = stat_file(entry.path.view());
+    if (stat.mtime_ns == 0 || stat.mtime_ns > now ||
+        now - stat.mtime_ns < min_age_ns)
+      continue;
+    if (remove(entry.path.view()))
+      ++removed;
+  }
+  return removed;
 }
 
 io_result<string> file_read_text(const path_view path) {

@@ -423,6 +423,12 @@ file_write_atomic(path_view path, std::span<const u8> data,
 /// Text equivalent of file_write_atomic().
 [[nodiscard]] io_result<void> file_write_text_atomic(path_view path,
                                                      string_view text);
+/// Removes the temporaries a staged_file of @p destination left behind when
+/// its process died before publishing: those last written @p min_age_ns or
+/// more ago. Answers how many went. Removing one still being written costs
+/// its writer only that write, which then fails.
+[[nodiscard]] io_result<usize> remove_stale_staged_files(path_view destination,
+                                                         u64 min_age_ns);
 
 [[nodiscard]] io_result<void> create_directories(path_view path);
 
