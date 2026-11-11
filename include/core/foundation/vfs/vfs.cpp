@@ -304,6 +304,17 @@ FileInfo stat(const path_view vpath) {
 
 bool exists(const path_view vpath) { return stat(vpath).exists; }
 
+bool in_user_data(const path_view vpath) {
+  const nx::string v = detail::canon_vpath(vpath);
+  if (v.empty())
+    return true;
+  for (const nx::string_view root : {USER_DATA_ROOT, LEGACY_DATA_ROOT})
+    if (v.view() == root ||
+        (v.view().starts_with(root) && v.view()[root.size()] == '/'))
+      return true;
+  return false;
+}
+
 std::optional<nx::string> resolve_beside(const nx::string_view file,
                                          const nx::string_view reference) {
   if (reference.empty() || nx::fs::path::is_separator(reference.front()))

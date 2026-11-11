@@ -296,6 +296,16 @@ void unmount_all();
 /// checked and stays relative. An empty reference stays empty.
 [[nodiscard]] std::optional<nx::string>
 resolve_beside(nx::string_view file, nx::string_view reference);
+
+/// Where every platform mounts the user's own writable folder, and an older
+/// one read-only. Their files are the user's to change, so code (scripts,
+/// shaders, native modules, packs) is never loaded from them.
+inline constexpr nx::string_view USER_DATA_ROOT = "/data";
+inline constexpr nx::string_view LEGACY_DATA_ROOT = "/legacy-data";
+
+/// Whether @p vpath, made canonical, is one of those roots or below one. True
+/// also for a path that cannot be made canonical, which names nothing safe.
+[[nodiscard]] bool in_user_data(path_view vpath);
 [[nodiscard]] io_result<nx::vector<DirEntry>> list(path_view vdir);
 
 /// Stable hot-reload generation from a virtual path and its observable file

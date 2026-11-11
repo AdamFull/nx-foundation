@@ -468,6 +468,17 @@ TEST_CASE("vfs resolve_beside refuses backslashes, drives and streams") {
         "\\shared\\a.png");
 }
 
+TEST_CASE("vfs names the user's own folders, however a path reaches them") {
+  for (const nx::string_view inside :
+       {"/data", "/data/", "/data/saves/a.nxsave", "data/x",
+        "/scripts/../data/x", "/legacy-data/old.ini", "\\data\\x", "/../x"})
+    CHECK(vfs::in_user_data(inside));
+  for (const nx::string_view outside :
+       {"/", "/scripts/main.luau", "/database/x", "/datafile", "/shaders/data",
+        "/legacy-database"})
+    CHECK_FALSE(vfs::in_user_data(outside));
+}
+
 namespace {
 
 /// Holds every read until the gate opens.
