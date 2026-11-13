@@ -1,28 +1,27 @@
 # nx foundation
 
-The bottom layer of the engine: a C++20 standard-library replacement built
-around the `nx` namespace. It uses `mimalloc` for allocation, packs custom
-containers and utilities, and favors explicit, allocation-aware, exception-light
-designs. Every public type listed below carries Doxygen documentation in its
-header.
+The bottom layer of the engine: a C++20 standard-library replacement in the
+`nx` namespace, allocating through `mimalloc`, with explicit,
+allocation-aware, exception-light designs.
 
-Foundation builds as a static library (`nx_foundation`, alias `nx::foundation`).
-Most of it is header-only; the platform backends (`threading`, `platform`,
-`diagnostics`) are real translation units. The library lives under
-`include/core/foundation/`, and `include/` is its include root, so headers are
-pulled in by scope:
+Foundation builds as a static library (`nx_foundation`, alias
+`nx::foundation`). Containers, strings, math, ECS and most of SIMD are
+header-only; `core`, `fibers` (with per-ABI assembly), `threading`,
+`platform`, `vfs` (with one native async-I/O backend per OS), `diagnostics`,
+`serialization`, `reflection` and `simd/gemm` are compiled. Sources sit beside
+their headers under `include/core/foundation/`; `include/` is the include
+root:
 
 ```cpp
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/containers/small_vector.h"
-#include "core/foundation/strings/utf8_string.h"
 ```
 
 ## Using it in a project
 
-Foundation is the nx2d engine's standard library and builds on
-its own. Its dependencies are submodules under `third_party/`, so check it out
-recursively, then add it to a CMake project and link `nx::foundation`:
+Foundation is the nx2d engine's standard library and builds on its own. Its
+dependencies are submodules under `third_party/`, so check it out
+recursively, then link `nx::foundation`:
 
 ```text
 git submodule add https://github.com/AdamFull/nx-foundation external/nx-foundation
@@ -34,10 +33,10 @@ add_subdirectory(external/nx-foundation)
 target_link_libraries(my_game PRIVATE nx::foundation)
 ```
 
-It needs C++20 and CMake 3.21. Linking `nx::foundation` brings what its headers
-need (the include root, the definitions below, and on MSVC `/utf-8`,
-`/Zc:preprocessor` and `/GT`). `nx::foundation_options` is the warning and
-toolchain policy foundation itself is built with, for code that wants the same.
+It needs C++20 and CMake 3.21. Linking `nx::foundation` brings the include
+root, the definitions below, `/utf-8` on any MSVC-ABI compiler, and on cl.exe
+also `/Zc:preprocessor` and `/GT`. `nx::foundation_options` is the warning
+and toolchain policy foundation itself is built with.
 
 | Option | Default | Effect |
 | --- | --- | --- |
@@ -46,13 +45,13 @@ toolchain policy foundation itself is built with, for code that wants the same.
 | `NX_ENABLE_PROFILER` | `OFF` | Send the `NX_PROFILE_*` instrumentation to Tracy (`NX_PROFILE_ENABLED=1`); needs Tracy. |
 | `NX_SHIPPING` | `OFF` | A sealed release build (`NX_BUILD_SHIPPING=1`): quieter logs, cooked assets only. |
 | `NX_WARNINGS_AS_ERRORS` | `OFF` | `/WX` or `-Werror` in `nx::foundation_options`. |
-| `NX_FOUNDATION_TESTS` | on when top level | The tests under `tests/` and nxtest (`nx::test`, `nxtest_discover_tests`). |
+| `NX_FOUNDATION_TESTS` | on when top level | The tests under `tests/` and nxtest. |
 
 | Dependency | Used for |
 | --- | --- |
 | mimalloc | The allocator (optional). |
 | Tracy | Profiler instrumentation (optional). |
-| minizip-ng, zlib-ng, Zstandard | ZIP archives in the VFS (`ZipDevice`); Zstandard also backs `nx::zstd`. Their targets (`nx::minizip`, `nx::zstd`, `zlib-ng::zlibstatic`) are there for the parent project too. |
+| minizip-ng, zlib-ng, Zstandard | ZIP archives in the VFS; Zstandard also backs `nx::zstd`. Their targets (`nx::minizip`, `nx::zstd`, `zlib-ng::zlibstatic`) are there for the parent project too. |
 
 Built as the top-level project, the tests run with CTest:
 
@@ -62,405 +61,334 @@ cmake --build build
 ctest --test-dir build -C Debug
 ```
 
+nxtest (`tests/framework/nxtest.h`, target `nx::test`) is the test framework:
+`TEST_CASE`, `SUBCASE`, `CHECK`, `REQUIRE` and the `CHECK_THROWS` forms;
+`nxtest_discover_tests(target)` registers each case with CTest.
+
 ## Layout
 
 | Folder (under `include/core/foundation/`) | Scope |
 | --- | --- |
-| `core/` | Platform/compiler detection (`config.h`, cheap to include), allocators, and the primitives everything else builds on (`foundation.h`, `handle.h`, `hash.h`, `result.h`, `scope_guard.h`, `callable.h`, `enum.h`, `random.h`, `sha256.h`, `time.h`, `fixed.h`, `fixed_step.h`, `type_index.h`). |
-| `containers/` | Custom container types. |
-| `strings/` | UTF-8 string, string view, `std::format` integration, interned ids. |
-| `fibers/` | Stackful context switching and fiber stacks, the base of the fiber job system. |
-| `threading/` | Threads, synchronization primitives, and the fiber-backed thread pool. |
-| `platform/` | OS-facing services: filesystem, virtual memory, process/memory/time queries. |
-| `diagnostics/` | Logging, assertions, and profiler instrumentation. |
-| `serialization/` | Data interchange helpers, including declarative command-line parsing. |
+| `core/` | Detection macros (`config.h`, cheap to include), allocators and primitives: `foundation.h`, `handle.h`, `hash.h`, `result.h`, `scope_guard.h`, `callable.h`, `enum.h`, `random.h`, `sha256.h`, `time.h`, `fixed.h`, `fixed_step.h`, `noise.h`, `type_index.h`. |
+| `containers/` | Container types. |
+| `strings/` | UTF-8 string and view, formatting, base64, interned ids. |
+| `fibers/` | Context switching, fiber stacks, the fiber scheduler and its primitives. |
+| `threading/` | Threads, synchronization, the thread pool, workload telemetry. |
+| `platform/` | Filesystem, virtual memory, OS queries, child processes, sockets, shared libraries, window handles, Windows long paths, Android JNI. |
+| `vfs/` | Virtual filesystem, devices, async I/O, staged asset pipeline, pack manifests. |
+| `diagnostics/` | Logging, crash reports, assertions, profiler instrumentation. |
+| `serialization/` | JSON, asset documents, NVA, resource bundles, asset contracts, INI, Zstandard, command lines, Content-Length framing. |
+| `reflection/` | Type descriptions, the type registry, layout digests. |
 | `ecs/` | The entity-component-system registry. |
-| `simd/` | Data-parallel types: C++26 `std::simd` for C++20. |
-| `math/` | Slang-named vectors, matrices and quaternions for graphics and games. |
+| `simd/` | C++26 `std::simd` for C++20, and kernels. |
+| `math/` | Slang-named vectors, matrices and quaternions. |
+
+## Core
+
+`core/foundation.h` holds detection macros, fixed-width aliases (`i32`,
+`u64`, `usize`, `f32`, ...), `min`, `max`, `clamp`, `align_up`,
+`next_pow2`, `nx::cast` and `nx::safe_cast` (a `dynamic_cast` check in
+`NX_DEBUG`), `str_copy`, the `mem_alloc` / `allocate` family, the
+mimalloc-backed `nx::Allocator` and `nx::vector` (`std::vector` over it).
+
+- `nx::scoped_no_alloc` makes `mem_alloc`, `realloc` and `free` assert on
+  its thread (`NX_ALLOC_GUARD`, on in `NX_DEBUG`), for a thread with a
+  deadline such as an audio callback. A fiber may not suspend inside one, so
+  its thread-local depth cannot follow it to another thread.
+- `nx::set_heap_observer(fn)` is told every allocation's size on the
+  allocating thread; `fn` must not allocate. Absent in Shipping.
+- `core/handle.h`: the versioned `basic_handle` (`handle32`, `handle64`,
+  `typed_handle32`) the handle-based containers key on.
+- `core/hash.h`: FNV-1a (`hash_fnv1a32`/`64`, incremental `fnv1a32`/`64`),
+  the mixers `hash_u32`/`hash_u64`, `hash_ptr` and `hash_comb`.
+- `type_index<T>()` (`core/type_index.h`) is a process-local `u32` assigned
+  on first use, different between runs: never a persistent identifier.
 
 ## Containers
 
 | Type | Header | Use it for |
 | --- | --- | --- |
-| `nx::blob` | `containers/blob.h` | An owning array whose size is fixed at construction. A `std::vector` that never resizes, for buffers of known length (file contents, decoded data, scratch). |
-| `nx::fixed_vector` | `containers/fixed_vector.h` | A vector with compile-time capacity and no heap use. Lives on the stack. Like C++26 `inplace_vector`, growing past `N` throws `std::bad_alloc` in every build; `try_push_back`/`try_emplace_back` return null instead, and `full()` says when it would. |
-| `nx::small_vector` | `containers/small_vector.h` | A dynamic vector that keeps its first `N` elements inline and only spills to the heap when it grows past them. For collections that are usually small. |
-| `nx::flat_map` | `containers/flat_map.h` | An ordered key/value map over sorted contiguous arrays. Cache-friendly binary-search lookups; best for read-heavy maps built once and queried often. |
-| `nx::hash_map` | `containers/hash_map.h` | A SwissTable-style open-addressing unordered map with SIMD probing. The general-purpose key/value map. |
-| `nx::hash_set` | `containers/hash_set.h` | The unordered set on the same Swiss table as `hash_map` (`containers/raw_hash_table.h`). Iterators are always const. `nx::string_set` (`containers/string_set.h`) looks strings up by `string_view`. |
-| `nx::map` / `nx::set` | `containers/map.h` | Ordered map and set on a B-tree of 512-byte nodes (`containers/btree.h`), with lower/upper bounds and heterogeneous lookup under a transparent comparison. For keys with an order but no hash, or iteration in key order. Elements move between nodes, so an insert or erase invalidates every iterator and reference, and keys and values must move without throwing. As fast as `std::map` on lookups, twice as fast where entries come and go; `flat_map` only when it is built once and read, since each insert into it is linear. |
-| `nx::slot_map` | `containers/slot_map.h` | A handle-keyed pool that keeps live elements densely packed for cache-friendly iteration. Handles survive moves; addresses do not. |
-| `nx::stable_pool` | `containers/stable_pool.h` | A handle-keyed pool whose element addresses stay valid until erased. Use when other systems hold raw references into the pool. |
-| `nx::sparse_set` | `containers/sparse_set.h` | A sparse set mapping handles (entity ids) to dense payloads with O(1) insert/erase/contains. The component store for an ECS; `T = void` makes a plain set. |
-| `nx::mpmc::queue` | `containers/concurrent_queue.h` | A bounded lock-free queue for many producers and many consumers. |
-| `nx::mpsc::queue` | `containers/concurrent_queue.h` | A bounded lock-free queue for many producers and a single consumer, with `consume_all`/`consume_batch` helpers. |
-| `nx::sort_by_key` / `nx::sort_by_key_into` | `containers/radix_sort.h` | A stable radix sort on a 32-bit key: it sorts (key, index) pairs, then gathers each element once. `coherent_sort_by_key_into` is for data re-sorted every frame with little change - it starts from the previous call's order and falls back to the radix when too much moved, with the same result either way. |
-| `nx::radix_context` / `nx::radix_sort_pairs` | `containers/radix_sort.h` | The radix sort underneath: (key, value) pairs with caller-owned scratch, serial or across a `thread_pool` past a calibrated size. |
-| `nx::compact_context` | `containers/stream_compact.h` | Keeps the elements a predicate accepts, in order, serially or across a `thread_pool`; `transform_compact` produces and filters in one pass. |
-| `nx::spsc::ring` | `containers/ring_buffer.h` | A bounded lock-free ring for one producer and one consumer over trivially copyable data, written and read in bulk. |
-| `nx::bit_array` | `containers/bit_array.h` | `N` flags packed into 64-bit words, with `count`, `all`/`any`/`none` and `find_first`/`find_next` over set bits. Not thread-safe. |
-| `nx::string_map` | `containers/string_map.h` | A `flat_hash_map` keyed by `nx::string` that looks up by `string_view` without building a string. |
-| `nx::sync_slot_map` | `containers/sync_slot_map.h` | A `slot_map` two threads share, such as render resources the main thread creates and the render thread reads. A pointer from `try_get` stays valid while other entries come and go; the caller must not erase one still in use. |
+| `nx::vector` | `core/foundation.h` | The general dynamic sequence. |
+| `nx::blob` | `containers/blob.h` | An owning array sized at construction, for buffers of known length. |
+| `nx::owned_blob_slice` | `containers/owned_blob_slice.h` | A read-only slice that owns its `blob`, so a decoder sees one payload of a chunked container without a copy. |
+| `nx::fixed_vector` | `containers/fixed_vector.h` | Compile-time capacity, no heap. Like C++26 `inplace_vector`, growing past `N` throws `std::bad_alloc` in every build; `try_push_back`/`try_emplace_back` return null, `full()` says when. |
+| `nx::small_vector` | `containers/small_vector.h` | Its first `N` elements inline, the rest on the heap. |
+| `nx::flat_map` | `containers/flat_map.h` | Ordered, over sorted arrays: binary-search lookups, linear inserts; for maps built once and read. Like `std::flat_map`, no `get_allocator`. |
+| `nx::hash_map` / `nx::hash_set` | `containers/hash_map.h`, `hash_set.h` | One SwissTable-style table with SIMD probing (`raw_hash_table.h`): the general map, and the set (const iterators). `nx::string_set` looks up by `string_view`. |
+| `nx::map` / `nx::set` | `containers/map.h` | Ordered, on a B-tree of 512-byte nodes, with bounds: for keys with no hash, key-order iteration, or entries that come and go. Insert and erase invalidate every iterator and reference, and keys and values must move without throwing. |
+| `nx::slot_map` | `containers/slot_map.h` | A handle-keyed pool kept dense. Handles survive moves; addresses do not. |
+| `nx::stable_pool` | `containers/stable_pool.h` | A handle-keyed pool whose addresses stay valid until erased. |
+| `nx::sparse_set` | `containers/sparse_set.h` | Handles to dense payloads, O(1) insert/erase/contains: the ECS component store; `T = void` is a plain set. |
+| `nx::mpmc::queue` / `nx::mpsc::queue` | `containers/concurrent_queue.h` | Bounded lock-free queues; the MPSC one has `consume_all`/`consume_batch`. |
+| `nx::spsc::ring` | `containers/ring_buffer.h` | A bounded lock-free single-producer ring of trivially copyable data, in bulk. |
+| `nx::sort_by_key` / `nx::sort_by_key_into` | `containers/radix_sort.h` | A stable 32-bit-key radix sort that gathers each element once. `coherent_sort_by_key_into` starts from the previous call's order, for data re-sorted every frame, with the same result. `radix_context` / `radix_sort_pairs`, with caller-owned scratch, run serially or across a `thread_pool`. |
+| `nx::compact_context` | `containers/stream_compact.h` | Keeps what a predicate accepts, in order, serially or across a `thread_pool`; `transform_compact` produces and filters in one pass. |
+| `nx::bit_array` | `containers/bit_array.h` | `N` flags with `count`, `all`/`any`/`none`, `find_first`/`find_next`. Not thread-safe. |
+| `nx::string_map` | `containers/string_map.h` | A hash map keyed by `nx::string`, looked up by `string_view`. |
+| `nx::sync_slot_map` | `containers/sync_slot_map.h` | A `slot_map` two threads share. A `try_get` pointer survives other entries changing; do not erase one in use. |
 
-The maps agree on their member set. Under a transparent hash and equality, or a transparent comparison, `find`, `contains`, `erase`, `try_emplace`, `insert_or_assign`, `[]` and `at` take any key a `Key` is made from, and build the `Key` only to insert it. Each map has the hinted `insert`, `try_emplace` and `insert_or_assign`, a free `swap` and a namespace-level `nx::erase_if`; the ordered ones compare with `<=>`, and `small_vector` and `fixed_vector` compare across capacities.
+The maps share a member set. Under a transparent hash and equality, or
+comparison, `find`, `contains`, `erase`, `try_emplace`, `insert_or_assign`,
+`[]` and `at` take any key a `Key` is made from, building the `Key` only to
+insert. Each has hinted `insert`, `try_emplace` and `insert_or_assign`, a
+free `swap` and `nx::erase_if`; the ordered ones compare with `<=>`.
+`small_vector` and `fixed_vector` compare across capacities.
 
 ## Strings
 
 | Type | Header | Use it for |
 | --- | --- | --- |
-| `nx::string` | `strings/utf8_string.h` | An owning UTF-8 string with small-string optimization. Transcodes from char/char8_t/char16_t/char32_t/wchar_t and converts to `nx::string_view`. It has the `std::string` editing members, `replace` and `resize_and_overwrite` among them; `+` with a temporary reuses its buffer, and `std::hash<nx::string>` is transparent. A lone character converts only explicitly. |
-| `nx::string_view` | `strings/utf8_string_view.h` | A non-owning UTF-8 view (`std::string_view` alias). |
-| `nx::id_string` | `strings/id_string.h` | An 8-byte interned string identified by a 64-bit FNV-1a hash: integer compare/order/hash, computable at compile time, with the original bytes recoverable via a process-wide intern pool. A baked asset key and constant-expression switch label (Unreal `FName` / bitsquid `idstring` in spirit). |
-| `nx::base64_encode` | `strings/base64.h` | Standard RFC 4648 base64 with padding; `base64url_encode` is the URL-safe alphabet without padding, as URLs and PKCE want it. |
-| `nx::format` | `strings/utf8_string.h` | `std::format` returning `nx::string`. It and the `std::formatter` for `nx::string` come with `nx::string`. |
-| `nx::format_to` / `nx::vformat_to` | `strings/format.h` | A bounded `format_to(char[N], ...)` for stack buffers that never allocates, with the format string checked at compile time; `vformat_to` takes a run-time format and `std::format_args`. |
+| `nx::string` | `strings/utf8_string.h` | Owning UTF-8 with small-string optimization; transcodes from every character type; the `std::string` editing members, `resize_and_overwrite` included. `+` with a temporary reuses its buffer; `std::hash<nx::string>` is transparent; a lone character converts only explicitly. |
+| `nx::string_view` | `strings/utf8_string_view.h` | `std::string_view`. |
+| `nx::id_string` | `strings/id_string.h` | An 8-byte interned string keyed by a 64-bit FNV-1a hash: integer compare and hash, computable at compile time, bytes recoverable from a process-wide pool. Asset keys and `switch` labels (Unreal `FName` / bitsquid `idstring` in spirit). |
+| `nx::base64_encode` | `strings/base64.h` | RFC 4648 with padding; `base64url_encode` is URL-safe without padding (PKCE). |
+| `nx::format` | `strings/utf8_string.h` | `std::format` returning `nx::string`. |
+| `nx::format_to` / `nx::vformat_to` | `strings/format.h` | `format_to(char[N], ...)` never allocates and checks its format at compile time. `vformat_to` takes a run-time format; logs and asserts use it, since checking would reject a logged run-time string. |
 
-## ECS registry
+## Threading
 
-`ecs/registry.h` provides `nx::ecs::registry` (and `nx::ecs::registry64`, plus
-the `nx::ecs::basic_registry<Entity, Alloc>` template): an allocator-aware ECS
-over versioned entity handles with explicit component registration, O(1)
-add/get/remove, transient views and cached queries, a built-in parent-child
-hierarchy, and statistics. Built on `nx::sparse_set`. Components must be
-registered before use: an unregistered type throws `std::logic_error`. A
-view's or cached query's `each` callback may remove or destroy the entity it
-is given. A view's `each_in(first, last, fn)` walks positions of the storage
-`each` walks (`size_hint()` of them), so disjoint ranges may be walked on
-several threads at once; its callback may not remove or destroy. See the
-header for the full API, invalidation rules, destroy policies, and
-thread-safety model.
+| Type | Header | Use it for |
+| --- | --- | --- |
+| `nx::thread` | `threading/thread.h` | An OS thread with name, stack size, affinity and priority; joins on destruction. `nx::this_thread`: id, kernel `os_id`, yield, sleep, name, affinity, priority. |
+| `nx::thread_parker` | `threading/thread.h` | Parks one thread until `unpark()` or a deadline kept well under a millisecond (a Windows futex timeout rounds to the ~15.6 ms tick). An early `unpark()` is not lost. |
+| `nx::cpu` | `threading/thread.h` | Core counts, SMT, hybrid P/E classes, caches, NUMA nodes. |
+| `nx::serial_queue` | `threading/serial_queue.h` | Tasks that must not overlap or reorder run on a `thread_pool` one at a time, in order, with no thread of its own; one that throws is logged. Bounded (`post` refuses past capacity unless told otherwise); `blocking` runs tasks through `run_blocking`; `flush` suspends a fiber, not its worker. |
+| `nx::completion_queue` | `threading/completion_queue.h` | Results published on their owner's thread in request order: the owner `reserve`s a place, any thread completes or abandons it, `publish(max_count, fn, max_time)` hands over the finished front. `reserve` refuses at `capacity`. |
+| `nx::cancellation_source` / `_token` | `threading/cancellation.h` | Cooperative cancellation; tokens keep their generation across a source reset. `cancellation_callback` wakes a wait on cancellation; its destructor waits out a running call. |
+| `nx::workload_tracker` | `threading/workload.h` | Lock-free outcome counts, queue and execution times and peaks for a named class of work (`measure_workload`). Async I/O and the asset pipeline report through it. |
+| `nx::mutex` et al. | `threading/sync.h` | Futex-based `spin_lock`, `mutex`, `recursive_mutex`, `cond_var`, `rw_lock` (writer-preferring), `semaphore`, `event`, `barrier`, `call_once`, `scoped_lock`/`scoped_shared_lock`; 4-8 bytes, kernel waits only under contention. Waits other than `spin_lock`'s and `barrier`'s have `_for`/`_until` forms; a timeout of zero or less tries once. A timed `rw_lock` writer waits as a reader would: holding readers back and then giving up would leave them parked. |
+| `nx::unique_lock` / `nx::shared_lock` | `threading/sync.h` | Movable ownership (`defer_lock`, `try_to_lock`, `adopt_lock`, timeouts) of any lockable. Both `cond_var`s wait under any lock held. |
+| `nx::futex` | `threading/sync.h` | The 32-bit wait/wake under `sync.h`: WaitOnAddress, `SYS_futex`, `__ulock` on Apple. |
 
-```cpp
-#include "core/foundation/ecs/registry.h"
+`nx::thread_pool` (`threading/thread_pool.h`) runs tasks on an
+`nx::fiber::scheduler` of its own.
 
-struct Transform { float x, y, z; };
-struct Velocity  { float dx, dy; };
+- Priorities are `task_priority {Background, Normal, Critical}`; every 8th
+  and 32nd pick looks at a lower lane first, so no lane starves. Background
+  concurrency is bounded (`max_background_concurrency`,
+  `set_background_limit`).
+- `task_group`, `parallel_for`, `parallel_region` (a team meeting at a
+  `fiber::barrier`, so it may start inside a task; both rethrow the first
+  exception once the rest finish), cancellable futures with continuations,
+  `when_all`/`when_any`, opt-in statistics. `completion_source<T>` completes
+  a `future<T>`.
+- A waiting task suspends its fiber, freeing the worker. `run_blocking`
+  reaches `config::blocking_threads` (default 2) service threads.
+- With `config::adopt_main_thread` the constructing thread is the main
+  thread: `run_on_main(fn)` runs there in `pump_main(budget)` or while it
+  waits. `worker_os_ids` names the workers for OS services.
 
-nx::ecs::registry world;
-world.register_component<Transform>({ .name = "Transform" });
-world.register_component<Velocity>({ .name = "Velocity" });
+## Fibers
 
-auto e = world.create();
-world.emplace<Transform>(e, 0.f, 0.f, 0.f);
-world.emplace<Velocity>(e, 1.f, 0.f);
+| Type | Header | Use it for |
+| --- | --- | --- |
+| `nx::fiber::context` | `fibers/context.h` | `switch_to(from, to, data)` and `exit_to`. Saves callee-saved registers and FP control state; on Windows swaps the TIB stack bounds, so SEH, `__chkstk` and guard pages work. Unwind info for debuggers, ASan/TSan annotations. |
+| `nx::fiber::stack_pool` / `stack` | `fibers/stack.h` | Guard-paged stacks committed only as deep as used, recycled most-recent-first; `trim()` returns grown pages. |
+| `nx::fiber::scheduler` | `fibers/scheduler.h` | Workers run jobs (`{entry, arg}`, `fiber::priority {High, Normal, Low}`, per-worker queues with stealing) on pooled fibers; a full queue makes the submitter run the job. The constructing thread is the main thread, running only `run_on_main` work, in `pump_main` or while it waits, on its own stack. `run_blocking(fn)` moves the fiber to a blocking-service thread and back. `fiber_local(slot)` follows the fiber across threads (`User`; `Pool` for `thread_pool`). Destruction finishes outstanding jobs. |
+| `nx::fiber::counter` | `fibers/scheduler.h` | Outstanding work that fibers `wait` on; any thread may decrement it. |
+| `nx::fiber::mutex` et al. | `fibers/sync.h` | `mutex`, `rw_lock` (writer-preferring), `event`, `semaphore`, `cond_var`, `barrier` (`arrive_and_drop`), `sleep_for`: they suspend the fiber, with `_for`/`_until` on the scheduler's timers, and block a thread no scheduler owns. They may be held across a suspension. |
 
-world.view<Transform, Velocity>().each(
-    [](auto entity, Transform& t, Velocity& v) {
-      t.x += v.dx;
-      t.y += v.dy;
-    });
+A fiber can resume on another OS thread. Code that waits must not keep a
+`thread_local` address across the call, or hold an OS lock (`nx::mutex`,
+`rw_lock`, `spin_lock`) across it. `may_suspend()` is false under one, in
+`scoped_no_alloc` or in `fiber::no_suspend_scope` (other thread-affine
+resources), and debug builds assert a suspension then. cl.exe's `/GT` stops
+the optimizer reusing a thread-local address across a call; Clang has no such
+switch, so the scheduler reads its thread-locals through non-inlined calls.
 
-auto child = world.create();
-world.set_parent(child, e);
+The fiber primitives wake a waiter after unlocking. `rw_lock`, auto-reset
+`event` and `semaphore` hand over what they release; `mutex` does not, so a
+running fiber may take it first. A writer timing out on `rw_lock` admits the
+readers queued behind it.
 
-world.destroy(e); // detaches children by default; see destroy_policy
-```
+Exceptions unwind within a fiber's stack, and `thread_pool` carries a task's
+to its waiter; a raw `fiber::context` entry does not. Never wait inside a
+`catch` block: the exception being handled is per thread (a
+`no_suspend_scope` there makes debug builds assert it). An unhandled fault
+on a fiber reaches the process filter, so `nx::crash` reports it. A fiber
+suspended on a wait shows in no debugger thread list; `for_each_waiting`
+lists them and what each waits on, and on Windows x64
+`context::read_suspended` gives registers to walk one's stack; a hang report
+does both.
 
-## SIMD
+## Platform
 
-`simd/simd.h` is C++26's `<simd>` (`std::simd`, as in the current working
-draft) for C++20, in `nx::simd`: `basic_vec`/`vec` and `basic_mask`/`mask`
-with every operator, conversion and constructor (broadcast, converting,
-generator, range, complex parts); the flags, `alignment`, `rebind` and
-`resize` traits; checked and partial loads and stores, gathers and scatters;
-`reduce` and the mask reductions; `select`, `min`, `max`, `minmax`, `clamp`;
-static and dynamic `permute`, `compress`, `expand`, `chunk`, `cat`, `iota`;
-the `<cmath>`, `<bit>` and `<complex>` functions. Names and semantics follow
-the standard, so code moves to `std::simd` by changing the namespace.
+| Type | Header | Use it for |
+| --- | --- | --- |
+| `nx::fs::path_view` | `platform/filesystem.h` | Lexical UTF-8 path queries, each a `path_view`, compared byte-wise; `join` and `/` return `nx::string`, as a view cannot own joined bytes. |
+| `nx::fs` files | `platform/filesystem.h` | Whole-file read/write, directories, `executable_dir()`, `application_data_dir(organization, application)`, seekable `stream`s (`open_file`, `open_memory`; `open_file_views` gives cursors readable from any thread while the file is replaced; `status()` tells a failed read from the end). Failures are `io_result`s with an `io_error` (`NotFound`, `NoSpace`, `Busy`, `ReadOnly`, `NotSupported`, ...) and the native code. |
+| `nx::fs::staged_file` | `platform/filesystem.h` | Atomic replacement by rename on `commit()` (`file_write_atomic` in one call); destroyed first, it removes its temporary. `durability::cached` (default): readers see old or new, the OS writes later. `durability::flushed` puts the file, and on POSIX the directory entry, on storage (`F_FULLFSYNC` on Apple), for data a power cut must not lose. `remove_stale_staged_files` clears a crashed writer's temporaries. |
+| `nx::fs::file_lock` | `platform/filesystem.h` | `try_acquire(path)`: an exclusive lock between processes and within one (`LockFileEx`, `flock`), or `io_error::Busy`. Advisory. The file is never removed: removing one another process is about to lock lets two hold it. |
+| Long Windows paths | `platform/windows_path.h` | From 248 characters (where `CreateDirectoryW` stops taking the plain form) a path goes to Win32 as `\\?\C:\...` or `\\?\UNC\...`, up to 32767. `nx::fs` and the IOCP reader use it, so deep trees with staging suffixes work. |
+| `nx::vmem` | `platform/os.h` | Reserve/commit/protect and page-size queries. |
+| `nx::os` | `platform/os.h` | Resident and peak memory (`mem_get_stats`), `ticks_ns`/`ticks_ms`, seconds since 1970 on the user's clock (`local_time`), `system_ram_mb`, `region` (two ISO 3166 letters: the Windows geo setting, Android locale property, Apple locale, `LC_ALL`/`LC_MESSAGES`/`LANG`; `region_of_locale`), and `random_bytes` from the OS's secure generator (BCrypt, `arc4random_buf`, `/dev/urandom`). |
+| `nx::os::shared_library` | `platform/shared_library.h` | `open(path)` (failing with the loader's text), `symbol`, `close`; `decorate(stem)` makes the platform file name, `supported()`. |
+| `nx::process` | `platform/process.h` | Runs a child (Windows, Linux, macOS) with no input, stdout and stderr captured together up to a limit (the rest is dropped), a chosen environment, and a timeout that kills it and its children (job object; process group). It blocks: call it from `run_blocking`. `quote_argument` for Windows command lines. |
+| `nx::net` | `platform/socket.h` | Transport only: framing, limits and authentication are the caller's. `Endpoint` is plain V4/V6 data (`parse` takes numeric text, `[::1]:80`). `resolve(host, port)` blocks, returning up to four in a `small_vector` or a `ResolveError`. `Connection` reads and writes without blocking (0 nothing waiting, -1 peer gone); `connect(Endpoint)` blocks for the connect; `connect(port)` and `Listener::listen(port)` use loopback. `UdpSocket::send_to` is all-or-nothing; `recv_from` truncates an oversized datagram on every platform. |
+| `nx::NativeWindowHandle` | `platform/native_window.h` | `{kind, window, display}`, `NativeWindowKind` `Win32`, `Xlib`, `Wayland`, `Cocoa`, `Android`, `UIKit`: the window a graphics backend presents to. |
+| `nx::android::JniScope` | `platform/android_jni.h` | Android only. Borrows the thread's `JNIEnv`, attaching if needed and detaching only if it did; clears a pending Java exception. Asserts it is not on a fiber, as Java fails on fiber stacks; `run_java(pool, vm, fn)` hops to the pool's main thread from one. Also null-safe class and method lookup, string and array conversions. |
 
-```cpp
-#include "core/foundation/simd/simd.h"
+## VFS
 
-namespace sd = nx::simd;
+`vfs/vfs.h` (`nx::vfs`) mounts devices under canonical absolute virtual
+paths.
 
-void scale(std::span<float> values, float factor) {
-  using V = sd::vec<float>;
-  size_t i = 0;
-  for (; i + V::size() <= values.size(); i += V::size())
-    sd::unchecked_store(sd::unchecked_load<V>(values.subspan(i)) * factor,
-                        values.subspan(i));
-  sd::partial_store(sd::partial_load<V>(values.subspan(i)) * factor,
-                    values.subspan(i));
-}
-```
+- `initialize()`/`shutdown()` bracket it. `mount(prefix, device, priority)`
+  returns a `MountId` and owns the device even if it fails. The higher
+  priority wins, then the longer prefix, then the later mount. `mounts()`
+  lists `MountInfo` without host paths.
+- `read`, `read_text`, `open`, `stat`, `exists`, `list` take the best mount
+  with the file; `write`, `write_text`, `remove`, `create_directories` the
+  best writable one, else `ReadOnly`.
+- Device I/O runs outside the mount lock, so a slow (remote) device holds up
+  nothing else; `unmount` waits for its device's calls.
+- A `Device` implements `read`, `open`, `stat`, `list`, and may add the
+  writes, `writable()`, `watchable()` (`mtime_ns` may be polled) and
+  `native_read_path()` (lets async I/O use the kernel). Built in:
+  `make_host_device(root, HostDeviceAccess)` (writes atomic and flushed),
+  `MemoryDevice`, and `make_zip_device` over a path, a stream factory or an
+  archive in RAM.
+- `file_generation(path)` / `files_generation(paths)`: one hot-reload
+  generation from path and metadata for every subsystem.
+- `resolve_beside(file, reference)`: a referenced path made absolute; a
+  relative one stays in the file's folder (no empty, `.` or `..` parts).
+- `in_user_data(path)`: whether a canonical path lies in `USER_DATA_ROOT`
+  (`/data`) or `LEGACY_DATA_ROOT` (`/legacy-data`), the user's folders on
+  every platform. Their files are the user's to change, so code loaders
+  refuse them; a path that cannot be made canonical counts as inside.
 
-| Backend | Used for |
-| --- | --- |
-| GCC and Clang vector extensions | Every target those compilers build: SSE to AVX-512 on x86, NEON and SVE on AArch64. Mask movemasks use SSE2/AVX2 or NEON directly. |
-| NEON and SVE intrinsics | AArch64 under GCC and Clang, over the vector extensions: across-vector reductions, rounding, bit counting and reversal with NEON; with SVE, predicated partial and masked loads and stores, compress, same-width gather and scatter, and SVE2 `bit_compress`/`bit_expand`. |
-| SSE2, SSE4.1 and AVX2 intrinsics | MSVC on x64. `/arch:AVX` enables the SSE4.1 paths; `/arch:AVX2` makes 32-byte registers native and adds FMA. |
-| Arrays of registers | Widths that fill several registers (`vec<float, 12>` is three SSE registers). |
-| Plain arrays | Widths that fill no register exactly, other compilers (MSVC on ARM64 among them), and every type under `NX_SIMD_FORCE_FIXED`, which the tests use as the reference. |
+### ZIP archives
 
-- `vec<T>` has the native width of the compile flags: 4 floats with SSE or
-  NEON, 8 with AVX2, and `__ARM_FEATURE_SVE_BITS / 32` with a fixed SVE
-  vector length (`-msve-vector-bits=256`). Without a fixed length SVE works
-  on 16-byte vectors. Translation units built with different flags see different
-  types, so keep `vec<T>` out of interfaces shared between them.
-- Implicit broadcasts follow the standard: only value-preserving ones, so
-  `v * 2.f` compiles and `v * 2` does not for `vec<float>`.
-  `std::integral_constant<int, 2>{}` stands in for C++26's `std::cw<2>`.
-- Vectors, masks and the algorithms work in constant expressions; the
-  `<cmath>` and `<complex>` functions do not, as C++20's `<cmath>` is not
-  `constexpr`.
-- Exact operations (arithmetic, comparisons, `sqrt`, rounding, `fma`, `fmin`,
-  `fmax`, classification) run on whole registers.
-- For `float`, `exp`, `exp2`, `expm1`, `log`, `log2`, `log1p`, `tanh` and
-  `erf` run on whole registers too (`simd/float_math.h`). They are not
-  `<cmath>`'s bits, but they are the same bits on every backend and compiler
-  (no FMA), with every special value as `<cmath>` has it. Measured over all
-  2^32 inputs, the largest errors are 0.96 ulp (`exp`), 1.08 (`exp2`), 1.45
-  (`expm1`), 0.87 (`log`), 1.87 (`log2`), 1.44 (`log1p`), 1.33 (`tanh`) and
-  1.46 (`erf`). `tools/fit_float_math.py` regenerates their coefficients.
-- Extensions for `float`: `sigmoid` (2.4 ulp) and the fast forms `fast_exp`,
-  `fast_tanh`, `fast_sigmoid` and `fast_erf`, within a relative 1e-5 (3e-5
-  for `fast_erf`) of the exact value for normal results. The fast forms use
-  FMA where the build has it, so their last bits vary between targets, and
-  may flush a subnormal result to 0.
-- Every other transcendental and special function, and every `double` one,
-  applies the scalar `<cmath>` function per element, so its results equal the
-  scalar ones bit for bit. The special functions exist where the standard
-  library has them (`__cpp_lib_math_special_functions`; not libc++).
-- `vec<std::complex<T>>` keeps real and imaginary parts in separate
-  registers; multiplication is the plain formula, division is
-  `std::complex`'s.
-- Widths go up to 64 lanes. `flag_aligned` and `flag_overaligned<N>` are
-  checked in debug builds only: unaligned loads cost the same on every
-  supported CPU.
-- The tests build once per backend: `nx_simd_fixed_tests` on plain arrays,
-  `nx_simd_avx2_tests` when the machine runs AVX2, `nx_simd_sve2_tests` when
-  it runs SVE2 or the build targets another AArch64 machine,
-  `nx_simd_sve2_bitperm_tests` when it runs SVE2 BitPerm, and
-  `nx_simd_tests` alone when cross-compiling, to be run on the target.
-- `nx.natvis` shows vector lanes and masks in the Visual Studio debugger.
-- Under MSVC, vectors narrower than a register (`vec<u8, 4>`) are plain
-  arrays, so a widening conversion from them runs element by element.
+`ZipWriter` creates or appends archives (`Store`, `Deflate`, `Zstd`; one
+writer). `read_zip_directory` lists the central directory. A ZIP device
+takes optional owner policies; foundation only hashes and holds no key.
 
-### Interleaved data
+- `ZipVerifier` decides once, from the whole directory and the entry it
+  names, whether the archive mounts, then gives the SHA-256 of each block of
+  an entry. No byte that does not match is handed out; a stream checks one
+  block at a time, so a seek reads one block, and a mismatch fails the read
+  as a bad CRC does.
+- `ZipCipher` names the entries whose stored (compressed) bytes are
+  enciphered and applies their keystream below minizip, before
+  decompression, CRC or verifier. A keystream is its own inverse and any
+  range deciphers alone, so reads stay seekable. `encipher_zip` applies it
+  once for the writing tool. Overlapping or misplaced entries refuse the
+  mount.
 
-`simd/interleave.h` (an extension) loads K-element tuples, such as stereo
-frames, RGBA pixels or xyz positions, as one vector per component, and
-stores them back:
+### Pack manifests
 
-```cpp
-#include "core/foundation/simd/interleave.h"
+`parse_pack_manifest` (`vfs/pack_manifest.h`) validates a version-1
+manifest of at most 256 packs: ASCII basenames in the manifest's folder,
+unique priorities among enabled packs, the lowest `i32` reserved for the
+bootstrap source. `mount_pack_manifest(path, opener)` opens every enabled
+pack through the caller's opener and mounts the set at `/`, or on any
+failure leaves none mounted (`PackManifestErrorCode`).
 
-using V = sd::vec<float>;
-const auto [left, right] = sd::unchecked_load_interleaved<V, 2>(frames, 2 * V::size());
-sd::unchecked_store_interleaved(std::array{right, left}, swapped, 2 * V::size());
-```
+### Asynchronous I/O
 
-- Lane i of part k is `first[i * K + k]`. The unchecked forms touch exactly
-  `K * V::size()` elements; `partial_load_interleaved` and
-  `partial_store_interleaved` take the first n, loading zeros past them and
-  storing nothing past them.
-- Two components are one shuffle per pair of registers: `uzp`/`zip` on NEON
-  and SSE/AVX unpacks and shuffles on x86 (through the vector extensions
-  under GCC and Clang, intrinsics under MSVC). Four are two rounds of two.
-  Other counts, and plain-array vectors, go lane by lane.
-- Elements are not converted: the range holds the vector's element type.
+`AsyncIoService(thread_pool&, AsyncIoConfig)` (`vfs/async_io.h`) runs whole
+and range reads, writes, removals, listings and custom operations
+(`async(request, fn(AsyncIoContext&))`) as futures with a `task_priority`,
+cancellation and a byte budget.
 
-### Pipelines
+- Host files use the kernel backend (`AsyncIoBackend`: IOCP, io_uring,
+  dispatch I/O on Apple); archive, memory and custom devices run on the
+  pool's blocking-service threads. Android builds only the blocking
+  fallback: its seccomp policies may kill a process that probes io_uring.
+- `max_concurrent_requests` (default 1) stays below the blocking-service
+  thread count, leaving one free for other blocking calls.
+- `byte_limit` (64 MiB, 0 for none) bounds payload in flight; an oversized
+  request runs alone. `take_reservation` keeps a read's bytes charged until
+  its consumer is done.
+- One path's writes and removals run in order. Cancellation stops one not
+  yet started; shutdown finishes those asked before it.
+- `statistics()`: backend, bytes in flight, native against fallback reads.
 
-`simd/pipeline.h` (an extension; `std::simd` has no counterpart) builds a
-loop once from element-wise stages and runs it over ranges:
+### Staged asset pipeline
 
-```cpp
-#include "core/foundation/simd/pipeline.h"
+`StagedAssetPipeline<Acquired, Prepared>` (`vfs/asset_pipeline.h`) acquires
+on async I/O, prepares on the CPU pool, and publishes only when the owner
+calls `publish(handle)` on its thread; `pump()` advances it. It owns
+in-flight generations until they drain, so cancellation never leaves a task
+on destroyed state, and a failed publisher leaves the previous resource
+alone.
 
-const auto to_unit = sd::pipeline([](auto p) {
-  return sd::rebind_t<float, decltype(p)>(p) * (1.f / 255.f);
-});
-to_unit(pixels, sd::out(unit)); // u8 in, float out
+- Requests are (key, generation): the same generation coalesces, an older
+  one is stale, a newer one supersedes. The last `release` cancels.
+- Dependencies are `AssetFence`s, also from an owner-resolved
+  `AssetFenceSource`, so pipelines form one load graph; an optional one
+  delays without failing.
+- `set_limits` (concurrent stages), `set_memory_limits` (bytes between
+  stages; an oversized asset enters an empty stage), `set_priority_aging`.
 
-const auto [lo, hi] = sd::pipeline([](auto v) { return std::tuple(v, v); },
-                                   sd::fold(sd::minimum, sd::maximum))(values);
+## Serialization
 
-const size_t visible = sd::pipeline(sd::keep_if([](auto r) { return r > 0.f; }))(
-    radii, sd::out(kept));
-```
+### JSON
 
-- A stage takes the previous values as `vec`s, the inputs first, and returns
-  a `vec` or a `std::tuple` of them; generic lambdas let the pipeline choose
-  the width. `keep_if(pred)` drops lanes. `fold(reducers...)` ends a pipeline
-  with one reducer per value: `sum`, `product`, `minimum`, `maximum`, the
-  `std::plus<>`-style operations, or `reducer(op, identity)`. A pipeline
-  without a fold takes `out(ranges...)` last and returns how many elements it
-  wrote. A pipeline is itself a stage, so parts are built once and reused.
-- An input is a range, `interleaved<K>(range)` for K values per element, or
-  `index` (the element's index as `int`; `index_as<T>` for another type),
-  which takes no data and needs a sized input beside it. `out` takes ranges
-  and `interleaved<K>(range)` the same way, K values each:
+`serialization/json.h`: a `value` tree that keeps integer and real literals
+apart, so integers round-trip exactly. `parse(text, parse_options)` fails
+with a code, byte offset and 1-based line and column (computed only then).
+`parse_options`: `max_depth` 256; `allow_trailing_commas`, `allow_comments`,
+`reject_duplicate_keys`, `validate_utf8` off. `write_options`: `indent`,
+`escape_non_ascii`, `escape_forward_slash`, `real_precision` (0 shortest).
+`serializer<T>` customizes; integers that do not fit exactly are rejected.
+`json_binary.h` stores a tree in NVA (depth 256), `json_util.h` has `*_or`
+getters and enum spellings, `number_parse.h` parses floats without the
+locale.
 
-  ```cpp
-  // Gain ramp over stereo frames, in place.
-  sd::pipeline([=](auto l, auto r, auto f) {
-    const auto g = start + step * f;
-    return std::tuple(l * g, r * g);
-  })(sd::interleaved<2>(frames), sd::index_as<float>,
-     sd::out(sd::interleaved<2>(frames)));
-  ```
-- The stages run as one loop: nothing is stored between stages, and several
-  outputs or folds take one pass over the data.
-- The widest element type in the flow fills one register, so `u8` in and
-  `float` out run `vec<float>::size()` lanes. `lanes<N>` overrides that and
-  `unroll<N>` sets the chunks in flight: 2 by default, and 8, 4 or 2
-  accumulators for folds of one, two or more values.
-- The last partial chunk is padded with its own first element, and the
-  index with its own first index: stages only see values from the data,
-  never a padding zero to divide by.
-- Element types convert at the edges by the `std::simd` rules; a narrowing
-  output takes `out(flag_convert, ranges...)`.
-- Inputs have equal sizes. An output holds at least that many elements and is
-  one of the inputs or disjoint from all of them.
-- A fold's order depends on the lane count and unroll: it is the same on
-  every run of a build, but differs in the last bits from a scalar loop and
-  between targets.
-- Pipelines run in constant expressions.
-- With Clang a pipeline is as fast as the hand-written loop, and its folds
-  beat a one-accumulator loop. MSVC keeps fold accumulators in memory, so a
-  fold of several values runs at about half Clang's speed there.
-- `sd::pipeline` is a function: as a class, `sd::pipeline(f)(in, sd::out(o));`
-  would declare a variable `f`.
+### Asset documents
 
-### Linear algebra
+`serialization/json_document.h`:
 
-`simd/linalg.h` (an extension) has kernels over spans of `float` or
-`double`, in `nx::simd::linalg`: `dot`, `sum`, `sum_squares`, `max`, `axpy`
-(`y += a x`), `scale`, `add`, `mul`, `gemv` (`y = W x + b`, `W` row-major)
-and `gemv_t` (`y = W^T x`).
+- `parse_asset_document` accepts `//` and `/* */` comments and trailing
+  commas, then removes every member named `_*` or `$comment`, recursively:
+  editor notes that never reach a cooked payload. Each format rejects its
+  other unknown fields itself.
+- `normalize_asset_document` rewrites one as strict JSON;
+  `encode_document`/`decode_document` hold a tree in NVA, the cooked form, at
+  `document_cooked_path(source)` (the source name plus `.nxb`).
+- `json::load_document(io, source)` and `ini::load(io, source)`
+  (`async_documents.h`) read the cooked file as an I/O job; the authored one
+  only when the cooked one is absent and not in Shipping
+  (`asset_policy.h`). A malformed cook always fails. `load_document_file`
+  and `ini::load(source)` are deprecated blocking barriers over the same
+  path.
 
-```cpp
-#include "core/foundation/simd/linalg.h"
+### NVA containers
 
-namespace la = nx::simd::linalg;
+`serialization/nva.h`: a 16-byte header (`"NVA1"` as a little-endian u32,
+u32 format fourcc, u16 version, u16 flags, u32 chunk count), 12-byte entries
+(u32 id, offset, size), payloads 16-byte aligned. `ChunkWriter` builds one;
+`View::open(bytes, format)` checks magic, format and that the table and
+every chunk fit, else `nullopt`; the consumer checks the version. `Reader`
+returns zeros and clears `ok()` past the end, and proves a count has payload
+before it drives an allocation.
 
-la::gemv(weights, input, bias, output); // output.size() rows of weights
-const float norm = std::sqrt(la::sum_squares(output));
-```
+### Resource bundles
 
-- Results are the same bits on every backend and compiler. A sum keeps 16
-  lanes: lane k adds elements k, k + 16, k + 32, ... in turn, and the lanes
-  then fold as (k, k + 8), (k, k + 4), (k, k + 2), (k, k + 1). `gemv`'s row
-  i is `dot(row i, x) + b[i]` bit for bit; `gemv_t` adds the scaled rows in
-  turn. The element-wise kernels round once per operation.
-- The 16 lanes are four registers with SSE and NEON and two with AVX2.
-  Measured on x64, `dot` runs as fast as a free four-accumulator loop with
-  SSE and at memory-bound sizes, and up to a fifth slower in L1 with AVX2.
-- `max` returns NaN if any element is NaN, and -inf for an empty span.
-- The element-wise kernels allow their output to be one of their inputs.
-  `gemv_t`'s output must not overlap its inputs.
-- `gemm(m, n, k, a, lda, b, ldb, c, ldc, options)` multiplies row-major
-  matrices: `C = A B`, or `C += A B` with `options.accumulate`. Element
-  (i, j) starts at 0 (or C) and adds `a[i][p] b[p][j]` for p = 0, 1, ... in
-  turn, so every kernel, CPU and thread count gives the same bits.
-  `options.fused` fuses each multiply-add where the kernel's CPU can: faster,
-  and then the bits depend on the kernel.
-- `gemm` packs blocks of A and B (GotoBLAS-style) and runs a register-tile
-  micro-kernel: 4 x 8 on SSE2, 6 x 8 on NEON, and 6 x 16 with AVX2 and FMA,
-  which `simd/gemm_avx2.cpp` compiles for those alone and which runs when
-  CPUID and the OS allow it. That file uses raw intrinsics only, so no inline
-  function compiled for AVX2 can replace a baseline one at link time.
-  `options.kernel = gemm_kernel::baseline` forces the baseline kernel.
-- `options.pool` splits C's rows across a thread pool for products of about
-  2^26 multiply-adds or more.
+`resource_bundle::encode` (`serialization/resource_bundle.h`) makes a
+deterministic NVA of named entries, sorted and gapless, refusing duplicates
+and empty payloads. `Limits`: 4096 entries, 4096-byte names, 1 MiB metadata,
+512 MiB data. `valid_name` takes portable relative names only (no root,
+drive, device name, control byte or dot segment), so an entry cannot escape
+its descriptor's folder. Decoding never allocates from an unvalidated count.
 
-### Neural-network kernels
+### Asset contracts
 
-`simd/nn.h` (an extension) has float kernels over spans, in `nx::simd::nn`:
-`softmax`, `log_softmax`, `logsumexp`, `rmsnorm`, `layernorm`, `gelu` (the
-erf form), `gelu_tanh` (GPT-2's), `silu` and `swiglu` (`silu(gate) up`).
+`asset_contract::Registry` (`serialization/asset_contract.h`): families of
+`Format`s (source suffix, published `.nxb` suffix, NVA fourcc),
+directory-wide formats and authoring-only suffixes such as `.meta`. A failed
+`add` changes nothing; after `freeze()`, `classify_source` and
+`find_published` match the longest suffix. Which formats exist is the
+caller's.
+
+### Command-line parsing
+
+`nx::cli::Parser` (`serialization/arguments.h`): root arguments,
+subcommands, long and short options, strict conversion, repeatable values,
+choices, `--`, generated help and diagnostics. Bound values must outlive it.
 
 ```cpp
-#include "core/foundation/simd/nn.h"
-
-namespace nn = nx::simd::nn;
-
-nn::rmsnorm(hidden, weight, 1e-5f, hidden);
-nn::softmax(scores, scores);
-nn::gelu(mlp, mlp, nn::precision::fast);
-```
-
-- Sums run in linalg's 16-lane order, and `precision::exact` (the default)
-  computes exp, tanh, erf and sigmoid with the register-wide float math, so
-  exact results are the same bits on every backend. `precision::fast` uses
-  their `fast_` forms; its last bits depend on the target's FMA.
-- `softmax` and `log_softmax` subtract the maximum first, so large inputs do
-  not overflow. A -inf element (a masked score) gets 0, or -inf from
-  `log_softmax`; a NaN, a +inf or a row of -inf alone makes the whole row
-  NaN. `logsumexp` returns -inf for an empty row or one of -inf alone and
-  +inf with any +inf.
-- `layernorm` sums the variance as (x - mean)^2 after the mean, not as
-  E[x^2] - mean^2, and returns the mean and 1 / sqrt(var + eps) it
-  normalized with. Its gamma and beta, and `rmsnorm`'s gamma, may be empty.
-- Every kernel allows its output to be one of its inputs.
-
-## Math
-
-`math/math.h` is a vector math library under Slang's names, in `nx::math`:
-`float2`-`float4`, `int`, `uint`, `double` and `bool` vectors (`vec<T, N>`),
-matrices `float2x2` to `float4x4` and the non-square shapes (`mat<T, R, C>`),
-`quat`, HLSL's functions (`dot`, `cross`, `normalize`, `lerp`, `saturate`,
-`frac`, `rsqrt`, `select`, `mul`, ...), and transform builders
-(`translation`, `rotation`, `perspective_rh_zo`, `look_at_rh`, ...).
-
-```cpp
-#include "core/foundation/math/math.h"
-
-using namespace nx::math;
-
-float4x4 view_proj = mul(perspective_rh_zo(radians(60.f), aspect, 0.1f, 100.f),
-                         look_at_rh(eye, target, float3(0.f, 1.f, 0.f)));
-float3 p = transform_point(view_proj, float3(1.f, 2.f, 3.f));
-```
-
-- Storage is glm's: `float3` is 12 bytes, every type is 4-aligned, and a
-  matrix is its columns in order, so `float4x4` has `glm::mat4`'s bytes and
-  `float3x4` (three rows, four columns) `glm::mat4x3`'s.
-- Meaning is Slang's: `float3x4` has three rows, products are `mul(m, v)`
-  and `mul(a, b)`, `*` is per component. Where glm and Slang read the same
-  code differently there is nothing to call, so code ported from either
-  fails to compile instead of changing meaning: no `m[i]` (use `m.row(r)` or
-  `m.columns[c]`), no matrix `operator*`, no scalar or vector matrix
-  constructors (use `from_rows`, `from_columns`, `identity`), no
-  four-scalar `quat` constructor (glm's takes w first; use `quat(xyz, w)`).
-- `==` compares whole values; `less`, `equal` and the others compare
-  components into a `bool2`-`bool4`.
-- Results equal glm's bit for bit where both are built from `+`, `-`, `*`,
-  `/` and `sqrt`: the 4x4 products, `inverse`, `transpose`, quaternion
-  products and rotations, conversions and the camera builders sum in glm's
-  order. glm's own `dot` of `vec4` sums in a different order under MSVC; here
-  it is `(x + y) + (z + w)` everywhere.
-- Results are the same on every compiler and backend: the headers turn off
-  Clang's fusing of `a * b + c` (it would fuse wherever FMA exists, AVX2 and
-  every AArch64) for their own code only. GCC fuses only outside ISO mode
-  (`-std=gnu++20`).
-- `min(a, b)` is `a < b ? a : b` and `max(a, b)` is `a > b ? a : b`, NaN
-  included, on every path.
-- `f32x4` (`math/register.h`) is four floats in a register with the
-  operations the types are built from: SSE2 on x86-64, NEON on AArch64 with
-  GCC and Clang, plain arrays elsewhere and under `NX_MATH_FORCE_SCALAR`.
-  Each operation is one intrinsic or a short fixed sequence, so debug builds
-  stay fast; the 4x4, affine and quaternion products, `inverse` and
-  `transpose` use it, while per-component operations are plain code.
-- The headers include only `core/config.h` and small standard headers, not
-  `foundation.h`.
-- Tests: `tests/math/`, in `nx_foundation_tests` and again as
-  `nx_math_scalar_tests`, `nx_math_avx2_tests` (when the machine runs AVX2)
-  and `nx_math_tests` (cross builds, to run on the target). Their
-  determinism case hashes a fixed workload; every backend must match it.
-
-## Command-line parsing
-
-`serialization/arguments.h` provides `nx::cli::Parser`, a typed, declarative
-argument parser for engine executables and tools. It supports root arguments,
-subcommands, long and short options, strict scalar conversion, repeatable
-values, enumerated choices, `--` termination, generated help, and consistent
-diagnostics. Bound values must outlive the parser.
-
-```cpp
-#include "core/foundation/serialization/arguments.h"
-
 nx::string input;
 bool verbose = false;
 
@@ -474,134 +402,149 @@ if (result.status == nx::cli::ParseStatus::Help)
   std::puts(arguments.help(result.command).c_str());
 ```
 
-## INI files
+### INI files
 
-`serialization/ini.h` parses INI text into an `nx::ini::Document` and writes
-one back deterministically, without comments. To change a value in a file a
-person edits, `nx::ini::assign(text, section, key, value)` returns the text
-with that key set and every other line, comments included, as it was: the
-key's lines are rewritten in place, a missing key goes after its section's
-last assignment, a missing section at the end, in the text's own line
-endings, after any byte order mark. Text that does not parse is refused rather
-than rewritten. A key cannot start with `;` or `#`: it would read back as a
-comment.
+`serialization/ini.h` parses into an `nx::ini::Document` and writes one
+back deterministically, without comments. `nx::ini::assign(text, section,
+key, value)` sets one key in a file a person edits and keeps every other
+line, comments included: the key is rewritten in place, a missing key goes
+after its section's last assignment, a missing section at the end, in the
+text's line endings, after any BOM. Text that does not parse is refused. A
+key cannot start with `;` or `#`.
 
-## Compression
+### Compression
 
-`serialization/zstd.h` reads and writes Zstandard frames (`nx::zstd`).
-`compress` and `decompress` take whole buffers; `compressor` and
-`decompressor` keep their context between calls, which saves setting one up
-for each of many small buffers, and also take a frame in pieces (`begin`,
-`feed`, `finish`). Every frame carries a checksum of its content, so a damaged
-one reads as `Corrupt` rather than as other bytes. Decompressing always names
-the most it may produce: a frame that records a larger size is refused before
-anything is allocated, one that does not is refused as soon as it passes the
-limit. Frames one after another read back as their contents joined.
+`serialization/zstd.h` (`nx::zstd`): `compress`/`decompress` whole buffers;
+`compressor`/`decompressor` keep a context between calls and take frames in
+pieces (`begin`, `feed`, `finish`). Frames carry a checksum, so damage reads
+as `Corrupt`. Decompression takes a limit: a frame recording a larger size
+is refused before allocating, one that does not once it passes. Concatenated
+frames read back joined.
 
-## Threading
+### Content-Length framing
 
-| Type | Header | Use it for |
-| --- | --- | --- |
-| `nx::thread` | `threading/thread.h` | A cross-platform OS thread with name, stack size, affinity and priority set at creation. Joins on destruction. Also `nx::this_thread` (id, the kernel's `os_id`, yield, sleep, name, affinity, priority). |
-| `nx::thread_parker` | `threading/thread.h` | Parks one thread until `unpark()` or a deadline kept to well under a millisecond on every platform (a Windows futex timeout rounds to the ~15.6 ms system tick). An `unpark()` before the park is not lost. |
-| `nx::cpu` | `threading/thread.h` | CPU topology queries: logical/physical core counts, SMT layout, hybrid P/E efficiency classes, cache hierarchy, NUMA node count. |
-| `nx::thread_pool` | `threading/thread_pool.h` | A priority-aware task pool on an `nx::fiber::scheduler` of its own, with bounded background concurrency, `task_group` batches, `parallel_for`, `parallel_region` (a team that meets at an `nx::fiber::barrier`, so it may start inside a task; both rethrow the first exception a body throws once the rest finish), cancellable futures and continuations, `when_all`/`when_any`, and opt-in statistics/timing. Waiting in a task suspends its fiber instead of occupying the worker, and its tasks reach two blocking-service threads (`config::blocking_threads`) through `nx::fiber::run_blocking`. With `config::adopt_main_thread` the constructing thread becomes its main thread: `run_on_main(fn)` runs `fn` there, and that thread runs such work in `pump_main(budget)` or while it waits. `worker_os_ids` names the threads its tasks run on, for OS services that take thread ids. |
-| `nx::serial_queue` | `threading/serial_queue.h` | Tasks that must not overlap or reorder, such as one database's reads and writes, run on a `thread_pool` one at a time in the order posted, with no thread of its own: one pool task drains the queue while anything is in it, and a task that throws is logged before the next runs. Bounded (`post` refuses past its capacity unless told otherwise); `blocking` runs tasks through `nx::fiber::run_blocking` for work that blocks in the OS; `flush` suspends a fiber rather than its worker. |
-| `nx::completion_queue` | `threading/completion_queue.h` | Results of work done elsewhere, published on their owner's thread in the order the work was asked for: the owner reserves a place before handing work out, any thread completes or abandons it, and `publish(max_count, fn, max_time)` hands the owner the finished front of the queue, stopping at the first unfinished place, so the order is the same however workers ran. Bounded: `reserve` refuses while `capacity` places are pending. |
-| `nx::cancellation_source` / `nx::cancellation_token` | `threading/cancellation.h` | Shared cooperative cancellation for queued and running work. Tokens are cheap to copy and retain their cancellation generation when a source is reset. `nx::cancellation_callback` runs a function when a token is cancelled, so a wait can be woken by cancellation instead of polling for it; its destructor unregisters it, waiting if another thread is running it. |
-| `nx::mutex` et al. | `threading/sync.h` | Futex-based synchronization: `spin_lock`, `mutex`, `recursive_mutex`, `cond_var`, `rw_lock` (writer-preferring), `semaphore`, `event`, `barrier`, `once_flag`/`call_once`, and `scoped_lock`/`scoped_shared_lock` guards. 4-8 bytes of state each, kernel wait only under contention. The waits of `mutex`, `recursive_mutex`, `rw_lock`, `semaphore`, `event` and `cond_var` have `_for` and `_until` forms, the latter on any clock; a timeout of zero or less tries once and does not block. A writer taking `rw_lock` with a timeout waits as a reader would, without holding new readers back. |
-| `nx::unique_lock` / `nx::shared_lock` | `threading/sync.h` | Movable lock ownership that can unlock before scope exit and lock again (`defer_lock`, `try_to_lock`, `adopt_lock`, a timeout or a deadline), for any type with `lock()`/`unlock()` or `lock_shared()`/`unlock_shared()`. `nx::cond_var` and `nx::fiber::cond_var` wait under any lock the waiter holds: a mutex or `rw_lock` itself, or a `unique_lock` or `shared_lock` over one. |
-| `nx::futex` | `threading/sync.h` | The raw 32-bit futex wait/wake primitive everything in `sync.h` is built on (WaitOnAddress / `SYS_futex`). `wait` without a timeout waits until woken; with one, zero or less returns `TimedOut` at once. |
+`content_length_frame(buffered, max_body, max_header = 8 KiB)`
+(`serialization/content_length.h`) finds one LSP-style message in the bytes
+so far: `Incomplete`, `Ready` (body offset, size, consumed) or `Invalid`.
 
-## Fibers
+## Reflection
 
-| Type | Header | Use it for |
-| --- | --- | --- |
-| `nx::fiber::context` | `fibers/context.h` | A suspended or running execution context. `switch_to(from, to, data)` suspends one and resumes the other, passing a pointer both ways; `exit_to` leaves a fiber for good. Saves the ABI's callee-saved registers and FP control state; on Windows it also swaps the TIB stack bounds, so SEH, `__chkstk` and guard-page growth work on fiber stacks. Carries unwind info so debuggers walk fiber stacks, and ASan/TSan annotations. |
-| `nx::fiber::stack_pool` / `nx::fiber::stack` | `fibers/stack.h` | Guard-paged fiber stacks that only consume memory as deep as they are used (Windows commits on demand; POSIX faults pages lazily), recycled most-recent-first with a bounded cache and a `trim()` that returns grown pages to the OS. |
-| `nx::fiber::scheduler` | `fibers/scheduler.h` | The fiber job system. Worker threads run jobs (`{entry, arg}`, three priorities, per-worker queues with stealing) on pooled fibers. `wait(counter)` suspends the calling fiber instead of its thread. The constructing thread is the main thread: it runs only main-affine work (`run_on_main`), inside `pump_main(budget)` or while it waits, and always on its own stack, never a fiber's. `run_blocking(fn)` moves the calling fiber to one of `config::blocking_threads` service threads for a call that blocks in the OS or a driver, then back to a worker. Destruction finishes outstanding jobs. |
-| `nx::fiber::counter` | `fibers/scheduler.h` | Outstanding-work count that jobs decrement on completion and fibers wait on. Any thread may decrement it, including I/O completion threads the scheduler does not own. |
-| `nx::fiber::mutex` et al. | `fibers/sync.h` | `mutex`, `rw_lock` (writer-preferring), `event`, `semaphore`, `cond_var`, `barrier` (with `arrive_and_drop` for a participant that stops early) and `sleep_for` that suspend the waiting fiber instead of its thread, with `_for` and `_until` waits on the scheduler's timers. A writer that times out on `rw_lock` lets in the readers that queued behind it. `rw_lock`, an auto-reset `event` and `semaphore` hand what they release to the waiters they wake; `mutex` does not, so a running fiber may take it before the woken waiter tries again. On a thread no scheduler owns, the same objects block the thread. Unlike `nx::mutex`, they may be held across a suspension. |
+`reflection/` (`nx::reflect`) describes types without macros.
 
-A fiber can resume on a different OS thread than the one it suspended on. Code
-that switches or waits must not keep a `thread_local` address across the call,
-and must not hold an OS-level lock (`nx::mutex`, `nx::rw_lock`) across a wait.
-Debug builds assert the lock rule, and `nx::fiber::no_suspend_scope` extends
-the same check to other thread-affine resources. MSVC builds add `/GT`, so the
-optimizer does not reuse a thread-local address across a call. Clang has no
-such switch, which is why the scheduler reads its own thread-locals through
-non-inlined calls.
-
-C++ exceptions unwind within a fiber's stack, and `nx::thread_pool` carries what
-a task throws to whoever waits on it. A raw `fiber::context` entry has no such
-capture. A fiber must not wait inside a `catch` block: the runtime keeps the
-exception being handled per thread. A `no_suspend_scope` in the block has debug
-builds assert it. A fault or exception that nothing on a fiber handles
-reaches the process's unhandled-exception filter, as on a thread, so `nx::crash`
-reports it.
-
-Debuggers list OS threads only, so a fiber suspended on a wait shows in none of
-them, and a deadlock of fibers looks like idle workers. `for_each_waiting` lists
-those fibers and what each waits on, and on Windows x64 `context::read_suspended`
-gives the registers to walk one's stack from; a hang's report does both.
-
-## Platform
-
-| Type | Header | Use it for |
-| --- | --- | --- |
-| `nx::fs::path_view` | `platform/filesystem.h` | A non-owning view over a UTF-8 path with lexical queries (filename, stem, extension, parent, root name), each answered as a `path_view`, byte-wise comparison, and `join`/`/` returning an owning `nx::string`. Also: whole-file read/write, atomic replacement through `staged_file`/`file_write_atomic` (`remove_stale_staged_files` clears the temporaries a crashed writer left), directory helpers, `executable_dir()`, platform-standard per-user `application_data_dir(organization, application)`, and a seekable `stream` abstraction (`open_file`/`open_memory` returning an RAII `stream_ptr`; `open_file_views` opens a file once for streams with cursors of their own, readable from any thread, while the file may be deleted or replaced on disk; a stream's `status()` tells a failed read from the end of the stream). Failures are `io_result`s carrying an `io_error` kind, `ReadOnly` and `NotSupported` among them, and the native code. |
-| `nx::vfs::ZipVerifier` | `vfs/vfs.h` | An owner's check on a ZIP device: `make_zip_device` given one asks it, once, whether the archive mounts (the whole directory in order and the bytes of the entry it names), then hands out no entry byte that does not match the SHA-256 it gives for each block. A stream reads, checks and then serves one block at a time, so seeking reads one block, not the entry; a mismatch fails that read as a bad CRC does. The verifier holds the policy and any key; foundation only hashes. `read_zip_directory` lists the same records, and `ZipWriter` can append. |
-| `nx::vfs::ZipCipher` | `vfs/vfs.h` | An owner's keystream for a ZIP device's enciphered entries: `make_zip_device` given one reads the entry it names, after the verifier admits and checks it, asks it which entries' stored bytes (after compression) are enciphered, and deciphers those below minizip by their position in the archive, before decompression, CRC or verifier see them. A keystream is its own inverse and any range of it deciphers on its own, so reads stay seekable. `encipher_zip` applies it in place once, for the tool that wrote the archive. Overlapping or misplaced entries refuse the mount. The cipher holds the policy and the key. |
-| `nx::vfs::resolve_beside` | `vfs/vfs.h` | The path a file names, made absolute: a relative one is in that file's folder and may not leave it (no empty, `.` or `..` parts). Assets use it for the files they name. |
-| `nx::vfs::in_user_data` | `vfs/vfs.h` | Whether a path, made canonical, lies in the user's own folders, `USER_DATA_ROOT` (`/data`) or `LEGACY_DATA_ROOT` (`/legacy-data`), where every platform mounts them. Their files are the user's to change, so loaders of code refuse them. A path that cannot be made canonical counts as inside. |
-| `nx::vmem` | `platform/os.h` | Virtual-memory reservation/commit/protect and page-size/granularity queries. |
-| `nx::os` | `platform/os.h` | Process/system queries: resident and peak memory (`mem_get_stats`), a monotonic clock (`ticks_ns`/`ticks_ms`), a moment in seconds since 1970 as the user's clock shows it (`local_time`), total physical RAM (`system_ram_mb`), the user's country or region as two ISO 3166 letters (`region`: the Windows geo setting, the Android locale property, the Apple current locale, `LC_ALL`/`LC_MESSAGES`/`LANG` elsewhere; `region_of_locale` parses a locale name), and bytes from the operating system's cryptographically secure generator (`random_bytes`: BCrypt on Windows, `arc4random_buf` on Apple, `/dev/urandom` elsewhere). |
-| `nx::process` | `platform/process.h` | Runs a child process on Windows, Linux and macOS with no input, standard output and error captured together up to a limit (the rest is read and dropped), the environment given or the parent's, and a timeout. A timeout kills the child and what it started, through a job object on Windows and the child's own process group elsewhere. It blocks: call it from `nx::fiber::run_blocking`. `quote_argument` spells an argument for a Windows command line. |
+- `type_of<T>()` gives a `type_info`: name, size, alignment, `type_kind`
+  (`opaque`, `boolean`, `integer`, `unsigned_integer`, `floating`, `string`,
+  `id`, `floats`, `enumeration`, `aggregate`, `sequence`) and an aggregate's
+  `fields` (name, offset, type, attributes). Plain aggregates of up to 64
+  fields are discovered by the compiler. An opaque type is left to its owner.
+- `NX_ATTRIBUTES(Type, (field, {...}), ...)` sets `field_attributes`:
+  `flags` (`transient`, `read_only`, `hidden`), `key` (the document name, so
+  renaming the field keeps the key), `min`, `max`, and `label` under
+  `NX_REFLECT_EDITOR` (default 1, one value per build). An unknown field
+  fails to compile. `NX_REFLECT_ENUM(Enum, (enumerator, "text"), ...)`
+  spells an enum.
+- `type_registry::instance()` finds types by id or name.
+- `layout_digest` folds type names, sizes, field names, offsets and nested
+  types into a native-layout `u64`; `describe_layout` prints it.
+- `reflect_json.h`: `write_fields`/`read_fields` (`elide_defaults` or
+  `every_field`), `write_value`/`read_value` (omitted input stays), and
+  `schema_of(type)`, a form description for tools.
+- `reflect_binary.h`: `write_binary`/`read_binary` and
+  `binary_schema_digest`, independent of native offsets and container sizes,
+  so a host cooker and a target runtime agree.
 
 ## Diagnostics
 
 | Type | Header | Use it for |
 | --- | --- | --- |
-| `nx::log` | `diagnostics/log.h` | Asynchronous multi-sink logger: `nx::logv/logd/logi/logw/loge/logc` helpers, runtime-interned string categories (`log::category("name")`, predefined `app`/`gpu`/`render`/`system`), per-category and global level filtering, and console (colored) / debugger / rotating-file sinks. Records format on the caller. Once `log::attach_drain_pool(pool)` is called (the engine attaches its pool), they queue and a low-priority job on that pool writes them. Otherwise, and whenever the queue is full, the caller writes them itself. `log::flush()` writes whatever is queued on the calling thread, and a fatal report calls it before copying the log tail. `log::init()`/`shutdown()` bracket its lifetime; outside them records go to stderr, and a sink added then, such as the engine's in-game console, observes them beside it. |
-| `nx::crash` | `diagnostics/crash.h` | Cross-platform fatal-report installation, bounded runtime notes and log tail, native minidumps where supported, and explicit non-signal reports. A `Fatal` report may include bounded binary attachments; they are atomically written as sanitized sidecars beside the text report and pruned with their owner. `start_hang_watch` ends a process whose `beat()` stops coming, with a report of every thread and every waiting fiber where the platform can walk them; `add_hang_warning` is told at half the timeout, for what can stop what holds the process up. |
-| `NX_ASSERT` | `core/foundation.h` | The one contract check, used throughout foundation in place of `assert`: logs, flushes and breaks in `NX_DEBUG` builds, and compiles out (still type-checked) otherwise. A formatted message, `NX_ASSERT(i < n, "index {} of {}", i, n)`, needs `diagnostics/diagnostic.h`, which also declares the `nx::dbg_*` helpers (break, is-present, wait-for-attach; active in `NX_DEBUG` builds) without pulling in `<windows.h>`. |
-| `NX_PROFILE_*` | `diagnostics/profiler.h` | Zone/frame/thread-name/plot instrumentation macros; `NX_PROFILE_ZONE_TEXT` names a zone at run time. With `NX_ENABLE_PROFILER` (`NX_PROFILE_ENABLED`) they forward to the Tracy client, and in `NX_SHIPPING` they leave no code. Otherwise (`NX_PROFILE_HOOKS`) they call whatever `nx::profile::hooks` table the program installed with `nx::profile::set_hooks`, and do nothing when none is; foundation keeps no trace of its own. |
+| `nx::log` | `diagnostics/log.h` | `nx::logv/logt/logd/logi/logw/loge/logc`, interned categories (`log::category("name")`; `app`, `gpu`, `render`, `rhi`, `system`), per-category and global levels, console, debugger, rotating-file and Android sinks. Shipping compiles `logv`, `logt` and `logd` to nothing (arguments still evaluated). Records format on the caller; after `log::attach_drain_pool(pool)` a low-priority job writes them, otherwise or when the queue is full the caller does. `log::flush()` writes the queue on the caller; a fatal report flushes first. Outside `log::init()`/`shutdown()` records go to stderr and to sinks added then. |
+| `nx::crash` | `diagnostics/crash.h` | Fatal reports with bounded notes and log tail, minidumps where supported, explicit reports, and bounded binary attachments written atomically as sanitized sidecars beside the report and pruned with it. `start_hang_watch` ends a process whose `beat()` stops, reporting every thread and waiting fiber it can walk; `add_hang_warning` hears at half the timeout. |
+| `NX_ASSERT` | `core/foundation.h` | The contract check: logs, flushes, breaks and aborts in `NX_DEBUG`, compiled out (still type-checked) otherwise. An expression, so a constant condition draws no warning. A formatted message needs `diagnostics/diagnostic.h`, which also has the `nx::dbg_*` helpers without `<windows.h>`. |
+| `NX_PROFILE_*` | `diagnostics/profiler.h` | Zone, frame, thread-name and plot macros (`NX_PROFILE_ZONE_TEXT` names at run time). With `NX_ENABLE_PROFILER` they go to Tracy, in Shipping nowhere, otherwise to the `nx::profile::hooks` set with `set_hooks`, if any. Foundation keeps no trace of its own. |
+
+## ECS registry
+
+`ecs/registry.h`: `nx::ecs::registry` (`registry64`, and the
+`basic_registry<Entity, Alloc>` template) is an allocator-aware ECS over
+versioned handles on `nx::sparse_set`, with O(1) add/get/remove, views and
+cached queries, a parent-child hierarchy and statistics. Components are
+registered first; an unregistered one throws `std::logic_error`. Views walk
+in storage order, which callers may rely on. An `each` callback may remove or
+destroy its entity. `each_in(first, last, fn)` walks positions of the same
+storage (`size_hint()` of them), so disjoint ranges may run on several
+threads; its callback may not remove or destroy. The header has the
+invalidation, destroy and thread-safety rules.
+
+```cpp
+struct Transform { float x, y, z; };
+struct Velocity  { float dx, dy; };
+
+nx::ecs::registry world;
+world.register_component<Transform>({ .name = "Transform" });
+world.register_component<Velocity>({ .name = "Velocity" });
+
+auto e = world.create();
+world.emplace<Transform>(e, 0.f, 0.f, 0.f);
+world.emplace<Velocity>(e, 1.f, 0.f);
+
+world.view<Transform, Velocity>().each(
+    [](auto entity, Transform& t, Velocity& v) { t.x += v.dx; });
+
+auto child = world.create();
+world.set_parent(child, e);
+world.destroy(e); // detaches children by default; see destroy_policy
+```
 
 ## Utilities and components
 
 | Type | Header | Use it for |
 | --- | --- | --- |
-| `nx::unique_ptr` / `nx::make_unique` | `core/foundation.h` | Sole ownership of an object on the nx heap. There is no constructor from a raw pointer: `make_unique` creates (honouring `alignof(T)`, and reaching a private constructor that befriends it), and `adopt_unique` takes back a pointer from `release()` or `nx::allocate`. Converts to a base with a virtual destructor, so it owns interfaces too. With a custom deleter it accepts raw pointers like `std::unique_ptr`. |
-| `nx::shared_ptr` / `nx::make_shared` | `core/foundation.h` | Shared ownership, one pointer wide: the count sits in front of the object. No weak half; `nx::life_token` / `life_watch` answer "is it still alive". |
-| `nx::function` | `core/callable.h` | A type-erased, heap-backed callable wrapper, like `std::function`. |
-| `nx::unique_function` | `core/callable.h` | A move-only callable, like `std::move_only_function`: small targets live inline, larger ones on the nx heap. The shape for queued work. |
-| `nx::inplace_function` | `core/callable.h` | A type-erased callable stored in a fixed inline buffer (16 bytes by default on 64-bit); never allocates. |
-| `nx::function_ref` | `core/callable.h` | A non-owning reference to a callable, for parameters that only call it. Kept past the call, a lambda made in that call is gone: an object that keeps one takes an lvalue. |
-| `nx::enums::map` | `core/enum.h` | A fixed array indexed directly by enum value, sized from the enum's `Count`. Zero-overhead enum-to-value lookup. |
-| `nx::enums::flags` | `core/enum.h` | A type-safe bitset over a scoped enum's enumerators, with bit operators. |
-| `nx::result` / `nx::err` | `core/result.h` | An error-or-value type for exception-free error handling, shaped like `std::expected`: it converts from anything its value is made from, compares with `==` against results, values and `err`s, and has `and_then`/`transform`/`or_else`/`transform_error` combinators (a `transform` may return void), `error_or`, `emplace` and `swap`. It is `[[nodiscard]]`. |
-| `nx::scope_guard` | `core/scope_guard.h` | Run an action on scope exit unless dismissed. Also `scoped_exit()` and the Go-style `NX_DEFER { ... };` macro. |
-| `nx::scoped_value` | `core/scope_guard.h` | Temporarily replace a value and restore it on scope exit, including correctly nested scopes. |
-| `nx::guid` | `core/random.h` | A 128-bit unique identifier (UUID): parse, format, compare, hash. Generate via `nx::rng::guid()`. |
-| `nx::rng` | `core/random.h` | A seedable pseudo-random generator; not for secrets, which come from `nx::os::random_bytes`. |
-| `nx::sha256` | `core/sha256.h` | The SHA-256 digest (FIPS 180-4) of a byte span, for identities and checks such as PKCE; not a password hash. It uses the processor's SHA instructions where the processor has them (x86 SHA-NI by `cpuid`; ARMv8 SHA2 by `getauxval` on Android and Linux, always on Apple, `IsProcessorFeaturePresent` on Windows), and portable code otherwise. |
-| `nx::duration` / `nx::timestamp` / `nx::stopwatch` | `core/time.h` | Signed nanosecond spans and monotonic time points, a stopwatch, and `scoped_micros` that writes a scope's length on exit. |
-| `nx::fixed` | `core/fixed.h` | Q16.16 fixed point whose overflow wraps as defined behaviour, so every peer of a rollback session computes the same bits. |
-| `nx::noise` | `core/noise.h` | Value, simplex and cellular noise in 2D and 3D in integer arithmetic only, so a seed gives the same world on every CPU; Q16.16 results, `fbm` for octaves. No simplex gradient lies square to a simplex edge, so no field is zero along a straight line. |
-| `nx::fixed_step` | `core/fixed_step.h` | A fixed-rate simulation clock: how many steps a frame runs, capped by measured step cost, with the remainder as an interpolation `alpha()`. |
+| `nx::unique_ptr` | `core/foundation.h` | Sole ownership on the nx heap, with no raw-pointer constructor: `make_unique` (honours `alignof(T)`, reaches a befriending private constructor), `adopt_unique` for a pointer from `release()` or `nx::allocate`. Converts to a base with a virtual destructor. A custom deleter takes raw pointers. |
+| `nx::shared_ptr` | `core/foundation.h` | Shared ownership, one pointer wide, count in front of the object. No weak half; `nx::life_token` / `life_watch` say whether it lives. |
+| `nx::function` / `nx::unique_function` | `core/callable.h` | Heap-backed and move-only callables (`std::function`, `std::move_only_function`); `unique_function` keeps small targets inline and is the shape for queued work. |
+| `nx::inplace_function` | `core/callable.h` | A fixed inline buffer (16 bytes by default); never allocates. |
+| `nx::function_ref` | `core/callable.h` | A non-owning callable parameter. A lambda made in the call is gone after it, so an object that keeps one takes an lvalue. |
+| `nx::enums::map` / `flags` | `core/enum.h` | An array indexed by enum (sized by `Count`); a type-safe bitset over a scoped enum. |
+| `nx::result` / `nx::err` | `core/result.h` | `[[nodiscard]]` error-or-value shaped like `std::expected`: `==` against results, values and `err`s, `and_then`/`transform`/`or_else`/`transform_error`, `error_or`, `swap`, and `emplace` with nothrow construction only. |
+| `nx::scope_guard` / `nx::scoped_value` | `core/scope_guard.h` | An action on scope exit unless dismissed (`scoped_exit()`, `NX_DEFER { ... };`); a value replaced and restored, nesting correctly. |
+| `nx::guid` | `core/random.h` | A 128-bit UUID: parse, format, compare, hash; `nx::rng::guid()` makes one. |
+| `nx::rng` | `core/random.h` | Pcg, Xoshiro256 or Splitmix64, the same stream for a seed on every platform. A default `rng` is Pcg seeded with 0 and repeats every run. Secrets come from `nx::os::random_bytes`. |
+| `nx::sha256` | `core/sha256.h` | SHA-256 for identities and checks such as PKCE, not passwords; SHA-NI or ARMv8 SHA2 where the CPU has them (`cpuid`, `getauxval`, always on Apple, `IsProcessorFeaturePresent`). |
+| `nx::duration` / `nx::timestamp` / `nx::stopwatch` | `core/time.h` | Nanosecond spans, monotonic points, a stopwatch, `scoped_micros`. |
+| `nx::fixed` | `core/fixed.h` | Q16.16 whose overflow wraps as defined behaviour, so rollback peers compute the same bits. |
+| `nx::noise` | `core/noise.h` | Value, simplex and cellular noise in 2D and 3D in integers only, so a seed gives the same world on every CPU; Q16.16 results, `fbm`. No simplex gradient lies square to an edge, so no field is zero along a line. |
+| `nx::fixed_step` | `core/fixed_step.h` | A fixed-rate clock: steps per frame, capped by measured step cost, and an interpolation `alpha()`. |
 
-The owning callable wrappers convert implicitly from any callable invocable with their signature, a void signature discards the result, and a null function pointer or `nullptr` makes them empty (`valid()`, `== nullptr`, `reset()`).
+The owning callables convert from any callable with their signature (void
+discards a result); a null function pointer or `nullptr` makes them empty
+(`valid()`, `== nullptr`, `reset()`). Types are snake_case; the CamelCase
+spellings that remain (`Guid`, `Rng`, `mpmc::Queue`, the `fiber::` types,
+`defer`, ...) are deprecated aliases.
 
-Types are snake_case, like the standard library. `Guid`, `Rng`, `mpmc::Queue`, `mpsc::Queue`, `spsc::Ring`, the `fiber::` types (`Scheduler`, `Counter`, `Job`, `Priority`, `LocalSlot`, `Context`, `Transfer`, `EntryFn`, `Stack`, `StackPool`, `StackError`), `blob::bytes_size` and the `defer` macro remain as deprecated aliases of their new names.
+## SIMD
 
-## Core
+`simd/simd.h` is C++26's `std::simd` for C++20 in `nx::simd`, with the
+standard's names and semantics, over vector extensions, NEON, SVE, SSE and
+AVX2, plus interleaved loads, fused element-wise pipelines, linear algebra
+with a deterministic `gemm`, and neural-network kernels. `vec<T>`'s width
+follows the compile flags: keep it out of interfaces between translation
+units built differently. Reference:
+[`simd/README.md`](include/core/foundation/simd/README.md).
 
-`core/foundation.h` underpins everything: platform/compiler/architecture
-detection macros, fixed-width type aliases (`i32`, `u64`, `usize`, `f32`, ...),
-small math helpers (`min`, `max`, `clamp`, `align_up`, `next_pow2`), the bounded
-`str_copy` string helper, the `mem_alloc` / `allocate` family, and the default
-`nx::Allocator` (mimalloc-backed). `core/handle.h` defines the versioned
-`basic_handle` (and `handle32` / `handle64`) used as keys by the handle-based
-containers. `core/hash.h` provides FNV-1a (`hash_fnv1a32`/`hash_fnv1a64`
-and the incremental `fnv1a32`/`fnv1a64`), the integer mixers `hash_u32` and
-`hash_u64`, `hash_ptr` and `hash_comb`, which `hash_map` and `id_string` use.
+## Math
+
+`math/math.h` is vector math under Slang's names in `nx::math` (`float3`,
+`float4x4`, `quat`, `mul`, ...): glm's storage, Slang's meaning, code that
+reads differently in the two refusing to compile, and the same results on
+every compiler and backend. Reference and differences from glm:
+[`math/README.md`](include/core/foundation/math/README.md).
+
+## Known limitations
+
+- Apple's futex is the private `__ulock_wait`/`__ulock_wake`, as libc++'s
+  own; private API is an App Store review risk.
+- A new fiber starts from the default FP control state (MXCSR `0x1F80`,
+  zero FPCR), not its creator's.
+- JNI strings are modified UTF-8 converted byte for byte: embedded nulls and
+  supplementary characters do not round-trip exactly.
+- The POSIX crash handler's alternate signal stack is set on the installing
+  thread only, so a stack overflow elsewhere has no stack to report on.
