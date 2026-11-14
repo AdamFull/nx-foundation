@@ -121,6 +121,29 @@ using described = nx::reflect::type_info;
 
 }
 
+TEST_CASE("layout: a type's name as MSVC, Clang or GCC spells it is one "
+          "layout; another name is another") {
+  const described &f = nx::reflect::type_of<f32>();
+  const field fields[] = {at("x", 0, f)};
+  const auto named = [&](const nx::string_view name) {
+    described t = same_name_holding(fields);
+    t.name = name;
+    return nx::reflect::layout_digest(t);
+  };
+  CHECK(named("nx::math::vec<float,2>") == named("nx::math::vec<float, 2>"));
+  CHECK(named("nx::Pair<struct nx::A,class nx::B>") ==
+        named("nx::Pair<nx::A, nx::B>"));
+  CHECK(named("nx::Wide<unsigned __int64>") ==
+        named("nx::Wide<unsigned long long>"));
+  CHECK(named("nx::Wide<__int64>") == named("nx::Wide<long long>"));
+  CHECK(named("`anonymous namespace'::Held") ==
+        named("(anonymous namespace)::Held"));
+  // A name a keyword only begins is not the keyword.
+  CHECK(named("nx::structure") != named("nx::ure"));
+  CHECK(named("nx::Wide<__int64_t>") != named("nx::Wide<long long_t>"));
+  CHECK(named("nx::math::vec<float,2>") != named("nx::math::vec<float,3>"));
+}
+
 TEST_CASE("layout: one name, a field moved, is a different layout") {
   const described &f = nx::reflect::type_of<f32>();
   const field before[] = {at("x", 0, f), at("y", 4, f)};
